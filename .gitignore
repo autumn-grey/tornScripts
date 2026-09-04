@@ -1,0 +1,19 @@
+node_modules/
+
+# Never commit API keys. Keys belong in Tampermonkey's GM_setValue storage,
+# not in this repo — but block the usual accidents anyway.
+.env
+.env.*
+*.key
+secrets.json
+apikey.txt
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
