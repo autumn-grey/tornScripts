@@ -2,17 +2,17 @@
 //
 // One job: on the travel page, if you could not fly to the selected destination
 // and back before your Organised Crime starts, grey out the TRAVEL button,
-// swallow clicks on it, and drop a placeholder rectangle over it.
+// swallow clicks on it, and drop an angry raccoon over it.
 //
 //   now + 2 * (flight time * FLIGHT_VARIANCE) + SAFETY_MARGIN > OC start
 //     => blocked
 
+// esbuild inlines this as a data: URI at build time (see the loader map in
+// build.mjs), so the built .user.js carries the image and fetches nothing.
+import raccoonAngry from "./raccoonAngry.png";
+
 const FLIGHT_VARIANCE = 1.03;
 const SAFETY_MARGIN_MS = 5 * 60_000;
-
-// Placeholder for the gif that goes over the button. Empty = flat green box.
-const OVERLAY_IMAGE_URL = "";
-const OVERLAY_COLOUR = "#00ff00";
 
 // Torn's class names are hashed per deploy, so match on aria-labels, hrefs and
 // framework attributes instead. Everything selector-shaped lives here.
@@ -197,9 +197,10 @@ function injectStyles(): void {
     .${OVERLAY_CLASS} {
       position: fixed;
       z-index: 2147483000;
-      border-radius: 4px;
-      background-color: ${OVERLAY_COLOUR};
-      background-size: cover;
+      /* positionOverlays() sizes the box to the raccoon's own aspect
+         ratio, so filling it neither crops nor squashes him. */
+      background-image: url("${raccoonAngry}");
+      background-size: 100% 100%;
       background-position: center;
       background-repeat: no-repeat;
       pointer-events: none;
@@ -208,8 +209,27 @@ function injectStyles(): void {
   document.head.appendChild(style);
 }
 
-// How far the overlay extends past each edge of the button.
+// How far the raccoon may extend past the left and right edges of the
+// button. Vertical overflow is unbounded — see positionOverlays().
 const OVERLAY_BLEED_PX = 6;
+
+// The raccoon is scaled by WIDTH and centred on the button, free to hang
+// over the top and bottom. Fitting him to the button's height instead would
+// shrink him to nothing on a short, wide button.
+//
+// Read from the image rather than hardcoded, so swapping the PNG for one of
+// a different shape needs no code change.
+let raccoonWidth = 100;
+let raccoonHeight = 100;
+const raccoonImage = new Image();
+raccoonImage.addEventListener("load", () => {
+  if (raccoonImage.naturalWidth > 0 && raccoonImage.naturalHeight > 0) {
+    raccoonWidth = raccoonImage.naturalWidth;
+    raccoonHeight = raccoonImage.naturalHeight;
+    positionOverlays();
+  }
+});
+raccoonImage.src = raccoonAngry;
 
 // The overlay lives on <body>, not inside the button: the button's grayscale
 // filter would otherwise drain the colour out of it too.
@@ -223,10 +243,16 @@ function positionOverlays(): void {
       continue;
     }
     const rect = button.getBoundingClientRect();
-    overlay.style.top = `${rect.top - OVERLAY_BLEED_PX}px`;
-    overlay.style.left = `${rect.left - OVERLAY_BLEED_PX}px`;
-    overlay.style.width = `${rect.width + OVERLAY_BLEED_PX * 2}px`;
-    overlay.style.height = `${rect.height + OVERLAY_BLEED_PX * 2}px`;
+
+    // Never upscale past the image's natural size — a blown-up 100px PNG
+    // just looks blurry.
+    const width = Math.min(rect.width + OVERLAY_BLEED_PX * 2, raccoonWidth);
+    const height = width * (raccoonHeight / raccoonWidth);
+
+    overlay.style.width = `${width}px`;
+    overlay.style.height = `${height}px`;
+    overlay.style.left = `${rect.left + rect.width / 2 - width / 2}px`;
+    overlay.style.top = `${rect.top + rect.height / 2 - height / 2}px`;
   }
 }
 
@@ -240,9 +266,6 @@ function blockButton(button: HTMLElement): void {
   if (!overlays.has(button)) {
     const overlay = document.createElement("div");
     overlay.className = `${OVERLAY_CLASS} ${OWN_CLASS}`;
-    if (OVERLAY_IMAGE_URL !== "") {
-      overlay.style.backgroundImage = `url("${OVERLAY_IMAGE_URL}")`;
-    }
     document.body.appendChild(overlay);
     overlays.set(button, overlay);
   }

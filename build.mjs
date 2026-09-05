@@ -91,6 +91,9 @@ for (const { name, dir, meta } of scripts) {
     format: "iife",
     target: "es2020",
     minify: false,
+    // Images are inlined as data: URIs so each .user.js stays standalone —
+    // no runtime fetch, nothing to host, nothing to break on a repo rename.
+    loader: { ".png": "dataurl" },
     banner: { js: renderMeta(meta, name) },
     legalComments: "inline",
     charset: "utf8",
