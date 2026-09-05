@@ -19,40 +19,56 @@
   // src/oc-travel-guard/index.ts
   var FLIGHT_VARIANCE = 1.03;
   var SAFETY_MARGIN_MS = 5 * 6e4;
-  var RACCOON_URL = "";
-  var GUARDED_LABELS = ["TRAVEL", "CONTINUE"];
+  var OVERLAY_IMAGE_URL = "";
+  var OVERLAY_COLOUR = "#00ff00";
+  var SELECTORS = {
+    // Sidebar OC icon. Its aria-label carries the crime name but NOT the timer;
+    // the countdown only exists in the tooltip it opens on hover.
+    ocIcon: [
+      'a[aria-label^="Organized Crime" i]',
+      'a[aria-label^="Organised Crime" i]',
+      'a[href*="factions.php"][href*="tab=crimes"]'
+    ].join(", "),
+    // Where floating-ui mounts that tooltip.
+    tooltip: '[data-floating-ui-portal], [role="tooltip"]',
+    // The travel button, e.g. aria-label="Travel to Argentina".
+    travelButton: 'button[aria-label^="Travel to" i]',
+    // Fallback if the aria-label ever changes: scan leaf nodes for the caption.
+    buttonish: "button, a, span, div"
+  };
+  var BUTTON_LABELS = ["TRAVEL"];
   var BLOCK_ATTR = "data-ocg-blocked";
   var OWN_CLASS = "ocg-own";
   var OVERLAY_CLASS = "ocg-overlay";
-  var LABEL_CLASS = "ocg-label";
+  var debugOn = () => {
+    try {
+      return localStorage.getItem("OCG_DEBUG") === "1";
+    } catch {
+      return false;
+    }
+  };
+  var log = (...args) => {
+    if (debugOn()) console.log("[OCG]", ...args);
+  };
   function parseWordyDuration(text) {
     const unit = (pattern) => {
-      const match = text.match(pattern);
-      const digits = match?.[1];
+      const digits = text.match(pattern)?.[1];
       return digits === void 0 ? 0 : Number(digits);
     };
-    const days = unit(/(\d+)\s*day/i);
-    const hours = unit(/(\d+)\s*hour/i);
-    const minutes = unit(/(\d+)\s*minute/i);
-    const seconds = unit(/(\d+)\s*second/i);
-    const total = ((days * 24 + hours) * 60 + minutes) * 60 + seconds;
+    const total = ((unit(/(\d+)\s*day/i) * 24 + unit(/(\d+)\s*hour/i)) * 60 + unit(/(\d+)\s*minute/i)) * 60 + unit(/(\d+)\s*second/i);
     return total > 0 ? total * 1e3 : null;
   }
-  function formatShortfall(ms) {
-    const totalMinutes = Math.max(1, Math.ceil(ms / 6e4));
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    return hours > 0 ? `${hours}h ${minutes}m late` : `${minutes}m late`;
-  }
-  function readOcCountdown() {
-    const candidates = document.querySelectorAll("div, span, li, p");
-    for (const element of candidates) {
-      if (element.closest(`.${OWN_CLASS}`)) continue;
-      const text = element.textContent ?? "";
-      if (text.length > 300) continue;
-      if (!/organi[sz]ed\s+crime/i.test(text)) continue;
+  function scanForOcCountdown() {
+    for (const node of document.querySelectorAll(SELECTORS.tooltip)) {
+      if (node.closest(`.${OWN_CLASS}`)) continue;
+      const text = (node.textContent ?? "").trim();
+      if (text.length === 0 || text.length > 300) continue;
+      if (!/organi[sz]ed\s*crime/i.test(text)) continue;
       const remaining = parseWordyDuration(text);
-      if (remaining !== null) return Date.now() + remaining;
+      if (remaining !== null) {
+        log("OC countdown:", text);
+        return Date.now() + remaining;
+      }
     }
     return null;
   }
@@ -66,52 +82,59 @@
   }
   var wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   async function probeIconsForOc() {
-    const icons = [
-      ...document.querySelectorAll(
-        '[id^="icon"], li[class*="icon"], ul[class*="icon"] > li'
-      )
-    ].slice(0, 60);
+    const icons = [...document.querySelectorAll(SELECTORS.ocIcon)];
+    log("probing", icons.length, "OC icon(s)");
     for (const icon of icons) {
       dispatchHover(icon, true);
-      await wait(40);
-      const found = readOcCountdown();
-      dispatchHover(icon, false);
-      if (found !== null) return found;
+      try {
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          await wait(60);
+          const found = scanForOcCountdown();
+          if (found !== null) return found;
+        }
+      } finally {
+        dispatchHover(icon, false);
+      }
     }
     return null;
   }
   var ocStartMs = null;
-  var ocLookupDone = false;
+  var ocLookupRunning = false;
   async function resolveOcStart() {
-    if (ocLookupDone) return;
-    ocStartMs = readOcCountdown() ?? await probeIconsForOc();
-    ocLookupDone = true;
-    if (ocStartMs === null) {
-      console.info("[OC Travel Guard] No Organised Crime found. Standing down.");
+    if (ocStartMs !== null || ocLookupRunning) return;
+    ocLookupRunning = true;
+    try {
+      ocStartMs = scanForOcCountdown() ?? await probeIconsForOc();
+      log(
+        "OC start:",
+        ocStartMs === null ? "not found" : new Date(ocStartMs).toString()
+      );
+    } finally {
+      ocLookupRunning = false;
     }
   }
   function findFlightTimeMs() {
     const text = document.body.innerText;
     const clock = text.match(/Flight\s*Time\s*[-–—:]*\s*(\d{1,2}):(\d{2})/i);
-    const hours = clock?.[1];
-    const minutes = clock?.[2];
-    if (hours !== void 0 && minutes !== void 0) {
-      return (Number(hours) * 60 + Number(minutes)) * 6e4;
+    if (clock?.[1] !== void 0 && clock[2] !== void 0) {
+      return (Number(clock[1]) * 60 + Number(clock[2])) * 6e4;
     }
     const verbose = text.match(/It will take\s+([^.]+?)\s+to reach/i);
-    const phrase = verbose?.[1];
-    if (phrase !== void 0) return parseWordyDuration(phrase);
-    return null;
+    return verbose?.[1] === void 0 ? null : parseWordyDuration(verbose[1]);
   }
-  function findGuardedButtons() {
+  function findTravelButtons() {
+    const labelled = [
+      ...document.querySelectorAll(SELECTORS.travelButton)
+    ];
+    if (labelled.length > 0) return labelled;
     const found = [];
     for (const element of document.querySelectorAll(
-      "button, a, span, div"
+      SELECTORS.buttonish
     )) {
       if (element.children.length > 0) continue;
       if (element.closest(`.${OWN_CLASS}`)) continue;
       const label = (element.textContent ?? "").trim().toUpperCase();
-      if (!GUARDED_LABELS.includes(label)) continue;
+      if (!BUTTON_LABELS.includes(label)) continue;
       const button = element.closest("button, a") ?? element;
       if (!found.includes(button)) found.push(button);
     }
@@ -123,69 +146,68 @@
     style.id = "ocg-styles";
     style.textContent = `
     [${BLOCK_ATTR}] {
-      position: relative !important;
       cursor: not-allowed !important;
+      pointer-events: none !important;
       filter: grayscale(1) brightness(0.5);
     }
     .${OVERLAY_CLASS} {
-      position: absolute;
-      inset: -6px;
-      z-index: 9999;
+      position: fixed;
+      z-index: 2147483000;
       border-radius: 4px;
+      background-color: ${OVERLAY_COLOUR};
       background-size: cover;
       background-position: center;
+      background-repeat: no-repeat;
       pointer-events: none;
-    }
-    .${OVERLAY_CLASS}.ocg-placeholder {
-      animation: ocg-flash 0.6s steps(1, end) infinite;
-    }
-    @keyframes ocg-flash {
-      0%, 49%   { background-color: rgb(0, 255, 0); }
-      50%, 100% { background-color: rgb(0, 150, 50); }
-    }
-    .${LABEL_CLASS} {
-      display: block;
-      margin: 6px 0 2px;
-      color: #e05c5c;
-      font-size: 12px;
-      font-weight: 700;
-      text-align: center;
-      letter-spacing: 0.02em;
     }
   `;
     document.head.appendChild(style);
   }
-  function blockButton(button, shortfallMs) {
-    const text = `back ${formatShortfall(shortfallMs)}`;
-    if (button.getAttribute(BLOCK_ATTR) === text) return;
-    button.setAttribute(BLOCK_ATTR, text);
-    if (!button.querySelector(`.${OVERLAY_CLASS}`)) {
+  var OVERLAY_BLEED_PX = 6;
+  var overlays = /* @__PURE__ */ new Map();
+  function positionOverlays() {
+    for (const [button, overlay] of overlays) {
+      if (!button.isConnected) {
+        overlay.remove();
+        overlays.delete(button);
+        continue;
+      }
+      const rect = button.getBoundingClientRect();
+      overlay.style.top = `${rect.top - OVERLAY_BLEED_PX}px`;
+      overlay.style.left = `${rect.left - OVERLAY_BLEED_PX}px`;
+      overlay.style.width = `${rect.width + OVERLAY_BLEED_PX * 2}px`;
+      overlay.style.height = `${rect.height + OVERLAY_BLEED_PX * 2}px`;
+    }
+  }
+  function blockButton(button) {
+    if (button.getAttribute(BLOCK_ATTR) === null) {
+      button.setAttribute(BLOCK_ATTR, "1");
+      button.setAttribute("aria-disabled", "true");
+      if (button instanceof HTMLButtonElement) button.disabled = true;
+    }
+    if (!overlays.has(button)) {
       const overlay = document.createElement("div");
       overlay.className = `${OVERLAY_CLASS} ${OWN_CLASS}`;
-      if (RACCOON_URL === "") {
-        overlay.classList.add("ocg-placeholder");
-      } else {
-        overlay.style.backgroundImage = `url("${RACCOON_URL}")`;
+      if (OVERLAY_IMAGE_URL !== "") {
+        overlay.style.backgroundImage = `url("${OVERLAY_IMAGE_URL}")`;
       }
-      button.appendChild(overlay);
+      document.body.appendChild(overlay);
+      overlays.set(button, overlay);
     }
-    const host = button.parentElement ?? button;
-    let label = host.querySelector(`.${LABEL_CLASS}`);
-    if (!label) {
-      label = document.createElement("span");
-      label.className = `${LABEL_CLASS} ${OWN_CLASS}`;
-      host.appendChild(label);
-    }
-    label.textContent = text;
+    positionOverlays();
   }
-  function clearBlocks() {
-    for (const button of document.querySelectorAll(`[${BLOCK_ATTR}]`)) {
+  function unblockAll() {
+    for (const button of document.querySelectorAll(
+      `[${BLOCK_ATTR}]`
+    )) {
       button.removeAttribute(BLOCK_ATTR);
-      button.querySelector(`.${OVERLAY_CLASS}`)?.remove();
+      button.removeAttribute("aria-disabled");
+      if (button instanceof HTMLButtonElement) button.disabled = false;
     }
-    for (const label of document.querySelectorAll(`.${LABEL_CLASS}`)) {
-      label.remove();
+    for (const overlay of document.querySelectorAll(`.${OVERLAY_CLASS}`)) {
+      overlay.remove();
     }
+    overlays.clear();
   }
   function installClickGuard() {
     const stop = (event) => {
@@ -194,44 +216,63 @@
       if (!target.closest(`[${BLOCK_ATTR}]`)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      log("blocked a", event.type);
     };
     for (const type of ["click", "mousedown", "pointerdown", "touchstart"]) {
       document.addEventListener(type, stop, true);
     }
-    document.addEventListener(
-      "keydown",
-      (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        stop(event);
-      },
-      true
-    );
   }
-  function onTravelPage() {
-    return /sid=travel|travelagency/i.test(location.href);
-  }
+  var forceBlock = () => {
+    try {
+      return localStorage.getItem("OCG_FORCE") === "1";
+    } catch {
+      return false;
+    }
+  };
   function evaluate() {
-    if (!onTravelPage() || ocStartMs === null) return;
     const flightMs = findFlightTimeMs();
-    if (flightMs === null) {
-      clearBlocks();
+    const forced = forceBlock();
+    if (!forced && (ocStartMs === null || flightMs === null)) {
+      unblockAll();
       return;
     }
-    const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
-    const backAtMs = Date.now() + roundTripMs;
-    const shortfallMs = backAtMs - ocStartMs;
-    if (shortfallMs <= 0) {
-      clearBlocks();
-      return;
+    if (!forced && ocStartMs !== null && flightMs !== null) {
+      const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
+      const backAtMs = Date.now() + roundTripMs;
+      log(
+        "back at",
+        new Date(backAtMs).toLocaleString(),
+        "| OC at",
+        new Date(ocStartMs).toLocaleString()
+      );
+      if (backAtMs <= ocStartMs) {
+        unblockAll();
+        return;
+      }
     }
-    for (const button of findGuardedButtons()) blockButton(button, shortfallMs);
+    const buttons = findTravelButtons();
+    log("blocking", buttons.length, "button(s)", forced ? "(forced)" : "");
+    for (const button of buttons) blockButton(button);
   }
   async function main() {
-    if (!onTravelPage()) return;
     injectStyles();
     installClickGuard();
+    Object.assign(window, {
+      __ocg: {
+        scanForOcCountdown,
+        probeIconsForOc,
+        findFlightTimeMs,
+        findTravelButtons,
+        evaluate,
+        get ocStartMs() {
+          return ocStartMs;
+        },
+        set ocStartMs(value) {
+          ocStartMs = value;
+        }
+      }
+    });
     await resolveOcStart();
-    if (ocStartMs === null) return;
     evaluate();
     let pending = 0;
     const observer = new MutationObserver(() => {
@@ -239,7 +280,11 @@
       pending = window.setTimeout(evaluate, 80);
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    setInterval(evaluate, 3e4);
+    window.addEventListener("scroll", positionOverlays, true);
+    window.addEventListener("resize", positionOverlays);
+    setInterval(() => {
+      void resolveOcStart().then(evaluate);
+    }, 3e4);
   }
   void main();
 })();

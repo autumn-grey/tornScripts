@@ -1,111 +1,98 @@
-/**
- * OC Travel Guard
- *
- * Torn shows a flight time only after you pick a destination, so this script
- * cannot mark up the map. It intercepts at the two points where a flight time
- * is on screen: the TRAVEL button, and the CONTINUE confirmation.
- *
- * Blocking is done with a capture-phase listener rather than by disabling the
- * button, so the click is stopped no matter what Torn re-renders underneath.
- *
- * Reads only the page already loaded. No requests, no automation, nothing
- * persisted between page loads.
- */
+// OC Travel Guard
+//
+// One job: on the travel page, if you could not fly to the selected destination
+// and back before your Organised Crime starts, grey out the TRAVEL button,
+// swallow clicks on it, and drop a placeholder rectangle over it.
+//
+//   now + 2 * (flight time * FLIGHT_VARIANCE) + SAFETY_MARGIN > OC start
+//     => blocked
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-/** Torn's stated flight time can run up to 3% over. */
 const FLIGHT_VARIANCE = 1.03;
-
-/** Slack on top of the round trip, for landing, grabbing items and taking off. */
 const SAFETY_MARGIN_MS = 5 * 60_000;
 
-/**
- * Image covering the TRAVEL button. Empty string uses the built-in flashing
- * green placeholder. Set this to the raccoon GIF's URL once it is uploaded
- * alongside the script on GreasyFork.
- */
-const RACCOON_URL = "";
+// Placeholder for the gif that goes over the button. Empty = flat green box.
+const OVERLAY_IMAGE_URL = "";
+const OVERLAY_COLOUR = "#00ff00";
 
-/** Button labels to guard, upper-cased. */
-const GUARDED_LABELS = ["TRAVEL", "CONTINUE"];
+// Torn's class names are hashed per deploy, so match on aria-labels, hrefs and
+// framework attributes instead. Everything selector-shaped lives here.
+const SELECTORS = {
+  // Sidebar OC icon. Its aria-label carries the crime name but NOT the timer;
+  // the countdown only exists in the tooltip it opens on hover.
+  ocIcon: [
+    'a[aria-label^="Organized Crime" i]',
+    'a[aria-label^="Organised Crime" i]',
+    'a[href*="factions.php"][href*="tab=crimes"]',
+  ].join(", "),
+  // Where floating-ui mounts that tooltip.
+  tooltip: '[data-floating-ui-portal], [role="tooltip"]',
+  // The travel button, e.g. aria-label="Travel to Argentina".
+  travelButton: 'button[aria-label^="Travel to" i]',
+  // Fallback if the aria-label ever changes: scan leaf nodes for the caption.
+  buttonish: "button, a, span, div",
+};
 
-// ---------------------------------------------------------------------------
-// Markers used on elements this script has touched
-// ---------------------------------------------------------------------------
+const BUTTON_LABELS = ["TRAVEL"];
 
 const BLOCK_ATTR = "data-ocg-blocked";
-const OWN_CLASS = "ocg-own";
+const OWN_CLASS = "ocg-own"; // marks nodes we injected, so we never read them back
 const OVERLAY_CLASS = "ocg-overlay";
-const LABEL_CLASS = "ocg-label";
 
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
+const debugOn = () => {
+  try {
+    return localStorage.getItem("OCG_DEBUG") === "1";
+  } catch {
+    return false;
+  }
+};
+const log = (...args: unknown[]) => {
+  if (debugOn()) console.log("[OCG]", ...args);
+};
 
-/**
- * Reads durations written out in words, covering both the OC tooltip
- * ("2 days, 18 hours, 9 minutes and 10 seconds") and the travel confirmation
- * ("1 hour, and 51 minutes"). Returns null when no unit is present.
- */
+// ---------------------------------------------------------------- durations
+
+/** "2 days, 17 hours, 32 minutes and 6 seconds" -> ms. Null if nothing parsed. */
 function parseWordyDuration(text: string): number | null {
-  const unit = (pattern: RegExp): number => {
-    const match = text.match(pattern);
-    const digits = match?.[1];
+  const unit = (pattern: RegExp) => {
+    const digits = text.match(pattern)?.[1];
     return digits === undefined ? 0 : Number(digits);
   };
-
-  const days = unit(/(\d+)\s*day/i);
-  const hours = unit(/(\d+)\s*hour/i);
-  const minutes = unit(/(\d+)\s*minute/i);
-  const seconds = unit(/(\d+)\s*second/i);
-
-  const total = ((days * 24 + hours) * 60 + minutes) * 60 + seconds;
+  const total =
+    ((unit(/(\d+)\s*day/i) * 24 + unit(/(\d+)\s*hour/i)) * 60 +
+      unit(/(\d+)\s*minute/i)) *
+      60 +
+    unit(/(\d+)\s*second/i);
   return total > 0 ? total * 1000 : null;
 }
 
-/** "1h 47m late", or "47m late" when under an hour. */
-function formatShortfall(ms: number): string {
-  const totalMinutes = Math.max(1, Math.ceil(ms / 60_000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return hours > 0 ? `${hours}h ${minutes}m late` : `${minutes}m late`;
-}
-
-// ---------------------------------------------------------------------------
-// Finding the OC start time
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------- step 1: OC
 
 /**
- * Torn's status icon tooltip is the only place the OC countdown appears on
- * this page. Absolute timestamps are deliberately ignored: the native tooltip
- * gives a countdown, and anything showing a wall-clock time is in Torn City
- * Time, which would need timezone handling to read safely.
+ * Read the OC countdown out of any tooltip currently mounted. The tooltip text
+ * runs together with no separators, e.g.
+ *   "Organized CrimeArsonist in Market Forces2 days, 17 hours, 5 minutes..."
  */
-function readOcCountdown(): number | null {
-  const candidates = document.querySelectorAll<HTMLElement>("div, span, li, p");
+function scanForOcCountdown(): number | null {
+  for (const node of document.querySelectorAll<HTMLElement>(SELECTORS.tooltip)) {
+    if (node.closest(`.${OWN_CLASS}`)) continue;
 
-  for (const element of candidates) {
-    if (element.closest(`.${OWN_CLASS}`)) continue;
-
-    const text = element.textContent ?? "";
-    if (text.length > 300) continue;
-    if (!/organi[sz]ed\s+crime/i.test(text)) continue;
+    const text = (node.textContent ?? "").trim();
+    if (text.length === 0 || text.length > 300) continue;
+    if (!/organi[sz]ed\s*crime/i.test(text)) continue;
 
     const remaining = parseWordyDuration(text);
-    if (remaining !== null) return Date.now() + remaining;
+    if (remaining !== null) {
+      log("OC countdown:", text);
+      return Date.now() + remaining;
+    }
   }
-
   return null;
 }
 
-function dispatchHover(element: HTMLElement, entering: boolean): void {
+function dispatchHover(element: Element, entering: boolean): void {
   const types = entering
     ? ["pointerover", "pointerenter", "mouseover", "mouseenter"]
     : ["pointerout", "pointerleave", "mouseout", "mouseleave"];
-
   for (const type of types) {
     element.dispatchEvent(
       new MouseEvent(type, { bubbles: true, cancelable: true, view: window }),
@@ -113,241 +100,247 @@ function dispatchHover(element: HTMLElement, entering: boolean): void {
   }
 }
 
-const wait = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * If the tooltip is only built on hover, the countdown is not in the DOM until
- * the icon is hovered. Hovering each status icon in turn surfaces it. This is
- * local event dispatch only; nothing is sent to Torn.
+ * Fake-hover the sidebar OC icon so its tooltip mounts, read the countdown out
+ * of it, then hover back off. Purely a read — the icon is a link we never click.
  */
 async function probeIconsForOc(): Promise<number | null> {
-  const icons = [
-    ...document.querySelectorAll<HTMLElement>(
-      '[id^="icon"], li[class*="icon"], ul[class*="icon"] > li',
-    ),
-  ].slice(0, 60);
+  const icons = [...document.querySelectorAll<HTMLElement>(SELECTORS.ocIcon)];
+  log("probing", icons.length, "OC icon(s)");
 
   for (const icon of icons) {
     dispatchHover(icon, true);
-    await wait(40);
-    const found = readOcCountdown();
-    dispatchHover(icon, false);
-    if (found !== null) return found;
+    try {
+      // floating-ui mounts on a delay and fades in; poll rather than guess.
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await wait(60);
+        const found = scanForOcCountdown();
+        if (found !== null) return found;
+      }
+    } finally {
+      dispatchHover(icon, false);
+    }
   }
-
   return null;
 }
 
-/**
- * Resolved once per page load. The countdown ticks, but the absolute start
- * time it implies does not, so there is nothing to refresh.
- */
+/** Absolute epoch ms when the OC starts, once we've managed to read it. */
 let ocStartMs: number | null = null;
-let ocLookupDone = false;
+let ocLookupRunning = false;
 
 async function resolveOcStart(): Promise<void> {
-  if (ocLookupDone) return;
-
-  ocStartMs = readOcCountdown() ?? (await probeIconsForOc());
-  ocLookupDone = true;
-
-  if (ocStartMs === null) {
-    console.info("[OC Travel Guard] No Organised Crime found. Standing down.");
+  if (ocStartMs !== null || ocLookupRunning) return;
+  ocLookupRunning = true;
+  try {
+    ocStartMs = scanForOcCountdown() ?? (await probeIconsForOc());
+    log(
+      "OC start:",
+      ocStartMs === null ? "not found" : new Date(ocStartMs).toString(),
+    );
+  } finally {
+    ocLookupRunning = false;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Finding the flight time and the buttons
-// ---------------------------------------------------------------------------
+// --------------------------------------------------- step 2: flight time
 
-/** One-way flight time for the currently selected destination. */
+/** "Flight Time - 01:51" -> ms. Only present once a destination is selected. */
 function findFlightTimeMs(): number | null {
   const text = document.body.innerText;
 
-  // Destination panel: "Flight Time - 01:51"
   const clock = text.match(/Flight\s*Time\s*[-–—:]*\s*(\d{1,2}):(\d{2})/i);
-  const hours = clock?.[1];
-  const minutes = clock?.[2];
-  if (hours !== undefined && minutes !== undefined) {
-    return (Number(hours) * 60 + Number(minutes)) * 60_000;
+  if (clock?.[1] !== undefined && clock[2] !== undefined) {
+    return (Number(clock[1]) * 60 + Number(clock[2])) * 60_000;
   }
 
-  // Confirmation: "It will take 1 hour, and 51 minutes to reach your destination."
   const verbose = text.match(/It will take\s+([^.]+?)\s+to reach/i);
-  const phrase = verbose?.[1];
-  if (phrase !== undefined) return parseWordyDuration(phrase);
-
-  return null;
+  return verbose?.[1] === undefined ? null : parseWordyDuration(verbose[1]);
 }
 
-/** The TRAVEL and CONTINUE buttons, whichever are currently on screen. */
-function findGuardedButtons(): HTMLElement[] {
-  const found: HTMLElement[] = [];
+// ------------------------------------------------------ step 3: the button
 
+function findTravelButtons(): HTMLElement[] {
+  const labelled = [
+    ...document.querySelectorAll<HTMLElement>(SELECTORS.travelButton),
+  ];
+  if (labelled.length > 0) return labelled;
+
+  // aria-label gone? Fall back to reading the button caption.
+  const found: HTMLElement[] = [];
   for (const element of document.querySelectorAll<HTMLElement>(
-    "button, a, span, div",
+    SELECTORS.buttonish,
   )) {
-    if (element.children.length > 0) continue;
+    if (element.children.length > 0) continue; // leaf nodes only
     if (element.closest(`.${OWN_CLASS}`)) continue;
 
     const label = (element.textContent ?? "").trim().toUpperCase();
-    if (!GUARDED_LABELS.includes(label)) continue;
+    if (!BUTTON_LABELS.includes(label)) continue;
 
     const button = (element.closest("button, a") ?? element) as HTMLElement;
     if (!found.includes(button)) found.push(button);
   }
-
   return found;
 }
 
-// ---------------------------------------------------------------------------
-// Blocking
-// ---------------------------------------------------------------------------
-
 function injectStyles(): void {
   if (document.getElementById("ocg-styles")) return;
-
   const style = document.createElement("style");
   style.id = "ocg-styles";
   style.textContent = `
     [${BLOCK_ATTR}] {
-      position: relative !important;
       cursor: not-allowed !important;
+      pointer-events: none !important;
       filter: grayscale(1) brightness(0.5);
     }
     .${OVERLAY_CLASS} {
-      position: absolute;
-      inset: -6px;
-      z-index: 9999;
+      position: fixed;
+      z-index: 2147483000;
       border-radius: 4px;
+      background-color: ${OVERLAY_COLOUR};
       background-size: cover;
       background-position: center;
+      background-repeat: no-repeat;
       pointer-events: none;
-    }
-    .${OVERLAY_CLASS}.ocg-placeholder {
-      animation: ocg-flash 0.6s steps(1, end) infinite;
-    }
-    @keyframes ocg-flash {
-      0%, 49%   { background-color: rgb(0, 255, 0); }
-      50%, 100% { background-color: rgb(0, 150, 50); }
-    }
-    .${LABEL_CLASS} {
-      display: block;
-      margin: 6px 0 2px;
-      color: #e05c5c;
-      font-size: 12px;
-      font-weight: 700;
-      text-align: center;
-      letter-spacing: 0.02em;
     }
   `;
   document.head.appendChild(style);
 }
 
-function blockButton(button: HTMLElement, shortfallMs: number): void {
-  const text = `back ${formatShortfall(shortfallMs)}`;
+// How far the overlay extends past each edge of the button.
+const OVERLAY_BLEED_PX = 6;
 
-  // Idempotent: the observer fires on our own edits too.
-  if (button.getAttribute(BLOCK_ATTR) === text) return;
-  button.setAttribute(BLOCK_ATTR, text);
+// The overlay lives on <body>, not inside the button: the button's grayscale
+// filter would otherwise drain the colour out of it too.
+const overlays = new Map<HTMLElement, HTMLElement>();
 
-  if (!button.querySelector(`.${OVERLAY_CLASS}`)) {
+function positionOverlays(): void {
+  for (const [button, overlay] of overlays) {
+    if (!button.isConnected) {
+      overlay.remove();
+      overlays.delete(button);
+      continue;
+    }
+    const rect = button.getBoundingClientRect();
+    overlay.style.top = `${rect.top - OVERLAY_BLEED_PX}px`;
+    overlay.style.left = `${rect.left - OVERLAY_BLEED_PX}px`;
+    overlay.style.width = `${rect.width + OVERLAY_BLEED_PX * 2}px`;
+    overlay.style.height = `${rect.height + OVERLAY_BLEED_PX * 2}px`;
+  }
+}
+
+function blockButton(button: HTMLElement): void {
+  if (button.getAttribute(BLOCK_ATTR) === null) {
+    button.setAttribute(BLOCK_ATTR, "1");
+    button.setAttribute("aria-disabled", "true");
+    if (button instanceof HTMLButtonElement) button.disabled = true;
+  }
+
+  if (!overlays.has(button)) {
     const overlay = document.createElement("div");
     overlay.className = `${OVERLAY_CLASS} ${OWN_CLASS}`;
-    if (RACCOON_URL === "") {
-      overlay.classList.add("ocg-placeholder");
-    } else {
-      overlay.style.backgroundImage = `url("${RACCOON_URL}")`;
+    if (OVERLAY_IMAGE_URL !== "") {
+      overlay.style.backgroundImage = `url("${OVERLAY_IMAGE_URL}")`;
     }
-    button.appendChild(overlay);
+    document.body.appendChild(overlay);
+    overlays.set(button, overlay);
   }
 
-  const host = button.parentElement ?? button;
-  let label = host.querySelector<HTMLElement>(`.${LABEL_CLASS}`);
-  if (!label) {
-    label = document.createElement("span");
-    label.className = `${LABEL_CLASS} ${OWN_CLASS}`;
-    host.appendChild(label);
-  }
-  label.textContent = text;
+  positionOverlays();
 }
 
-function clearBlocks(): void {
-  for (const button of document.querySelectorAll<HTMLElement>(`[${BLOCK_ATTR}]`)) {
+function unblockAll(): void {
+  for (const button of document.querySelectorAll<HTMLElement>(
+    `[${BLOCK_ATTR}]`,
+  )) {
     button.removeAttribute(BLOCK_ATTR);
-    button.querySelector(`.${OVERLAY_CLASS}`)?.remove();
+    button.removeAttribute("aria-disabled");
+    if (button instanceof HTMLButtonElement) button.disabled = false;
   }
-  for (const label of document.querySelectorAll(`.${LABEL_CLASS}`)) {
-    label.remove();
+  for (const overlay of document.querySelectorAll(`.${OVERLAY_CLASS}`)) {
+    overlay.remove();
   }
+  overlays.clear();
 }
 
-/**
- * The actual guarantee. Registered once, in the capture phase, so the click is
- * killed before it reaches Torn's own handler regardless of render timing.
- */
+/** Belt and braces: kill any event that starts inside a blocked button. */
 function installClickGuard(): void {
-  const stop = (event: Event): void => {
+  const stop = (event: Event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (!target.closest(`[${BLOCK_ATTR}]`)) return;
-
     event.preventDefault();
     event.stopImmediatePropagation();
+    log("blocked a", event.type);
   };
-
   for (const type of ["click", "mousedown", "pointerdown", "touchstart"]) {
     document.addEventListener(type, stop, true);
   }
-
-  document.addEventListener(
-    "keydown",
-    (event: KeyboardEvent) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      stop(event);
-    },
-    true,
-  );
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------- main loop
 
-function onTravelPage(): boolean {
-  return /sid=travel|travelagency/i.test(location.href);
-}
+/** localStorage.OCG_FORCE = '1' blocks regardless of the maths, to eyeball it. */
+const forceBlock = () => {
+  try {
+    return localStorage.getItem("OCG_FORCE") === "1";
+  } catch {
+    return false;
+  }
+};
 
 function evaluate(): void {
-  if (!onTravelPage() || ocStartMs === null) return;
-
   const flightMs = findFlightTimeMs();
-  if (flightMs === null) {
-    clearBlocks();
+  const forced = forceBlock();
+
+  if (!forced && (ocStartMs === null || flightMs === null)) {
+    unblockAll();
     return;
   }
 
-  const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
-  const backAtMs = Date.now() + roundTripMs;
-  const shortfallMs = backAtMs - ocStartMs;
-
-  if (shortfallMs <= 0) {
-    clearBlocks();
-    return;
+  if (!forced && ocStartMs !== null && flightMs !== null) {
+    const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
+    const backAtMs = Date.now() + roundTripMs;
+    log(
+      "back at",
+      new Date(backAtMs).toLocaleString(),
+      "| OC at",
+      new Date(ocStartMs).toLocaleString(),
+    );
+    if (backAtMs <= ocStartMs) {
+      unblockAll();
+      return;
+    }
   }
 
-  for (const button of findGuardedButtons()) blockButton(button, shortfallMs);
+  const buttons = findTravelButtons();
+  log("blocking", buttons.length, "button(s)", forced ? "(forced)" : "");
+  for (const button of buttons) blockButton(button);
 }
 
 async function main(): Promise<void> {
-  if (!onTravelPage()) return;
-
   injectStyles();
   installClickGuard();
-  await resolveOcStart();
-  if (ocStartMs === null) return;
 
+  // Exposed so the console can poke at it while we're still tuning selectors.
+  Object.assign(window as unknown as Record<string, unknown>, {
+    __ocg: {
+      scanForOcCountdown,
+      probeIconsForOc,
+      findFlightTimeMs,
+      findTravelButtons,
+      evaluate,
+      get ocStartMs() {
+        return ocStartMs;
+      },
+      set ocStartMs(value: number | null) {
+        ocStartMs = value;
+      },
+    },
+  });
+
+  await resolveOcStart();
   evaluate();
 
   let pending = 0;
@@ -357,9 +350,14 @@ async function main(): Promise<void> {
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // The shortfall shrinks as the OC approaches, so a destination that is
-  // currently fine can become blocked while the page sits open.
-  setInterval(evaluate, 30_000);
+  // The overlay is position:fixed, so it has to follow the button around.
+  window.addEventListener("scroll", positionOverlays, true);
+  window.addEventListener("resize", positionOverlays);
+
+  // The tooltip may not have been mountable at load; keep retrying quietly.
+  setInterval(() => {
+    void resolveOcStart().then(evaluate);
+  }, 30_000);
 }
 
 void main();
