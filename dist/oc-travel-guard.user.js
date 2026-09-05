@@ -35,7 +35,20 @@
     // The travel button, e.g. aria-label="Travel to Argentina".
     travelButton: 'button[aria-label^="Travel to" i]',
     // Fallback if the aria-label ever changes: scan leaf nodes for the caption.
-    buttonish: "button, a, span, div"
+    buttonish: "button, a, span, div",
+    // Chrome that is never the travel control no matter what it says. Both the
+    // sidebar and the mobile top bar carry a "TRAVEL" link, and the caption
+    // fallback below would otherwise happily grey that out instead.
+    navigation: [
+      "nav",
+      "header",
+      "aside",
+      '[role="navigation"]',
+      '[id*="sidebar" i]',
+      '[class*="sidebar" i]',
+      '[class*="navbar" i]',
+      '[class*="menu" i]'
+    ].join(", ")
   };
   var BUTTON_LABELS = ["TRAVEL"];
   var BLOCK_ATTR = "data-ocg-blocked";
@@ -134,6 +147,7 @@
     )) {
       if (element.children.length > 0) continue;
       if (element.closest(`.${OWN_CLASS}`)) continue;
+      if (element.closest(SELECTORS.navigation)) continue;
       const label = (element.textContent ?? "").trim().toUpperCase();
       if (!BUTTON_LABELS.includes(label)) continue;
       const button = element.closest("button, a") ?? element;
@@ -155,7 +169,7 @@
       position: fixed;
       z-index: 2147483000;
       /* positionOverlays() sizes the box to the raccoon's own aspect
-         ratio, so filling it neither crops nor squashes him. */
+         ratio, so filling it neither crops nor squashes it. */
       background-image: url("${raccoonAngry_default}");
       background-size: 100% 100%;
       background-position: center;
@@ -180,9 +194,12 @@
   var overlays = /* @__PURE__ */ new Map();
   function positionOverlays() {
     for (const [button, overlay] of overlays) {
-      if (!button.isConnected) {
+      if (!button.isConnected || !isVisible(button)) {
         overlay.remove();
         overlays.delete(button);
+        button.removeAttribute(BLOCK_ATTR);
+        button.removeAttribute("aria-disabled");
+        if (button instanceof HTMLButtonElement) button.disabled = false;
         continue;
       }
       const rect = button.getBoundingClientRect();
@@ -194,7 +211,12 @@
       overlay.style.top = `${rect.top + rect.height / 2 - height / 2}px`;
     }
   }
+  var isVisible = (element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
   function blockButton(button) {
+    if (!isVisible(button)) return;
     if (button.getAttribute(BLOCK_ATTR) === null) {
       button.setAttribute(BLOCK_ATTR, "1");
       button.setAttribute("aria-disabled", "true");
@@ -293,7 +315,12 @@
     });
     observer.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("scroll", positionOverlays, true);
-    window.addEventListener("resize", positionOverlays);
+    let resizePending = 0;
+    window.addEventListener("resize", () => {
+      positionOverlays();
+      clearTimeout(resizePending);
+      resizePending = window.setTimeout(evaluate, 120);
+    });
     setInterval(() => {
       void resolveOcStart().then(evaluate);
     }, 3e4);

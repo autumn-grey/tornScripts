@@ -30,6 +30,19 @@ const SELECTORS = {
   travelButton: 'button[aria-label^="Travel to" i]',
   // Fallback if the aria-label ever changes: scan leaf nodes for the caption.
   buttonish: "button, a, span, div",
+  // Chrome that is never the travel control no matter what it says. Both the
+  // sidebar and the mobile top bar carry a "TRAVEL" link, and the caption
+  // fallback below would otherwise happily grey that out instead.
+  navigation: [
+    "nav",
+    "header",
+    "aside",
+    '[role="navigation"]',
+    '[id*="sidebar" i]',
+    '[class*="sidebar" i]',
+    '[class*="navbar" i]',
+    '[class*="menu" i]',
+  ].join(", "),
 };
 
 const BUTTON_LABELS = ["TRAVEL"];
@@ -174,6 +187,7 @@ function findTravelButtons(): HTMLElement[] {
   )) {
     if (element.children.length > 0) continue; // leaf nodes only
     if (element.closest(`.${OWN_CLASS}`)) continue;
+    if (element.closest(SELECTORS.navigation)) continue;
 
     const label = (element.textContent ?? "").trim().toUpperCase();
     if (!BUTTON_LABELS.includes(label)) continue;
@@ -198,7 +212,7 @@ function injectStyles(): void {
       position: fixed;
       z-index: 2147483000;
       /* positionOverlays() sizes the box to the raccoon's own aspect
-         ratio, so filling it neither crops nor squashes him. */
+         ratio, so filling it neither crops nor squashes it. */
       background-image: url("${raccoonAngry}");
       background-size: 100% 100%;
       background-position: center;
@@ -214,8 +228,8 @@ function injectStyles(): void {
 const OVERLAY_BLEED_PX = 6;
 
 // The raccoon is scaled by WIDTH and centred on the button, free to hang
-// over the top and bottom. Fitting him to the button's height instead would
-// shrink him to nothing on a short, wide button.
+// over the top and bottom. Fitting it to the button's height instead would
+// shrink it to nothing on a short, wide button.
 //
 // Read from the image rather than hardcoded, so swapping the PNG for one of
 // a different shape needs no code change.
@@ -237,9 +251,13 @@ const overlays = new Map<HTMLElement, HTMLElement>();
 
 function positionOverlays(): void {
   for (const [button, overlay] of overlays) {
-    if (!button.isConnected) {
+    // Gone from the DOM, or still in it but hidden by the other layout.
+    if (!button.isConnected || !isVisible(button)) {
       overlay.remove();
       overlays.delete(button);
+      button.removeAttribute(BLOCK_ATTR);
+      button.removeAttribute("aria-disabled");
+      if (button instanceof HTMLButtonElement) button.disabled = false;
       continue;
     }
     const rect = button.getBoundingClientRect();
@@ -256,7 +274,20 @@ function positionOverlays(): void {
   }
 }
 
+/**
+ * Torn ships the desktop and mobile layouts together and hides one with CSS,
+ * so a node can be connected but have no box. Those are not on screen and
+ * must not get an overlay — that is what put a second raccoon in the top bar
+ * after resizing from mobile back to desktop.
+ */
+const isVisible = (element: HTMLElement): boolean => {
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+};
+
 function blockButton(button: HTMLElement): void {
+  if (!isVisible(button)) return;
+
   if (button.getAttribute(BLOCK_ATTR) === null) {
     button.setAttribute(BLOCK_ATTR, "1");
     button.setAttribute("aria-disabled", "true");
@@ -375,7 +406,15 @@ async function main(): Promise<void> {
 
   // The overlay is position:fixed, so it has to follow the button around.
   window.addEventListener("scroll", positionOverlays, true);
-  window.addEventListener("resize", positionOverlays);
+
+  // A resize can cross Torn's mobile/desktop breakpoint and swap which set of
+  // buttons is on screen, so repositioning is not enough — re-run the search.
+  let resizePending = 0;
+  window.addEventListener("resize", () => {
+    positionOverlays();
+    clearTimeout(resizePending);
+    resizePending = window.setTimeout(evaluate, 120);
+  });
 
   // The tooltip may not have been mountable at load; keep retrying quietly.
   setInterval(() => {
