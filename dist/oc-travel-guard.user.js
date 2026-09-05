@@ -51,6 +51,9 @@
     ].join(", ")
   };
   var BUTTON_LABELS = ["TRAVEL"];
+  var CONFIRM_LABELS = ["CONTINUE"];
+  var CONFIRM_PATTERN = /you want to travel to|to reach your destination/i;
+  var CONFIRM_ANCESTOR_DEPTH = 6;
   var BLOCK_ATTR = "data-ocg-blocked";
   var OWN_CLASS = "ocg-own";
   var OVERLAY_CLASS = "ocg-overlay";
@@ -136,24 +139,61 @@
     const verbose = text.match(/It will take\s+([^.]+?)\s+to reach/i);
     return verbose?.[1] === void 0 ? null : parseWordyDuration(verbose[1]);
   }
-  function findTravelButtons() {
-    const labelled = [
-      ...document.querySelectorAll(SELECTORS.travelButton)
-    ];
-    if (labelled.length > 0) return labelled;
+  function findConfirmationBlocks() {
+    const blocks = [];
+    for (const element of document.querySelectorAll("*")) {
+      if (element.closest(`.${OWN_CLASS}`)) continue;
+      if (!CONFIRM_PATTERN.test(element.textContent ?? "")) continue;
+      const childMatches = [...element.children].some(
+        (child) => CONFIRM_PATTERN.test(child.textContent ?? "")
+      );
+      if (!childMatches) blocks.push(element);
+    }
+    return blocks;
+  }
+  function findByCaption(labels, root = document) {
     const found = [];
-    for (const element of document.querySelectorAll(
-      SELECTORS.buttonish
-    )) {
+    for (const element of root.querySelectorAll(SELECTORS.buttonish)) {
       if (element.children.length > 0) continue;
       if (element.closest(`.${OWN_CLASS}`)) continue;
       if (element.closest(SELECTORS.navigation)) continue;
       const label = (element.textContent ?? "").trim().toUpperCase();
-      if (!BUTTON_LABELS.includes(label)) continue;
+      if (!labels.includes(label)) continue;
       const button = element.closest("button, a") ?? element;
       if (!found.includes(button)) found.push(button);
     }
     return found;
+  }
+  function findConfirmButtons() {
+    const found = [];
+    for (const block of findConfirmationBlocks()) {
+      let node = block;
+      for (let depth = 0; node !== null && depth < CONFIRM_ANCESTOR_DEPTH; depth += 1) {
+        const candidates = findByCaption(CONFIRM_LABELS, node);
+        if (candidates.length > 1) break;
+        if (candidates.length === 1) {
+          const button = candidates[0];
+          if (!found.includes(button)) found.push(button);
+          break;
+        }
+        node = node.parentElement;
+      }
+    }
+    return found;
+  }
+  function findTravelButtons() {
+    const found = [];
+    const add = (element) => {
+      if (!found.includes(element)) found.push(element);
+    };
+    for (const element of document.querySelectorAll(
+      SELECTORS.travelButton
+    )) {
+      add(element);
+    }
+    for (const element of findConfirmButtons()) add(element);
+    if (found.length > 0) return found;
+    return findByCaption(BUTTON_LABELS);
   }
   function injectStyles() {
     if (document.getElementById("ocg-styles")) return;

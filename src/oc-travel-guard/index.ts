@@ -1,8 +1,13 @@
 // OC Travel Guard
 //
 // One job: on the travel page, if you could not fly to the selected destination
-// and back before your Organised Crime starts, grey out the TRAVEL button,
-// swallow clicks on it, and drop an angry raccoon over it.
+// and back before your Organised Crime starts, grey out the button that would
+// commit the flight, swallow clicks on it, and drop an angry raccoon over it.
+//
+// Desktop and mobile put that button in different places. Desktop has a TRAVEL
+// button carrying aria-label="Travel to <country>". Mobile lists destinations
+// in a table and only shows a CONTINUE button once you pick one, inside a
+// confirmation block. Both are handled; see findTravelButtons().
 //
 //   now + 2 * (flight time * FLIGHT_VARIANCE) + SAFETY_MARGIN > OC start
 //     => blocked
@@ -46,6 +51,17 @@ const SELECTORS = {
 };
 
 const BUTTON_LABELS = ["TRAVEL"];
+
+// Mobile's commit button. "CONTINUE" is far too generic to match on its own —
+// it appears all over Torn — so it only counts inside a block whose text reads
+// like the travel confirmation.
+const CONFIRM_LABELS = ["CONTINUE"];
+const CONFIRM_PATTERN =
+  /you want to travel to|to reach your destination/i;
+
+// How far outwards from the confirmation text to search for that button
+// before giving up.
+const CONFIRM_ANCESTOR_DEPTH = 6;
 
 const BLOCK_ATTR = "data-ocg-blocked";
 const OWN_CLASS = "ocg-own"; // marks nodes we injected, so we never read them back
@@ -174,28 +190,94 @@ function findFlightTimeMs(): number | null {
 
 // ------------------------------------------------------ step 3: the button
 
-function findTravelButtons(): HTMLElement[] {
-  const labelled = [
-    ...document.querySelectorAll<HTMLElement>(SELECTORS.travelButton),
-  ];
-  if (labelled.length > 0) return labelled;
+/**
+ * The tightest elements whose text reads like the travel confirmation. An
+ * element only qualifies if no child of it also matches — otherwise every
+ * ancestor up to <body> would qualify, and a page-wide container is no use
+ * for deciding which CONTINUE belongs to the flight.
+ */
+function findConfirmationBlocks(): HTMLElement[] {
+  const blocks: HTMLElement[] = [];
+  for (const element of document.querySelectorAll<HTMLElement>("*")) {
+    if (element.closest(`.${OWN_CLASS}`)) continue;
+    if (!CONFIRM_PATTERN.test(element.textContent ?? "")) continue;
 
-  // aria-label gone? Fall back to reading the button caption.
+    const childMatches = [...element.children].some((child) =>
+      CONFIRM_PATTERN.test(child.textContent ?? ""),
+    );
+    if (!childMatches) blocks.push(element);
+  }
+  return blocks;
+}
+
+/**
+ * Every leaf node under `root` whose caption is in `labels`, resolved to its
+ * enclosing button or link.
+ */
+function findByCaption(labels: string[], root: ParentNode = document): HTMLElement[] {
   const found: HTMLElement[] = [];
-  for (const element of document.querySelectorAll<HTMLElement>(
-    SELECTORS.buttonish,
-  )) {
+  for (const element of root.querySelectorAll<HTMLElement>(SELECTORS.buttonish)) {
     if (element.children.length > 0) continue; // leaf nodes only
     if (element.closest(`.${OWN_CLASS}`)) continue;
     if (element.closest(SELECTORS.navigation)) continue;
 
     const label = (element.textContent ?? "").trim().toUpperCase();
-    if (!BUTTON_LABELS.includes(label)) continue;
+    if (!labels.includes(label)) continue;
 
     const button = (element.closest("button, a") ?? element) as HTMLElement;
     if (!found.includes(button)) found.push(button);
   }
   return found;
+}
+
+/**
+ * Mobile's CONTINUE button. Torn keeps it beside the confirmation text, so
+ * start at that block and widen outwards until exactly one CONTINUE turns up.
+ *
+ * Stopping at exactly one matters: widen far enough and you sweep in the
+ * CONTINUE of some unrelated dialog elsewhere on the page. Two candidates
+ * means we have overshot, and greying out the wrong control is worse than
+ * greying out nothing, so we take neither.
+ */
+function findConfirmButtons(): HTMLElement[] {
+  const found: HTMLElement[] = [];
+
+  for (const block of findConfirmationBlocks()) {
+    let node: ParentNode | null = block;
+    for (let depth = 0; node !== null && depth < CONFIRM_ANCESTOR_DEPTH; depth += 1) {
+      const candidates = findByCaption(CONFIRM_LABELS, node);
+      if (candidates.length > 1) break; // ambiguous — refuse to guess
+      if (candidates.length === 1) {
+        const button = candidates[0] as HTMLElement;
+        if (!found.includes(button)) found.push(button);
+        break;
+      }
+      node = (node as HTMLElement).parentElement;
+    }
+  }
+  return found;
+}
+
+function findTravelButtons(): HTMLElement[] {
+  const found: HTMLElement[] = [];
+  const add = (element: HTMLElement) => {
+    if (!found.includes(element)) found.push(element);
+  };
+
+  // Desktop: the aria-labelled TRAVEL button.
+  for (const element of document.querySelectorAll<HTMLElement>(
+    SELECTORS.travelButton,
+  )) {
+    add(element);
+  }
+
+  // Mobile: CONTINUE, but only the one belonging to the flight confirmation.
+  for (const element of findConfirmButtons()) add(element);
+
+  if (found.length > 0) return found;
+
+  // Neither shape found — aria-label may have changed. Match the caption.
+  return findByCaption(BUTTON_LABELS);
 }
 
 function injectStyles(): void {
