@@ -40,6 +40,13 @@ function renderMeta(meta, name) {
     for (const item of Array.isArray(value) ? value : [value]) add(key, item);
   }
 
+  // Anything else in meta.json (run-at, icon, noframes, ...) passes through.
+  const done = new Set([...lines.map(([k]) => k), ...multi]);
+  for (const [key, value] of Object.entries(meta)) {
+    if (done.has(key)) continue;
+    for (const item of Array.isArray(value) ? value : [value]) add(key, item);
+  }
+
   // Lets Tampermonkey auto-update installs that came from the raw GitHub URL.
   add("downloadURL", `${RAW_BASE}/${name}.user.js`);
   add("updateURL", `${RAW_BASE}/${name}.user.js`);

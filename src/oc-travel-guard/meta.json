@@ -1,0 +1,12 @@
+{
+  "name": "OC Travel Guard",
+  "version": "0.1.0",
+  "description": "Blocks travel to any destination you could not fly back from before your Organised Crime starts.",
+  "match": [
+    "https://www.torn.com/page.php?sid=travel*",
+    "https://www.torn.com/travelagency.php*"
+  ],
+  "grant": "none",
+  "run-at": "document-idle",
+  "noframes": true
+}
