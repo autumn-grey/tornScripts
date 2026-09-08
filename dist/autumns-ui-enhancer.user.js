@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.2.4
+// @version      0.2.5
 // @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, and adds an items-per-page selector to paged lists. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
@@ -107,17 +107,17 @@
     return PAGE_SIZES.includes(stored) ? stored : PAGE_STEP;
   }
   function rememberRequest(url, body) {
-    if (!START_IN_BODY.test(body)) return;
+    if (!START_IN_BODY.test(body)) return false;
     let path;
     try {
       path = new URL(url, location.href).pathname;
     } catch {
-      return;
+      return false;
     }
-    if (path !== location.pathname) return;
+    if (path !== location.pathname) return false;
     lastRequest = { url, body };
     log("capture: list request for", path, body.replace(/=[^&]*/g, "=*"));
-    onRequestCaptured?.();
+    return true;
   }
   function installRequestCapture() {
     const openOriginal = XMLHttpRequest.prototype.open;
@@ -128,7 +128,12 @@
     const sendOriginal = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function(body) {
       if (!ownRequest && typeof body === "string") {
-        rememberRequest(this.__aueUrl ?? location.pathname, body);
+        const captured = rememberRequest(this.__aueUrl ?? location.pathname, body);
+        if (captured) {
+          this.addEventListener("loadend", () => onRequestCaptured?.(), {
+            once: true
+          });
+        }
       }
       sendOriginal.call(this, body);
     };
@@ -137,14 +142,15 @@
       const input = args[0];
       const init = args[1];
       const body = init?.body;
+      let captured = false;
       if (!ownRequest && typeof body === "string") {
         const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        rememberRequest(url, body);
+        captured = rememberRequest(url, body);
       }
-      return fetchOriginal.apply(
-        this,
-        args
-      );
+      const sent = fetchOriginal.apply(this, args);
+      if (captured) void sent.then(() => onRequestCaptured?.()).catch(() => {
+      });
+      return sent;
     };
   }
   var MAX_CLIMB = 4;
@@ -271,9 +277,9 @@
   function rewritePager(widget, size) {
     const model = pagerModel(widget, size);
     if (!model) return;
-    log("pager: page", model.current, "of", model.total, "at", size, "per page");
     const state = `${size}:${model.current}:${model.total}`;
     if (widget.getAttribute(PAGER_STATE_ATTR) === state) return;
+    log("pager: page", model.current, "of", model.total, "at", size, "per page");
     if (!originalPagers.has(widget)) {
       originalPagers.set(widget, widget.innerHTML);
       basePageCounts.set(widget, model.base);
@@ -427,11 +433,12 @@
       log("fill: skipped -", have, "rows is a short page, so this is the end");
       return;
     }
+    if (!container.isConnected) return;
     const start = currentStart();
     const key = `${start}:${size}`;
-    if (filling === key) return;
+    if (filling && filling.key === key && filling.container === container) return;
     const mine = generation;
-    filling = key;
+    filling = { key, container };
     const requests = Math.ceil(size / PAGE_STEP);
     log("fill:", have, "rows present, want", size, "-", requests - 1, "more request(s)");
     const spacer = container.querySelector(`:scope > .${SPACER_CLASS}`);
@@ -441,6 +448,10 @@
         const rows = await fetchRows(start + index * PAGE_STEP, container);
         if (mine !== generation) {
           log("fill: abandoned, the page moved on");
+          return;
+        }
+        if (!container.isConnected) {
+          log("fill: abandoned, Torn replaced the list");
           return;
         }
         if (rows.length === 0) {
@@ -461,7 +472,9 @@
       log("fill: done,", rowsOf(container).length, "rows now showing");
     } finally {
       writing = false;
-      if (filling === key) filling = null;
+      if (filling && filling.container === container && filling.key === key) {
+        filling = null;
+      }
       setStatus("");
     }
   }

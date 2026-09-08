@@ -98,8 +98,15 @@ let ownRequest = false;
 let generation = 0;
 /** True while rows are being appended, so the observer ignores our writes. */
 let writing = false;
-/** The page currently being filled ("<start>:<size>"), so it is not restarted. */
-let filling: string | null = null;
+/**
+ * The fill in progress, if any.
+ *
+ * Keyed by the list element as well as the page, because Torn replaces the
+ * whole list block on every render: a fill still running against the block
+ * that is about to be thrown away must not stand in for the one the new
+ * block needs.
+ */
+let filling: { key: string; container: Element } | null = null;
 /** Whether Torn has already been nudged into making a list request. */
 let primed = false;
 /**
@@ -146,19 +153,19 @@ interface XhrWithUrl extends XMLHttpRequest {
  * with no list in it, so nothing gets added and the failure is silent -
  * hence the check that the request goes to the page we are actually on.
  */
-function rememberRequest(url: string, body: string): void {
-  if (!START_IN_BODY.test(body)) return;
+function rememberRequest(url: string, body: string): boolean {
+  if (!START_IN_BODY.test(body)) return false;
   let path: string;
   try {
     path = new URL(url, location.href).pathname;
   } catch {
-    return;
+    return false;
   }
-  if (path !== location.pathname) return;
+  if (path !== location.pathname) return false;
   lastRequest = { url, body };
   // Values are stripped - request bodies carry tokens.
   log("capture: list request for", path, body.replace(/=[^&]*/g, "=*"));
-  onRequestCaptured?.();
+  return true;
 }
 
 export function installRequestCapture(): void {
@@ -177,7 +184,15 @@ export function installRequestCapture(): void {
     body?: Document | XMLHttpRequestBodyInit | null,
   ) {
     if (!ownRequest && typeof body === "string") {
-      rememberRequest(this.__aueUrl ?? location.pathname, body);
+      const captured = rememberRequest(this.__aueUrl ?? location.pathname, body);
+      // Deliberately not on send: Torn has not got the reply yet, let alone
+      // drawn it, so a pass scheduled here would work on a list about to be
+      // thrown away.
+      if (captured) {
+        this.addEventListener("loadend", () => onRequestCaptured?.(), {
+          once: true,
+        });
+      }
     }
     sendOriginal.call(this, body);
   };
@@ -187,6 +202,7 @@ export function installRequestCapture(): void {
     const input = args[0] as RequestInfo | URL;
     const init = args[1] as RequestInit | undefined;
     const body = init?.body;
+    let captured = false;
     if (!ownRequest && typeof body === "string") {
       const url =
         typeof input === "string"
@@ -194,12 +210,15 @@ export function installRequestCapture(): void {
           : input instanceof URL
             ? input.href
             : input.url;
-      rememberRequest(url, body);
+      captured = rememberRequest(url, body);
     }
-    return (fetchOriginal as (...a: unknown[]) => Promise<Response>).apply(
-      this,
-      args,
-    );
+    const sent = (
+      fetchOriginal as (...a: unknown[]) => Promise<Response>
+    ).apply(this, args);
+    // As above - a pass is worth scheduling once the reply is in, not when
+    // the request goes out.
+    if (captured) void sent.then(() => onRequestCaptured?.()).catch(() => {});
+    return sent;
   } as typeof window.fetch;
 }
 
@@ -413,9 +432,11 @@ function rewritePager(widget: HTMLElement, size: number): void {
   const model = pagerModel(widget, size);
   if (!model) return;
 
-  log("pager: page", model.current, "of", model.total, "at", size, "per page");
   const state = `${size}:${model.current}:${model.total}`;
+  // Logged past the early return, so the log records rewrites rather than
+  // every pass that looked and found nothing to do.
   if (widget.getAttribute(PAGER_STATE_ATTR) === state) return;
+  log("pager: page", model.current, "of", model.total, "at", size, "per page");
 
   if (!originalPagers.has(widget)) {
     originalPagers.set(widget, widget.innerHTML);
@@ -629,16 +650,20 @@ async function fillList(target: ListTarget, size: number): Promise<void> {
     return;
   }
 
+  // A list Torn has already replaced is not worth filling; the pass for its
+  // replacement will do the work.
+  if (!container.isConnected) return;
+
   const start = currentStart();
   const key = `${start}:${size}`;
   // Every DOM change on the page schedules another pass, and Torn plus any
   // other script mutate it constantly. Without this a pass starting mid-fetch
   // would abandon the one already in flight, and on a busy page no fill would
-  // ever get to finish.
-  if (filling === key) return;
+  // ever get to finish. It has to be this exact list though - see above.
+  if (filling && filling.key === key && filling.container === container) return;
 
   const mine = generation;
-  filling = key;
+  filling = { key, container };
   const requests = Math.ceil(size / PAGE_STEP);
   log("fill:", have, "rows present, want", size, "-", requests - 1, "more request(s)");
   const spacer = container.querySelector(`:scope > .${SPACER_CLASS}`);
@@ -650,6 +675,12 @@ async function fillList(target: ListTarget, size: number): Promise<void> {
       // Only a real navigation or a size change bumps the epoch.
       if (mine !== generation) {
         log("fill: abandoned, the page moved on");
+        return;
+      }
+      // Torn re-rendered while this was in flight, so these rows belong to a
+      // list that is no longer on the page. The pass for the new one fills it.
+      if (!container.isConnected) {
+        log("fill: abandoned, Torn replaced the list");
         return;
       }
       if (rows.length === 0) {
@@ -672,7 +703,9 @@ async function fillList(target: ListTarget, size: number): Promise<void> {
     log("fill: done,", rowsOf(container).length, "rows now showing");
   } finally {
     writing = false;
-    if (filling === key) filling = null;
+    if (filling && filling.container === container && filling.key === key) {
+      filling = null;
+    }
     setStatus("");
   }
 }

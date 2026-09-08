@@ -1,6 +1,6 @@
 {
   "name": "Autumn's UI Enhancer",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, and adds an items-per-page selector to paged lists. Switched on and off from a panel on the preferences page.",
   "match": "https://www.torn.com/*",
   "grant": "none",
