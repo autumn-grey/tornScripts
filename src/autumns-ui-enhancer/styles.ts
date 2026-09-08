@@ -176,15 +176,22 @@ const CSS = `
     opacity: 0.75;
     font-variant-numeric: tabular-nums;
   }
+  /* Plain and readable rather than themed: the open list is drawn by the
+     browser on its own white background, so light text vanishes in it.
+     Placeholder until these scripts share one dropdown style. */
   .aue-per-page-select {
     padding: 2px 6px;
     border: 1px solid rgba(0, 0, 0, 0.5);
     border-radius: 4px;
-    background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
-    color: #fff;
+    background: #f2f2f2;
+    color: #000;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 12px;
     cursor: pointer;
+  }
+  .aue-per-page-select option {
+    background: #fff;
+    color: #000;
   }
 `;
 

@@ -57,6 +57,13 @@ const PAGE_SIZES = [20, 40, 60, 80, 100];
 const THROTTLE_MS = 150;
 /** Settles the mutation observer before re-reading the page. */
 const SETTLE_MS = 150;
+/**
+ * The longest a pass can be held off. Torn and any other script on the page
+ * mutate it more or less continuously, and a plain debounce restarts its
+ * timer on every one of those - so without a ceiling a pass can be deferred
+ * indefinitely on a busy page.
+ */
+const MAX_SETTLE_MS = 1000;
 
 const SIZE_SETTING = "ITEMS_PER_PAGE";
 const CONTROL_ID = "aue-per-page";
@@ -95,6 +102,15 @@ let writing = false;
 let filling: string | null = null;
 /** Whether Torn has already been nudged into making a list request. */
 let primed = false;
+/**
+ * Runs a pass once a replayable request appears.
+ *
+ * Passes are otherwise only driven by DOM mutations, so a request captured
+ * after the last mutation of a render would sit unused until something else
+ * happened to move the page - in practice until the reader clicked. The
+ * capture is the event worth acting on, so it says so directly.
+ */
+let onRequestCaptured: (() => void) | null = null;
 
 /** Each pager's markup as Torn rendered it, for putting back on 20. */
 const originalPagers = new WeakMap<Element, string>();
@@ -142,6 +158,7 @@ function rememberRequest(url: string, body: string): void {
   lastRequest = { url, body };
   // Values are stripped - request bodies carry tokens.
   log("capture: list request for", path, body.replace(/=[^&]*/g, "=*"));
+  onRequestCaptured?.();
 }
 
 export function installRequestCapture(): void {
@@ -833,10 +850,21 @@ export function installListDisplay(): void {
   // Torn re-renders the whole list block on every page change, so the work
   // is redone whenever the DOM settles rather than hooked to one event.
   let timer = 0;
+  let deadline = 0;
   const schedule = () => {
+    const now = Date.now();
+    if (deadline === 0) deadline = now + MAX_SETTLE_MS;
     clearTimeout(timer);
-    timer = window.setTimeout(() => void apply(), SETTLE_MS);
+    timer = window.setTimeout(
+      () => {
+        deadline = 0;
+        void apply();
+      },
+      Math.max(0, Math.min(SETTLE_MS, deadline - now)),
+    );
   };
+
+  onRequestCaptured = schedule;
 
   new MutationObserver(() => {
     if (writing) return;

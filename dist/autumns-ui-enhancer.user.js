@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.2.3
+// @version      0.2.4
 // @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, and adds an items-per-page selector to paged lists. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
@@ -84,6 +84,7 @@
   var PAGE_SIZES = [20, 40, 60, 80, 100];
   var THROTTLE_MS = 150;
   var SETTLE_MS = 150;
+  var MAX_SETTLE_MS = 1e3;
   var SIZE_SETTING = "ITEMS_PER_PAGE";
   var CONTROL_ID = "aue-per-page";
   var SELECT_ID = "aue-per-page-select";
@@ -98,6 +99,7 @@
   var writing = false;
   var filling = null;
   var primed = false;
+  var onRequestCaptured = null;
   var originalPagers = /* @__PURE__ */ new WeakMap();
   var basePageCounts = /* @__PURE__ */ new WeakMap();
   function pageSize() {
@@ -115,6 +117,7 @@
     if (path !== location.pathname) return;
     lastRequest = { url, body };
     log("capture: list request for", path, body.replace(/=[^&]*/g, "=*"));
+    onRequestCaptured?.();
   }
   function installRequestCapture() {
     const openOriginal = XMLHttpRequest.prototype.open;
@@ -585,10 +588,20 @@
   function installListDisplay() {
     installPagerClicks();
     let timer = 0;
+    let deadline = 0;
     const schedule = () => {
+      const now = Date.now();
+      if (deadline === 0) deadline = now + MAX_SETTLE_MS;
       clearTimeout(timer);
-      timer = window.setTimeout(() => void apply(), SETTLE_MS);
+      timer = window.setTimeout(
+        () => {
+          deadline = 0;
+          void apply();
+        },
+        Math.max(0, Math.min(SETTLE_MS, deadline - now))
+      );
     };
+    onRequestCaptured = schedule;
     new MutationObserver(() => {
       if (writing) return;
       schedule();
@@ -822,15 +835,22 @@
     opacity: 0.75;
     font-variant-numeric: tabular-nums;
   }
+  /* Plain and readable rather than themed: the open list is drawn by the
+     browser on its own white background, so light text vanishes in it.
+     Placeholder until these scripts share one dropdown style. */
   .aue-per-page-select {
     padding: 2px 6px;
     border: 1px solid rgba(0, 0, 0, 0.5);
     border-radius: 4px;
-    background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
-    color: #fff;
+    background: #f2f2f2;
+    color: #000;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 12px;
     cursor: pointer;
+  }
+  .aue-per-page-select option {
+    background: #fff;
+    color: #000;
   }
 `;
   function injectStyles() {
