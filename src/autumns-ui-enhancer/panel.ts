@@ -1,15 +1,7 @@
-// The "Autumn's Scripts" panel on preferences.php.
-//
-// One switch per feature, laid out three to a line under a title bar in
-// Torn's own panel style.
+// The "Autumn's Scripts" switch panel on preferences.php.
 
-import { FEATURES, isEnabled, setEnabled } from "./settings";
+import { FEATURES, PANEL_FOOTNOTE, isEnabled, setEnabled } from "./settings";
 import { PANEL_ID, injectStyles } from "./styles";
-
-// ------------------------------------------------------------- selectors
-//
-// Unhashed Torn classes, most specific first. The panel goes directly after
-// whichever of these is found, so it inherits that element's width.
 
 const PREFS_PANEL_SELECTORS = [
   ".preferences-container",
@@ -17,6 +9,7 @@ const PREFS_PANEL_SELECTORS = [
   ".content-wrapper",
 ];
 
+/** Returns the element the panel hangs off. */
 function findPrefsPanel(): Element | null {
   for (const selector of PREFS_PANEL_SELECTORS) {
     const element = document.querySelector(selector);
@@ -25,6 +18,7 @@ function findPrefsPanel(): Element | null {
   return null;
 }
 
+/** Returns the preferences panel. */
 function buildPanel(): HTMLElement {
   const panel = document.createElement("div");
   panel.id = PANEL_ID;
@@ -45,6 +39,12 @@ function buildPanel(): HTMLElement {
     const label = document.createElement("span");
     label.className = "aue-label";
     label.textContent = feature.label;
+    if (feature.note) {
+      const note = document.createElement("span");
+      note.className = "aue-note";
+      note.textContent = feature.note;
+      label.appendChild(note);
+    }
     row.appendChild(label);
 
     const toggle = document.createElement("label");
@@ -64,21 +64,35 @@ function buildPanel(): HTMLElement {
     body.appendChild(row);
   }
 
+  const footnote = document.createElement("div");
+  footnote.className = "aue-footnote";
+  footnote.textContent = PANEL_FOOTNOTE;
+  panel.appendChild(footnote);
+
   return panel;
 }
 
-function injectPanel(): void {
-  if (document.getElementById(PANEL_ID)) return;
+/** Puts the panel under its anchor and keeps it there. */
+function placePanel(): void {
   const anchor = findPrefsPanel();
   if (!anchor) return;
+
+  const existing = document.getElementById(PANEL_ID);
+  if (existing) {
+    if (existing.previousElementSibling !== anchor) {
+      anchor.insertAdjacentElement("afterend", existing);
+    }
+    return;
+  }
+
   injectStyles();
   anchor.insertAdjacentElement("afterend", buildPanel());
 }
 
-/** Preferences is a React page, so the anchor can appear or be replaced. */
+/** Adds this script's switches to the preferences page. */
 export function installPreferencesPanel(): void {
-  injectPanel();
-  new MutationObserver(() => injectPanel()).observe(document.body, {
+  placePanel();
+  new MutationObserver(() => placePanel()).observe(document.body, {
     childList: true,
     subtree: true,
   });

@@ -1,19 +1,10 @@
 // Every style the script injects, in one sheet.
-//
-// The preferences panel borrows Torn's own panel-title gradient for its
-// header and the OC Travel Guard's grey module gradient for its body, so
-// the two scripts read as one set.
 
 const STYLE_ID = "aue-styles";
 export const PANEL_ID = "aue-prefs-panel";
 
 const CSS = `
-  /* ------------------------------------------------ preferences panel */
 
-  /* Sits directly under the main preferences panel and inherits its width,
-     so the two read as one stack. The columns below size themselves against
-     this box rather than the viewport, so the panel lays itself out
-     correctly whatever Torn does with the page around it. */
   #${PANEL_ID} {
     container-type: inline-size;
     margin: 10px 0 0;
@@ -23,7 +14,6 @@ const CSS = `
     font-family: Arial, Helvetica, sans-serif;
     color: #fff;
   }
-  /* Torn's own panel-title bar: blue-grey, lighter at the top. */
   .aue-title {
     height: 30px;
     line-height: 30px;
@@ -35,22 +25,17 @@ const CSS = `
     color: #fff;
     text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
   }
-  /* Three toggles to a line. The gradient is on the body rather than the
-     cells, so it stays one continuous fill however the grid reflows. */
   .aue-body {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     background: linear-gradient(180deg, #656565 0%, #373737 100%);
   }
-  /* Narrower panel, fewer columns, so a label never has to be cropped. */
   @container (max-width: 620px) {
     .aue-body { grid-template-columns: repeat(2, 1fr); }
   }
   @container (max-width: 400px) {
     .aue-body { grid-template-columns: 1fr; }
   }
-  /* For anything without container queries - the same steps, read off the
-     viewport instead, which is close enough on Torn's fixed-width layout. */
   @supports not (container-type: inline-size) {
     @media (max-width: 1000px) {
       .aue-body { grid-template-columns: repeat(2, 1fr); }
@@ -59,9 +44,6 @@ const CSS = `
       .aue-body { grid-template-columns: 1fr; }
     }
   }
-  /* Seams are drawn to the right of and below every cell; the panel's own
-     overflow clips the ones that land on its outside edges, so this needs
-     no per-column or per-row arithmetic. */
   .aue-row {
     display: flex;
     align-items: flex-start;
@@ -77,17 +59,29 @@ const CSS = `
     -webkit-tap-highlight-color: transparent;
     user-select: none;
   }
-  /* Highlights the row on hover, press, or keyboard focus. */
   .aue-row:hover,
   .aue-row:active,
   .aue-row:focus-within {
     background: linear-gradient(180deg, #525252 0%, #414141 100%);
   }
-  /* Down to one column a long label wraps rather than being cropped. The
-     line height matches the switch so the first line still sits level with
-     it, and the switch stays pinned to that top line. */
   .aue-label {
     line-height: 22px;
+  }
+  .aue-note {
+    display: block;
+    margin-top: -4px;
+    font-size: 11px;
+    line-height: 14px;
+    opacity: 0.7;
+  }
+  .aue-footnote {
+    padding: 6px 12px;
+    background: linear-gradient(180deg, #3a3a3a 0%, #2e2e2e 100%);
+    box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
+    font-size: 11px;
+    line-height: 15px;
+    color: #fff;
+    opacity: 0.75;
   }
   .aue-switch {
     position: relative;
@@ -101,7 +95,6 @@ const CSS = `
     width: 0;
     height: 0;
   }
-  /* Off state: near-black track, mid-grey knob on the left. */
   .aue-switch .aue-slider {
     position: absolute;
     inset: 0;
@@ -125,7 +118,6 @@ const CSS = `
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     transition: transform 0.2s, background 0.15s;
   }
-  /* On state: filled track, dark knob slid to the right. */
   .aue-switch input:checked + .aue-slider {
     background: linear-gradient(180deg, #9e9e9e 0%, #6e6e6e 100%);
   }
@@ -156,11 +148,6 @@ const CSS = `
     background: linear-gradient(180deg, #666666 0%, #444444 100%);
   }
 
-  /* ------------------------------------------- items-per-page control */
-
-  /* Sits above the top right of the list it controls. The text colour is
-     inherited so it reads correctly in both of Torn's themes; only the
-     select carries a colour of its own. */
   .aue-per-page {
     display: flex;
     justify-content: flex-end;
@@ -176,9 +163,6 @@ const CSS = `
     opacity: 0.75;
     font-variant-numeric: tabular-nums;
   }
-  /* Plain and readable rather than themed: the open list is drawn by the
-     browser on its own white background, so light text vanishes in it.
-     Placeholder until these scripts share one dropdown style. */
   .aue-per-page-select {
     padding: 2px 6px;
     border: 1px solid rgba(0, 0, 0, 0.5);
@@ -193,8 +177,115 @@ const CSS = `
     background: #fff;
     color: #000;
   }
+
+  .aue-sort {
+    position: relative;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .aue-sort-mark {
+    position: absolute;
+    right: 3px;
+    top: 50%;
+    margin-top: -2px;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid currentColor;
+    opacity: 0;
+    transition: opacity 0.15s;
+    pointer-events: none;
+  }
+  .aue-sort-active .aue-sort-mark {
+    opacity: 1;
+  }
+  .aue-sort:hover .aue-sort-mark {
+    opacity: 0.5;
+  }
+  .aue-sort-active:hover .aue-sort-mark {
+    opacity: 1;
+  }
+  .aue-sort-desc .aue-sort-mark {
+    transform: rotate(180deg);
+  }
+
+  .aue-ticker-bar {
+    position: relative;
+  }
+  .aue-ticker-bar .header-swiper-container {
+    box-sizing: border-box;
+    padding-right: 38px;
+  }
+  .aue-ticker-manual .news-ticker-enter-done {
+    visibility: hidden;
+  }
+
+  #aue-ticker-nav {
+    position: absolute;
+    right: 4px;
+    top: 0;
+    bottom: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .aue-ticker-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    transition: color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .aue-ticker-arrow:hover,
+  .aue-ticker-arrow:active,
+  .aue-ticker-arrow:focus-visible {
+    color: #fff;
+  }
+  .aue-ticker-arrow::before {
+    content: "";
+    width: 0;
+    height: 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+  }
+  .aue-ticker-arrow-prev::before {
+    border-right: 7px solid currentColor;
+  }
+  .aue-ticker-arrow-next::before {
+    border-left: 7px solid currentColor;
+  }
+
+  #aue-ticker-overlay {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 38px;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  #aue-ticker-overlay .aue-ticker-link {
+    color: inherit;
+    text-decoration: none;
+  }
+  #aue-ticker-overlay .aue-ticker-text {
+    white-space: nowrap;
+  }
 `;
 
+/** Puts this script's stylesheet on the page. */
 export function injectStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");

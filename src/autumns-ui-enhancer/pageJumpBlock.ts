@@ -1,93 +1,107 @@
-// Page Jump Block
-//
-// Torn's React pages scroll their content into view whenever the URL hash
-// changes (the "#type=offenses" style links on the Hall of Fame, faction
-// pages, item lists, and so on). On a tall page that yanks you down the
-// moment you click a filter.
-//
-// A hash change arms a short window; any scroll that lands inside it is
-// swallowed. Scrolls outside the window - the ones you asked for - are left
-// alone entirely.
+// Stops Torn scrolling the page after a click or a navigation.
 
 import { PAGE_JUMP_BLOCK, isEnabled } from "./settings";
 
-/**
- * How long after a hash change a scroll is treated as that navigation's
- * doing. Torn's scroll lands within a frame or two of the hashchange; the
- * window is generous enough to cover a slow render but short enough that a
- * scroll the user actually asked for straight afterwards still happens.
- */
+/** How long a scroll counts as a navigation's or a click's doing. */
 const SUPPRESS_MS = 1000;
 
-let suppressUntil = 0;
+let navigationUntil = 0;
+let clickUntil = 0;
+let clicked: Element | null = null;
 
-/** True while a hash-driven scroll is expected and the feature is on. */
-function suppressing(): boolean {
-  if (Date.now() >= suppressUntil) return false;
-  // Read fresh rather than caching, so flipping the switch takes effect
-  // everywhere without a reload.
+/** Whether the feature is switched on. */
+function on(): boolean {
   return isEnabled(PAGE_JUMP_BLOCK);
 }
 
-/** Open the window in which Torn's follow-up scroll gets swallowed. */
-function armSuppression(): void {
-  suppressUntil = Date.now() + SUPPRESS_MS;
+/** Whether a navigation-driven scroll is currently expected. */
+function suppressingNavigation(): boolean {
+  return Date.now() < navigationUntil && on();
 }
 
-export function installPageJumpBlock(): void {
-  // Clicking the link is the earliest signal, and it fires before the
-  // hashchange - arming here covers routers that never fire hashchange at
-  // all and scroll straight out of the click handler.
-  addEventListener(
-    "click",
-    (event) => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const link = target.closest("a");
-      const href = link?.getAttribute("href");
-      // Bare "#" links are buttons in disguise, not hash navigation.
-      if (!href || href.length < 2 || href[0] !== "#") return;
-      armSuppression();
-    },
-    true,
-  );
+/** Whether a scroll onto this element counts as a jump. */
+function suppressingClick(target: Element): boolean {
+  if (Date.now() >= clickUntil || !on()) return false;
+  if (clicked && (target.contains(clicked) || clicked.contains(target))) {
+    return false;
+  }
+  return true;
+}
 
-  addEventListener("hashchange", armSuppression, true);
+/** Opens the window in which a navigation's follow-up scroll is swallowed. */
+function armNavigation(): void {
+  navigationUntil = Date.now() + SUPPRESS_MS;
+}
 
-  // Torn's router also swaps the hash through the History API, which fires
-  // popstate rather than hashchange on a back/forward step.
-  addEventListener("popstate", armSuppression, true);
+/** Opens the window in which a click's follow-up scroll is swallowed. */
+function armClick(target: Element): void {
+  clicked = target;
+  clickUntil = Date.now() + SUPPRESS_MS;
+}
 
-  const patchHistory = (name: "pushState" | "replaceState") => {
-    const original = history[name];
-    history[name] = function (this: History, ...args: unknown[]) {
-      const url = args[2];
-      // Only hash navigation jumps; a real page change is left alone.
-      if (typeof url === "string" && url.includes("#")) armSuppression();
-      return (original as (...a: unknown[]) => unknown).apply(this, args);
-    } as History[typeof name];
-  };
-  patchHistory("pushState");
-  patchHistory("replaceState");
+/** Whether a history URL stays on the page we are already on. */
+function isSamePage(url: unknown): boolean {
+  if (typeof url !== "string") return false;
+  try {
+    return new URL(url, location.href).pathname === location.pathname;
+  } catch {
+    return false;
+  }
+}
 
-  // The scroll itself. Torn uses scrollIntoView on the content wrapper, but
-  // the window-level calls are patched too so a change of method on their
-  // side doesn't quietly bring the jump back.
-  const originalScrollIntoView = Element.prototype.scrollIntoView;
+/** Whether an href is hash navigation. */
+function isHashLink(href: string | null | undefined): boolean {
+  return typeof href === "string" && href.length > 1 && href[0] === "#";
+}
+
+/** Arms the suppression windows from whatever the reader just clicked. */
+function onClick(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  armClick(target);
+  if (isHashLink(target.closest("a")?.getAttribute("href"))) armNavigation();
+}
+
+/** Makes the History API arm suppression on same-page navigation. */
+function patchHistory(name: "pushState" | "replaceState"): void {
+  const original = history[name];
+  history[name] = function (this: History, ...args: unknown[]) {
+    if (isSamePage(args[2])) armNavigation();
+    return (original as (...a: unknown[]) => unknown).apply(this, args);
+  } as History[typeof name];
+}
+
+/** Makes scrollIntoView do nothing while a jump is expected. */
+function patchScrollIntoView(): void {
+  const original = Element.prototype.scrollIntoView;
   Element.prototype.scrollIntoView = function (
     this: Element,
     ...args: unknown[]
   ) {
-    if (suppressing()) return;
-    (originalScrollIntoView as (...a: unknown[]) => void).apply(this, args);
+    if (suppressingNavigation() || suppressingClick(this)) return;
+    (original as (...a: unknown[]) => void).apply(this, args);
   } as typeof Element.prototype.scrollIntoView;
+}
 
+/** Makes the window scroll methods do nothing while a jump is expected. */
+function patchWindowScrolling(): void {
   for (const name of ["scrollTo", "scroll", "scrollBy"] as const) {
     const original = window[name];
     if (typeof original !== "function") continue;
     window[name] = function (this: Window, ...args: unknown[]) {
-      if (suppressing()) return;
+      if (suppressingNavigation()) return;
       (original as (...a: unknown[]) => void).apply(this, args);
     } as (typeof window)[typeof name];
   }
+}
+
+/** Stops Torn scrolling the page for you after a click or a navigation. */
+export function installPageJumpBlock(): void {
+  addEventListener("click", onClick, true);
+  addEventListener("hashchange", armNavigation, true);
+  addEventListener("popstate", armNavigation, true);
+  patchHistory("pushState");
+  patchHistory("replaceState");
+  patchScrollIntoView();
+  patchWindowScrolling();
 }

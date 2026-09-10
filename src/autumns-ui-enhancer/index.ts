@@ -1,40 +1,46 @@
-// Autumn's UI Enhancer
-//
-// A home for small display-layer fixes to Torn's interface. Each fix is a
-// feature with its own switch, and the switches live in a panel injected
-// under the main panel on preferences.php.
-//
-//   Page Jump Block        - stops the page scrolling itself when a hash
-//                            filter link is clicked.  pageJumpBlock.ts
-//   List Display Extension - an items-per-page dropdown above Torn's paged
-//                            lists, and a pager that steps by it.
-//                            listDisplay.ts
-//
-// Runs at document-start: the scroll patch and the request capture both
-// have to be in place before Torn's own bundle loads. Anything that needs
-// the DOM waits for it here.
+// Autumn's UI Enhancer - starts each feature on the pages it applies to.
 
 import { installListDisplay, installRequestCapture } from "./listDisplay";
+import { installListSort } from "./listSort";
+import { installNewsTicker } from "./newsTicker";
 import { installPageJumpBlock } from "./pageJumpBlock";
 import { installPreferencesPanel } from "./panel";
 import { injectStyles } from "./styles";
+import { installWikiTheme } from "./wikiTheme";
 
 const PREFERENCES_PATH = "/preferences.php";
+const GAME_HOST = "www.torn.com";
 
-installPageJumpBlock();
-installRequestCapture();
+/** The game, as opposed to the wiki on its own host. */
+const onGame = location.hostname === GAME_HOST;
 
-function onReady(): void {
-  injectStyles();
-  if (location.pathname === PREFERENCES_PATH) {
-    installPreferencesPanel();
-  } else {
-    installListDisplay();
-  }
+if (onGame) {
+  installPageJumpBlock();
+  installRequestCapture();
+} else {
+  installWikiTheme();
 }
 
-if (document.body) {
-  onReady();
-} else {
+/** Starts every feature that needs the page to exist first. */
+function onReady(): void {
+  injectStyles();
+
+  if (!onGame) {
+    installListSort();
+    return;
+  }
+
+  installNewsTicker();
+  if (location.pathname === PREFERENCES_PATH) {
+    installPreferencesPanel();
+    return;
+  }
+  installListDisplay();
+  installListSort();
+}
+
+if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", onReady, { once: true });
+} else {
+  onReady();
 }

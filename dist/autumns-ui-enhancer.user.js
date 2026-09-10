@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.2.5
-// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, and adds an items-per-page selector to paged lists. Switched on and off from a panel on the preferences page.
+// @version      0.11.0
+// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, and scrolls the news ticker with arrows for stepping through the headlines. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/*
+// @match        https://wiki.torn.com/*
 // @grant        none
 // @run-at       document-start
 // @noframes     true
@@ -26,7 +27,7 @@
   }
   function log(...parts) {
     if (!debugging()) return;
-    console.debug("[AUE]", ...parts);
+    console.log("[AUE]", ...parts);
   }
 
   // src/autumns-ui-enhancer/settings.ts
@@ -41,7 +42,24 @@
     label: "List Display Extension",
     defaultOn: true
   };
-  var FEATURES = [PAGE_JUMP_BLOCK, LIST_DISPLAY_EXTENSION];
+  var LIST_SORTING = {
+    key: "LIST_SORTING",
+    label: "Table Sorting",
+    note: "applies to displayed results only",
+    defaultOn: true
+  };
+  var NEWS_TICKER = {
+    key: "NEWS_TICKER",
+    label: "News Ticker Controls",
+    defaultOn: true
+  };
+  var PANEL_FOOTNOTE = "Dark/Light Mode switch and table sorting in Torn Wiki enabled by default.";
+  var FEATURES = [
+    PAGE_JUMP_BLOCK,
+    LIST_DISPLAY_EXTENSION,
+    LIST_SORTING,
+    NEWS_TICKER
+  ];
   function isEnabled(feature) {
     try {
       const stored = localStorage.getItem(SETTING_PREFIX + feature.key);
@@ -51,9 +69,9 @@
       return feature.defaultOn;
     }
   }
-  function setEnabled(feature, on) {
+  function setEnabled(feature, on2) {
     try {
-      localStorage.setItem(SETTING_PREFIX + feature.key, on ? "1" : "0");
+      localStorage.setItem(SETTING_PREFIX + feature.key, on2 ? "1" : "0");
     } catch {
     }
   }
@@ -80,6 +98,8 @@
   var ARROW_DISABLED_CLASS = "disable";
   var SPACER_CLASS = "clear";
   var ROW_CONTAINER_SELECTOR = "ul, ol, tbody";
+  var NOT_A_LIST = "#sidebarroot, #header-root, .header-wrapper-top, .header-wrapper-bottom, #chatRoot, .content-title, .breadcrumbs";
+  var CONTENT_ROOT_SELECTOR = ".content-wrapper, #mainContainer";
   var PAGE_STEP = 20;
   var PAGE_SIZES = [20, 40, 60, 80, 100];
   var THROTTLE_MS = 150;
@@ -128,7 +148,10 @@
     const sendOriginal = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function(body) {
       if (!ownRequest && typeof body === "string") {
-        const captured = rememberRequest(this.__aueUrl ?? location.pathname, body);
+        const captured = rememberRequest(
+          this.__aueUrl ?? location.pathname,
+          body
+        );
         if (captured) {
           this.addEventListener("loadend", () => onRequestCaptured?.(), {
             once: true
@@ -163,11 +186,13 @@
   }
   function findRowContainer(root) {
     if (root.id === CONTROL_ID) return null;
+    if (root.closest(NOT_A_LIST)) return null;
     const candidates = [];
     for (const element of root.querySelectorAll(
       ROW_CONTAINER_SELECTOR
     )) {
       if (element.closest(PAGINATION_SELECTOR)) continue;
+      if (element.closest(NOT_A_LIST)) continue;
       if (rowsOf(element).length >= 2) candidates.push(element);
     }
     if (candidates.length === 0) return null;
@@ -177,21 +202,35 @@
       (best, c) => rowsOf(c).length > rowsOf(best).length ? c : best
     );
   }
+  function isSpacer(element) {
+    return element.childElementCount === 0 && (element.textContent ?? "").trim() === "";
+  }
   function siblingsOf(node) {
-    const found = [];
-    for (const direction of [
-      "nextElementSibling",
-      "previousElementSibling"
+    const after = [];
+    const before = [];
+    for (const [direction, into] of [
+      ["nextElementSibling", after],
+      ["previousElementSibling", before]
     ]) {
       let sibling = node[direction];
-      while (sibling && sibling.id === CONTROL_ID) sibling = sibling[direction];
-      if (sibling) found.push(sibling);
+      while (sibling) {
+        if (sibling.id !== CONTROL_ID && !isSpacer(sibling)) into.push(sibling);
+        sibling = sibling[direction];
+      }
+    }
+    const found = [];
+    for (let step = 0; step < Math.max(after.length, before.length); step += 1) {
+      const next = after[step];
+      const previous = before[step];
+      if (next) found.push(next);
+      if (previous) found.push(previous);
     }
     return found;
   }
   function findList(widget) {
     let node = widget;
     for (let level = 0; node && node !== document.body && level <= MAX_CLIMB; ) {
+      if (node.matches(CONTENT_ROOT_SELECTOR)) break;
       for (const sibling of siblingsOf(node)) {
         const container = findRowContainer(sibling);
         if (container) {
@@ -209,14 +248,18 @@
     return null;
   }
   function findTarget() {
+    let below = null;
     for (const widget of document.querySelectorAll(
       PAGINATION_SELECTOR
     )) {
       if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
       const target = findList(widget);
-      if (target) return target;
+      if (!target) continue;
+      const listIsAfterPager = target.pagerBlock.compareDocumentPosition(target.block) & Node.DOCUMENT_POSITION_FOLLOWING;
+      if (listIsAfterPager) return target;
+      below ?? (below = target);
     }
-    return null;
+    return below;
   }
   function hashTemplate(widget) {
     const link = widget.querySelector(PAGE_LINK_SELECTOR);
@@ -274,6 +317,9 @@
     }
     return [...wanted].sort((a, b) => a - b);
   }
+  function unhide(element) {
+    element.style.removeProperty("display");
+  }
   function rewritePager(widget, size) {
     const model = pagerModel(widget, size);
     if (!model) return;
@@ -291,6 +337,8 @@
     const anchorPoint = nextArrow ?? widget.querySelector(".pagination-r") ?? null;
     const blank = template.cloneNode(true);
     const blankGap = gap?.cloneNode(true) ?? null;
+    unhide(blank);
+    if (blankGap instanceof HTMLElement) unhide(blankGap);
     for (const old of widget.querySelectorAll(
       `${PAGE_LINK_SELECTOR}, ${PAGE_GAP_SELECTOR}`
     )) {
@@ -440,7 +488,15 @@
     const mine = generation;
     filling = { key, container };
     const requests = Math.ceil(size / PAGE_STEP);
-    log("fill:", have, "rows present, want", size, "-", requests - 1, "more request(s)");
+    log(
+      "fill:",
+      have,
+      "rows present, want",
+      size,
+      "-",
+      requests - 1,
+      "more request(s)"
+    );
     const spacer = container.querySelector(`:scope > .${SPACER_CLASS}`);
     try {
       for (let index = 1; index < requests; index += 1) {
@@ -626,66 +682,613 @@
     schedule();
   }
 
-  // src/autumns-ui-enhancer/pageJumpBlock.ts
-  var SUPPRESS_MS = 1e3;
-  var suppressUntil = 0;
-  function suppressing() {
-    if (Date.now() >= suppressUntil) return false;
-    return isEnabled(PAGE_JUMP_BLOCK);
+  // src/autumns-ui-enhancer/listSort.ts
+  var NOT_A_COLUMN = /* @__PURE__ */ new Set(["clear", "title", "divider"]);
+  var MIN_COLUMNS = 2;
+  var MIN_ROWS = 2;
+  var ALREADY_SORTABLE = ".sortable, .jquery-tablesorter";
+  var SETTLE_MS2 = 150;
+  var SORTABLE_CLASS = "aue-sort";
+  var MARK_CLASS = "aue-sort-mark";
+  var ACTIVE_CLASS = "aue-sort-active";
+  var DESCENDING_CLASS = "aue-sort-desc";
+  var WIRED_ATTR = "data-aue-sort";
+  var sorts = /* @__PURE__ */ new WeakMap();
+  var writing2 = false;
+  function clean(text) {
+    return (text ?? "").replace(/\s+/g, " ").trim();
   }
-  function armSuppression() {
-    suppressUntil = Date.now() + SUPPRESS_MS;
+  function numberIn(text) {
+    const match = text.replace(/[,$]/g, "").match(/-?\d+(\.\d+)?/);
+    return match ? Number(match[0]) : null;
   }
-  function installPageJumpBlock() {
+  function isNumericColumn(rows, column) {
+    let seen2 = 0;
+    for (const row of rows) {
+      const text = column.read(row);
+      if (text === "") continue;
+      if (numberIn(text) === null) return false;
+      seen2 += 1;
+    }
+    return seen2 > 0;
+  }
+  function keyOf(cell) {
+    for (const name of cell.classList) {
+      if (!NOT_A_COLUMN.has(name)) return name;
+    }
+    return null;
+  }
+  function cellOf(row, key) {
+    try {
+      return row.querySelector(`.${CSS.escape(key)}`);
+    } catch {
+      return null;
+    }
+  }
+  function headerCandidates(target) {
+    const found = [];
+    for (const start of [target.container, target.container.parentElement]) {
+      let node = start?.previousElementSibling ?? null;
+      while (node) {
+        found.push(node);
+        node = node.previousElementSibling;
+      }
+    }
+    return found;
+  }
+  function columnsOf(candidate, rows) {
+    const sample = rows.slice(0, 3);
+    const columns = [];
+    for (const cell of candidate.children) {
+      const key = keyOf(cell);
+      if (!key) continue;
+      if (!sample.some((row) => cellOf(row, key))) continue;
+      columns.push({
+        id: key,
+        cell,
+        read: (row) => clean(cellOf(row, key)?.textContent)
+      });
+    }
+    return columns;
+  }
+  function listSortable() {
+    const target = findTarget();
+    if (!target) return null;
+    const rows = rowsOf(target.container);
+    if (rows.length < MIN_ROWS) return null;
+    for (const candidate of headerCandidates(target)) {
+      if (candidate === target.container) continue;
+      const columns = columnsOf(candidate, rows);
+      if (columns.length < MIN_COLUMNS) continue;
+      const container = target.container;
+      return {
+        container,
+        columns,
+        rows: () => rowsOf(container),
+        reorder: (sorted) => container.append(...sorted)
+      };
+    }
+    return null;
+  }
+  function headerRowOf(table) {
+    const row = table.tHead?.rows[0] ?? table.rows[0];
+    if (!row || row.cells.length < MIN_COLUMNS) return null;
+    for (const cell of row.cells) {
+      if (cell.tagName !== "TH") return null;
+    }
+    return row;
+  }
+  function tableSortable(table) {
+    if (table.parentElement?.closest("table")) return null;
+    if (table.matches(ALREADY_SORTABLE)) return null;
+    const header = headerRowOf(table);
+    const container = header?.parentElement;
+    if (!header || !container) return null;
+    const bodyRows = () => {
+      const found = [];
+      let node = header.nextElementSibling;
+      while (node) {
+        if (node.tagName === "TR") found.push(node);
+        node = node.nextElementSibling;
+      }
+      return found;
+    };
+    if (bodyRows().length < MIN_ROWS) return null;
+    const columns = [...header.cells].map((cell, at) => ({
+      id: String(at),
+      cell,
+      read: (row) => clean(row.cells?.[at]?.textContent)
+    }));
+    return {
+      container,
+      columns,
+      rows: bodyRows,
+      reorder: (sorted) => header.after(...sorted)
+    };
+  }
+  function sortables() {
+    const found = [];
+    const list = listSortable();
+    if (list) found.push(list);
+    for (const table of document.querySelectorAll("table")) {
+      const sortable = tableSortable(table);
+      if (sortable) found.push(sortable);
+    }
+    return found;
+  }
+  function applyOrder(table) {
+    const state = sorts.get(table.container);
+    if (!state) return;
+    const column = table.columns.find((entry) => entry.id === state.id);
+    if (!column) return;
+    const rows = table.rows();
+    if (rows.length < MIN_ROWS) return;
+    const numeric = isNumericColumn(rows, column);
+    const direction = state.descending ? -1 : 1;
+    const sorted = [...rows].sort((left, right) => {
+      const a = column.read(left);
+      const b = column.read(right);
+      if (a === "" || b === "") return a === b ? 0 : a === "" ? 1 : -1;
+      if (numeric) return ((numberIn(a) ?? 0) - (numberIn(b) ?? 0)) * direction;
+      return a.localeCompare(b, void 0, { numeric: true }) * direction;
+    });
+    if (sorted.every((row, at) => row === rows[at])) return;
+    writing2 = true;
+    table.reorder(sorted);
+    writing2 = false;
+    log("sort: column", state.id, state.descending ? "descending" : "ascending");
+  }
+  function paint(table) {
+    const state = sorts.get(table.container);
+    writing2 = true;
+    for (const column of table.columns) {
+      const active = state?.id === column.id;
+      column.cell.classList.toggle(ACTIVE_CLASS, active);
+      column.cell.classList.toggle(DESCENDING_CLASS, active && state.descending);
+    }
+    writing2 = false;
+  }
+  function wire(table) {
+    writing2 = true;
+    for (const column of table.columns) {
+      if (!column.cell.querySelector(`.${MARK_CLASS}`)) {
+        const mark = document.createElement("span");
+        mark.className = MARK_CLASS;
+        column.cell.appendChild(mark);
+      }
+      column.cell.classList.add(SORTABLE_CLASS);
+      if (column.cell.getAttribute(WIRED_ATTR) === column.id) continue;
+      column.cell.setAttribute(WIRED_ATTR, column.id);
+      column.cell.addEventListener("click", (event) => {
+        if (!isEnabled(LIST_SORTING)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const state = sorts.get(table.container);
+        sorts.set(table.container, {
+          id: column.id,
+          descending: state?.id === column.id ? !state.descending : false
+        });
+        applyOrder(table);
+        paint(table);
+      });
+    }
+    writing2 = false;
+  }
+  function unwire(table) {
+    writing2 = true;
+    for (const column of table.columns) {
+      column.cell.classList.remove(
+        SORTABLE_CLASS,
+        ACTIVE_CLASS,
+        DESCENDING_CLASS
+      );
+      column.cell.querySelector(`.${MARK_CLASS}`)?.remove();
+    }
+    writing2 = false;
+  }
+  function pass() {
+    const enabled = isEnabled(LIST_SORTING);
+    for (const table of sortables()) {
+      if (!enabled) {
+        sorts.delete(table.container);
+        unwire(table);
+        continue;
+      }
+      wire(table);
+      applyOrder(table);
+      paint(table);
+    }
+  }
+  function installListSort() {
+    let timer = 0;
+    const schedule = () => {
+      if (writing2) return;
+      clearTimeout(timer);
+      timer = window.setTimeout(pass, SETTLE_MS2);
+    };
+    new MutationObserver(schedule).observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    addEventListener("hashchange", schedule);
+    schedule();
+  }
+
+  // src/autumns-ui-enhancer/newsTicker.ts
+  var BAR_SELECTOR = ".header-bottom-text.news-ticker-new";
+  var SLIDE_SELECTOR = ".news-ticker-slide";
+  var SCROLLER_SELECTOR = ".scroll-wrap";
+  var HEADLINE_SELECTOR = ".headline";
+  var BAR_CLASS = "aue-ticker-bar";
+  var NAV_ID = "aue-ticker-nav";
+  var OVERLAY_ID = "aue-ticker-overlay";
+  var MANUAL_CLASS = "aue-ticker-manual";
+  var OVERFLOW_SLACK = 4;
+  var SCROLL_SPEED = 34;
+  var HOLD_MS = 1500;
+  var MANUAL_IDLE_MS = 45e3;
+  var seen = [];
+  var manualIndex = null;
+  var manualAt = 0;
+  var writing3 = false;
+  function isHeadlineList(value) {
+    return Array.isArray(value) && value.length > 0 && typeof value[0] === "object" && value[0] !== null && "headline" in value[0];
+  }
+  function digForList(value, depth) {
+    if (isHeadlineList(value)) return value;
+    if (!value || typeof value !== "object" || depth > 3) return null;
+    if (value instanceof Element) return null;
+    let keys;
+    try {
+      keys = Object.keys(value);
+    } catch {
+      return null;
+    }
+    for (const key of keys.slice(0, 30)) {
+      let child;
+      try {
+        child = value[key];
+      } catch {
+        continue;
+      }
+      const found = digForList(child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  function readHeadlines(bar) {
+    try {
+      const key = Object.keys(bar).find(
+        (name) => name.startsWith("__reactFiber$")
+      );
+      if (!key) return null;
+      let node = bar[key];
+      for (let depth = 0; node && depth < 30; depth += 1) {
+        let list = digForList(node.memoizedProps, 0);
+        if (!list) {
+          let hook = node.memoizedState;
+          for (let i = 0; hook && i < 15 && !list; i += 1) {
+            list = digForList(hook.memoizedState, 1);
+            hook = hook.next;
+          }
+        }
+        if (list) {
+          return list.map((item) => ({
+            id: String(item.ID ?? item.headline),
+            html: String(item.headline ?? ""),
+            link: typeof item.link === "string" && item.link ? item.link : null,
+            endTime: Number(item.endTime) || 0
+          }));
+        }
+        node = node.return;
+      }
+    } catch {
+    }
+    return null;
+  }
+  function headlines(bar) {
+    return readHeadlines(bar) ?? seen;
+  }
+  function remember(bar) {
+    const headline = bar.querySelector(HEADLINE_SELECTOR);
+    const html = headline?.innerHTML ?? "";
+    if (!html) return;
+    const id = headline?.textContent?.trim() ?? html;
+    if (seen.some((item) => item.id === id)) return;
+    const link = bar.querySelector(`${SLIDE_SELECTOR} a`);
+    seen.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
+  }
+  function liveIndex(bar, list) {
+    const showing = bar.querySelector(HEADLINE_SELECTOR)?.textContent?.trim().toLowerCase();
+    if (!showing) return 0;
+    const strip = (html) => html.replace(/<[^>]*>/g, "").trim().toLowerCase();
+    const at = list.findIndex((item) => strip(item.html) === showing);
+    return at === -1 ? 0 : at;
+  }
+  var scroller = null;
+  var scrollKey = "";
+  var startedAt = 0;
+  var pausedAt = 0;
+  var pointerOver = false;
+  function marqueeKey(box) {
+    return `${box.scrollWidth}:${box.clientWidth}:${box.textContent?.length ?? 0}`;
+  }
+  function tick(now) {
+    requestAnimationFrame(tick);
+    const box = scroller;
+    if (!box || !box.isConnected) return;
+    const distance = box.scrollWidth - box.clientWidth;
+    if (distance <= OVERFLOW_SLACK) {
+      box.scrollLeft = 0;
+      return;
+    }
+    const key = marqueeKey(box);
+    if (key !== scrollKey) {
+      scrollKey = key;
+      startedAt = now;
+      box.scrollLeft = 0;
+      return;
+    }
+    if (pointerOver || document.hidden) {
+      pausedAt = pausedAt || now;
+      return;
+    }
+    if (pausedAt) {
+      startedAt += now - pausedAt;
+      pausedAt = 0;
+    }
+    const travel = distance / SCROLL_SPEED * 1e3;
+    const cycle = 2 * (travel + HOLD_MS);
+    const at = (now - startedAt) % cycle;
+    if (at < HOLD_MS) box.scrollLeft = 0;
+    else if (at < HOLD_MS + travel) {
+      box.scrollLeft = distance * (at - HOLD_MS) / travel;
+    } else if (at < 2 * HOLD_MS + travel) box.scrollLeft = distance;
+    else {
+      box.scrollLeft = distance * (1 - (at - 2 * HOLD_MS - travel) / travel);
+    }
+  }
+  function watchScroller(box) {
+    if (box === scroller) return;
+    scroller = box;
+    scrollKey = "";
+    pausedAt = 0;
+  }
+  function buildArrow(step) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `aue-ticker-arrow aue-ticker-arrow-${step === -1 ? "prev" : "next"}`;
+    button.setAttribute(
+      "aria-label",
+      step === -1 ? "Previous headline" : "Next headline"
+    );
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      stepBy(step);
+    });
+    return button;
+  }
+  function ensureNav(bar) {
+    bar.classList.add(BAR_CLASS);
+    if (bar.querySelector(`#${NAV_ID}`)) return;
+    writing3 = true;
+    const nav = document.createElement("div");
+    nav.id = NAV_ID;
+    nav.appendChild(buildArrow(-1));
+    nav.appendChild(buildArrow(1));
+    bar.appendChild(nav);
+    writing3 = false;
+  }
+  function stepBy(step) {
+    const bar = document.querySelector(BAR_SELECTOR);
+    if (!bar) return;
+    const list = headlines(bar);
+    if (list.length === 0) return;
+    const from = manualIndex ?? liveIndex(bar, list);
+    manualIndex = (from + step + list.length) % list.length;
+    manualAt = Date.now();
+    log("ticker: showing headline", manualIndex + 1, "of", list.length);
+    render(bar);
+  }
+  function toLive(bar) {
+    manualIndex = null;
+    writing3 = true;
+    bar.classList.remove(MANUAL_CLASS);
+    bar.querySelector(`#${OVERLAY_ID}`)?.remove();
+    writing3 = false;
+    watchScroller(bar.querySelector(SCROLLER_SELECTOR));
+  }
+  function countdownText(endTime) {
+    const left = Math.max(0, endTime - Math.floor(Date.now() / 1e3));
+    const pad = (value) => String(value).padStart(2, "0");
+    const days = Math.floor(left / 86400);
+    const hours = Math.floor(left % 86400 / 3600);
+    return ` [${days}:${pad(hours)}:${pad(Math.floor(left % 3600 / 60))}:${pad(left % 60)}]`;
+  }
+  function render(bar) {
+    const list = headlines(bar);
+    if (manualIndex === null || list.length === 0) {
+      toLive(bar);
+      return;
+    }
+    const item = list[Math.min(manualIndex, list.length - 1)];
+    if (!item) {
+      toLive(bar);
+      return;
+    }
+    writing3 = true;
+    bar.classList.add(MANUAL_CLASS);
+    let overlay = bar.querySelector(`#${OVERLAY_ID}`);
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = OVERLAY_ID;
+      bar.appendChild(overlay);
+    }
+    const text = document.createElement("span");
+    text.className = "aue-ticker-text";
+    text.innerHTML = item.html;
+    if (item.endTime > 0) {
+      const countdown = document.createElement("span");
+      countdown.className = "aue-ticker-countdown";
+      countdown.textContent = countdownText(item.endTime);
+      text.appendChild(countdown);
+    }
+    overlay.replaceChildren(
+      item.link ? wrapInLink(text, item.link) : text
+    );
+    writing3 = false;
+    watchScroller(overlay);
+  }
+  function wrapInLink(text, href) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.className = "aue-ticker-link";
+    link.appendChild(text);
+    return link;
+  }
+  function apply2() {
+    const bar = document.querySelector(BAR_SELECTOR);
+    if (!bar) return;
+    if (!isEnabled(NEWS_TICKER)) {
+      if (bar.querySelector(`#${NAV_ID}`)) {
+        writing3 = true;
+        bar.querySelector(`#${NAV_ID}`)?.remove();
+        bar.classList.remove(BAR_CLASS);
+        writing3 = false;
+        toLive(bar);
+      }
+      watchScroller(null);
+      return;
+    }
+    ensureNav(bar);
+    remember(bar);
+    if (manualIndex === null) {
+      watchScroller(bar.querySelector(SCROLLER_SELECTOR));
+    } else if (!bar.querySelector(`#${OVERLAY_ID}`)) {
+      render(bar);
+    }
+  }
+  function installNewsTicker() {
+    requestAnimationFrame(tick);
     addEventListener(
-      "click",
+      "pointerover",
       (event) => {
         const target = event.target;
-        if (!(target instanceof Element)) return;
-        const link = target.closest("a");
-        const href = link?.getAttribute("href");
-        if (!href || href.length < 2 || href[0] !== "#") return;
-        armSuppression();
+        pointerOver = target instanceof Element && target.closest(BAR_SELECTOR) !== null;
       },
       true
     );
-    addEventListener("hashchange", armSuppression, true);
-    addEventListener("popstate", armSuppression, true);
-    const patchHistory = (name) => {
-      const original = history[name];
-      history[name] = function(...args) {
-        const url = args[2];
-        if (typeof url === "string" && url.includes("#")) armSuppression();
-        return original.apply(this, args);
-      };
+    addEventListener("pointerleave", () => pointerOver = false, true);
+    let timer = 0;
+    const schedule = () => {
+      if (writing3) return;
+      clearTimeout(timer);
+      timer = window.setTimeout(apply2, 120);
     };
-    patchHistory("pushState");
-    patchHistory("replaceState");
-    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    new MutationObserver(schedule).observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    setInterval(() => {
+      const bar = document.querySelector(BAR_SELECTOR);
+      if (!bar || manualIndex === null) return;
+      if (Date.now() - manualAt > MANUAL_IDLE_MS) {
+        log("ticker: idle, back to Torn's rotation");
+        toLive(bar);
+        return;
+      }
+      const list = headlines(bar);
+      const item = list[Math.min(manualIndex, list.length - 1)];
+      const countdown = bar.querySelector(`#${OVERLAY_ID} .aue-ticker-countdown`);
+      if (item && item.endTime > 0 && countdown) {
+        countdown.textContent = countdownText(item.endTime);
+      }
+    }, 1e3);
+    apply2();
+  }
+
+  // src/autumns-ui-enhancer/pageJumpBlock.ts
+  var SUPPRESS_MS = 1e3;
+  var navigationUntil = 0;
+  var clickUntil = 0;
+  var clicked = null;
+  function on() {
+    return isEnabled(PAGE_JUMP_BLOCK);
+  }
+  function suppressingNavigation() {
+    return Date.now() < navigationUntil && on();
+  }
+  function suppressingClick(target) {
+    if (Date.now() >= clickUntil || !on()) return false;
+    if (clicked && (target.contains(clicked) || clicked.contains(target))) {
+      return false;
+    }
+    return true;
+  }
+  function armNavigation() {
+    navigationUntil = Date.now() + SUPPRESS_MS;
+  }
+  function armClick(target) {
+    clicked = target;
+    clickUntil = Date.now() + SUPPRESS_MS;
+  }
+  function isSamePage(url) {
+    if (typeof url !== "string") return false;
+    try {
+      return new URL(url, location.href).pathname === location.pathname;
+    } catch {
+      return false;
+    }
+  }
+  function isHashLink(href) {
+    return typeof href === "string" && href.length > 1 && href[0] === "#";
+  }
+  function onClick(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    armClick(target);
+    if (isHashLink(target.closest("a")?.getAttribute("href"))) armNavigation();
+  }
+  function patchHistory(name) {
+    const original = history[name];
+    history[name] = function(...args) {
+      if (isSamePage(args[2])) armNavigation();
+      return original.apply(this, args);
+    };
+  }
+  function patchScrollIntoView() {
+    const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function(...args) {
-      if (suppressing()) return;
-      originalScrollIntoView.apply(this, args);
+      if (suppressingNavigation() || suppressingClick(this)) return;
+      original.apply(this, args);
     };
+  }
+  function patchWindowScrolling() {
     for (const name of ["scrollTo", "scroll", "scrollBy"]) {
       const original = window[name];
       if (typeof original !== "function") continue;
       window[name] = function(...args) {
-        if (suppressing()) return;
+        if (suppressingNavigation()) return;
         original.apply(this, args);
       };
     }
+  }
+  function installPageJumpBlock() {
+    addEventListener("click", onClick, true);
+    addEventListener("hashchange", armNavigation, true);
+    addEventListener("popstate", armNavigation, true);
+    patchHistory("pushState");
+    patchHistory("replaceState");
+    patchScrollIntoView();
+    patchWindowScrolling();
   }
 
   // src/autumns-ui-enhancer/styles.ts
   var STYLE_ID = "aue-styles";
   var PANEL_ID = "aue-prefs-panel";
-  var CSS = `
-  /* ------------------------------------------------ preferences panel */
+  var CSS2 = `
 
-  /* Sits directly under the main preferences panel and inherits its width,
-     so the two read as one stack. The columns below size themselves against
-     this box rather than the viewport, so the panel lays itself out
-     correctly whatever Torn does with the page around it. */
   #${PANEL_ID} {
     container-type: inline-size;
     margin: 10px 0 0;
@@ -695,7 +1298,6 @@
     font-family: Arial, Helvetica, sans-serif;
     color: #fff;
   }
-  /* Torn's own panel-title bar: blue-grey, lighter at the top. */
   .aue-title {
     height: 30px;
     line-height: 30px;
@@ -707,22 +1309,17 @@
     color: #fff;
     text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
   }
-  /* Three toggles to a line. The gradient is on the body rather than the
-     cells, so it stays one continuous fill however the grid reflows. */
   .aue-body {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     background: linear-gradient(180deg, #656565 0%, #373737 100%);
   }
-  /* Narrower panel, fewer columns, so a label never has to be cropped. */
   @container (max-width: 620px) {
     .aue-body { grid-template-columns: repeat(2, 1fr); }
   }
   @container (max-width: 400px) {
     .aue-body { grid-template-columns: 1fr; }
   }
-  /* For anything without container queries - the same steps, read off the
-     viewport instead, which is close enough on Torn's fixed-width layout. */
   @supports not (container-type: inline-size) {
     @media (max-width: 1000px) {
       .aue-body { grid-template-columns: repeat(2, 1fr); }
@@ -731,9 +1328,6 @@
       .aue-body { grid-template-columns: 1fr; }
     }
   }
-  /* Seams are drawn to the right of and below every cell; the panel's own
-     overflow clips the ones that land on its outside edges, so this needs
-     no per-column or per-row arithmetic. */
   .aue-row {
     display: flex;
     align-items: flex-start;
@@ -749,17 +1343,29 @@
     -webkit-tap-highlight-color: transparent;
     user-select: none;
   }
-  /* Highlights the row on hover, press, or keyboard focus. */
   .aue-row:hover,
   .aue-row:active,
   .aue-row:focus-within {
     background: linear-gradient(180deg, #525252 0%, #414141 100%);
   }
-  /* Down to one column a long label wraps rather than being cropped. The
-     line height matches the switch so the first line still sits level with
-     it, and the switch stays pinned to that top line. */
   .aue-label {
     line-height: 22px;
+  }
+  .aue-note {
+    display: block;
+    margin-top: -4px;
+    font-size: 11px;
+    line-height: 14px;
+    opacity: 0.7;
+  }
+  .aue-footnote {
+    padding: 6px 12px;
+    background: linear-gradient(180deg, #3a3a3a 0%, #2e2e2e 100%);
+    box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
+    font-size: 11px;
+    line-height: 15px;
+    color: #fff;
+    opacity: 0.75;
   }
   .aue-switch {
     position: relative;
@@ -773,7 +1379,6 @@
     width: 0;
     height: 0;
   }
-  /* Off state: near-black track, mid-grey knob on the left. */
   .aue-switch .aue-slider {
     position: absolute;
     inset: 0;
@@ -797,7 +1402,6 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     transition: transform 0.2s, background 0.15s;
   }
-  /* On state: filled track, dark knob slid to the right. */
   .aue-switch input:checked + .aue-slider {
     background: linear-gradient(180deg, #9e9e9e 0%, #6e6e6e 100%);
   }
@@ -828,11 +1432,6 @@
     background: linear-gradient(180deg, #666666 0%, #444444 100%);
   }
 
-  /* ------------------------------------------- items-per-page control */
-
-  /* Sits above the top right of the list it controls. The text colour is
-     inherited so it reads correctly in both of Torn's themes; only the
-     select carries a colour of its own. */
   .aue-per-page {
     display: flex;
     justify-content: flex-end;
@@ -848,9 +1447,6 @@
     opacity: 0.75;
     font-variant-numeric: tabular-nums;
   }
-  /* Plain and readable rather than themed: the open list is drawn by the
-     browser on its own white background, so light text vanishes in it.
-     Placeholder until these scripts share one dropdown style. */
   .aue-per-page-select {
     padding: 2px 6px;
     border: 1px solid rgba(0, 0, 0, 0.5);
@@ -865,12 +1461,118 @@
     background: #fff;
     color: #000;
   }
+
+  .aue-sort {
+    position: relative;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .aue-sort-mark {
+    position: absolute;
+    right: 3px;
+    top: 50%;
+    margin-top: -2px;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid currentColor;
+    opacity: 0;
+    transition: opacity 0.15s;
+    pointer-events: none;
+  }
+  .aue-sort-active .aue-sort-mark {
+    opacity: 1;
+  }
+  .aue-sort:hover .aue-sort-mark {
+    opacity: 0.5;
+  }
+  .aue-sort-active:hover .aue-sort-mark {
+    opacity: 1;
+  }
+  .aue-sort-desc .aue-sort-mark {
+    transform: rotate(180deg);
+  }
+
+  .aue-ticker-bar {
+    position: relative;
+  }
+  .aue-ticker-bar .header-swiper-container {
+    box-sizing: border-box;
+    padding-right: 38px;
+  }
+  .aue-ticker-manual .news-ticker-enter-done {
+    visibility: hidden;
+  }
+
+  #aue-ticker-nav {
+    position: absolute;
+    right: 4px;
+    top: 0;
+    bottom: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .aue-ticker-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    transition: color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .aue-ticker-arrow:hover,
+  .aue-ticker-arrow:active,
+  .aue-ticker-arrow:focus-visible {
+    color: #fff;
+  }
+  .aue-ticker-arrow::before {
+    content: "";
+    width: 0;
+    height: 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+  }
+  .aue-ticker-arrow-prev::before {
+    border-right: 7px solid currentColor;
+  }
+  .aue-ticker-arrow-next::before {
+    border-left: 7px solid currentColor;
+  }
+
+  #aue-ticker-overlay {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 38px;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  #aue-ticker-overlay .aue-ticker-link {
+    color: inherit;
+    text-decoration: none;
+  }
+  #aue-ticker-overlay .aue-ticker-text {
+    white-space: nowrap;
+  }
 `;
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = CSS;
+    style.textContent = CSS2;
     (document.head ?? document.documentElement).appendChild(style);
   }
 
@@ -903,6 +1605,12 @@
       const label = document.createElement("span");
       label.className = "aue-label";
       label.textContent = feature.label;
+      if (feature.note) {
+        const note = document.createElement("span");
+        note.className = "aue-note";
+        note.textContent = feature.note;
+        label.appendChild(note);
+      }
       row.appendChild(label);
       const toggle = document.createElement("label");
       toggle.className = "aue-switch";
@@ -917,38 +1625,253 @@
       row.appendChild(toggle);
       body.appendChild(row);
     }
+    const footnote = document.createElement("div");
+    footnote.className = "aue-footnote";
+    footnote.textContent = PANEL_FOOTNOTE;
+    panel.appendChild(footnote);
     return panel;
   }
-  function injectPanel() {
-    if (document.getElementById(PANEL_ID)) return;
+  function placePanel() {
     const anchor = findPrefsPanel();
     if (!anchor) return;
+    const existing = document.getElementById(PANEL_ID);
+    if (existing) {
+      if (existing.previousElementSibling !== anchor) {
+        anchor.insertAdjacentElement("afterend", existing);
+      }
+      return;
+    }
     injectStyles();
     anchor.insertAdjacentElement("afterend", buildPanel());
   }
   function installPreferencesPanel() {
-    injectPanel();
-    new MutationObserver(() => injectPanel()).observe(document.body, {
+    placePanel();
+    new MutationObserver(() => placePanel()).observe(document.body, {
       childList: true,
       subtree: true
     });
   }
 
-  // src/autumns-ui-enhancer/index.ts
-  var PREFERENCES_PATH = "/preferences.php";
-  installPageJumpBlock();
-  installRequestCapture();
-  function onReady() {
-    injectStyles();
-    if (location.pathname === PREFERENCES_PATH) {
-      installPreferencesPanel();
-    } else {
-      installListDisplay();
+  // src/autumns-ui-enhancer/wikiTheme.ts
+  var THEME_SETTING = "WIKI_THEME";
+  var DARK_CLASS = "aue-wiki-dark";
+  var STYLE_ID2 = "aue-wiki-theme";
+  var BUTTON_ID = "aue-wiki-theme-switch";
+  var CSS3 = `
+  html.${DARK_CLASS} {
+    color-scheme: dark;
+  }
+  html.${DARK_CLASS} body {
+    background: #17181a !important;
+    color: #c9c8c2 !important;
+  }
+  html.${DARK_CLASS} .side-panel-wrapper,
+  html.${DARK_CLASS} .card,
+  html.${DARK_CLASS} .torn-navigation-header {
+    background: #1f2124 !important;
+    border-color: #34383c !important;
+  }
+  html.${DARK_CLASS} .content-area-wrapper {
+    background: #1b1d1f !important;
+  }
+  html.${DARK_CLASS} #mw-content-text,
+  html.${DARK_CLASS} .mw-parser-output,
+  html.${DARK_CLASS} .mw-body-content,
+  html.${DARK_CLASS} #catlinks,
+  html.${DARK_CLASS} #toc,
+  html.${DARK_CLASS} .toc {
+    color: #c9c8c2 !important;
+    background: transparent !important;
+  }
+  html.${DARK_CLASS} #catlinks {
+    background: #1f2124 !important;
+    border-color: #34383c !important;
+  }
+  html.${DARK_CLASS} a,
+  html.${DARK_CLASS} #mw-content-text a {
+    color: #62b0f5 !important;
+  }
+  html.${DARK_CLASS} a.new,
+  html.${DARK_CLASS} #mw-content-text a.new {
+    color: #ff7f7f !important;
+  }
+  html.${DARK_CLASS} .torn-title-text,
+  html.${DARK_CLASS} .torn-title-text span {
+    color: #e4e4e4 !important;
+  }
+  html.${DARK_CLASS} .torn-back-button {
+    color: #9aa0a6 !important;
+  }
+  html.${DARK_CLASS} table.wikitable,
+  html.${DARK_CLASS} table.wikitable td,
+  html.${DARK_CLASS} table.wikitable th {
+    border-color: #3b4650 !important;
+    color: #c9c8c2 !important;
+  }
+  html.${DARK_CLASS} table.wikitable th {
+    background: #253039 !important;
+    color: #dfe7ee !important;
+  }
+  html.${DARK_CLASS} table.wikitable tr {
+    background: #1b1d1f !important;
+  }
+  html.${DARK_CLASS} table.wikitable tr:nth-of-type(even) {
+    background: #212427 !important;
+  }
+  html.${DARK_CLASS} table.wikitable td {
+    background: transparent !important;
+  }
+  html.${DARK_CLASS} input,
+  html.${DARK_CLASS} textarea,
+  html.${DARK_CLASS} select {
+    background: #26292c !important;
+    color: #c9c8c2 !important;
+    border-color: #3b4046 !important;
+  }
+  html.${DARK_CLASS} input::placeholder {
+    color: #85888c !important;
+  }
+  html.${DARK_CLASS} pre,
+  html.${DARK_CLASS} code,
+  html.${DARK_CLASS} .mw-code {
+    background: #232629 !important;
+    color: #d3d2cc !important;
+    border-color: #3b4046 !important;
+  }
+  html.${DARK_CLASS} hr {
+    border-color: #34383c !important;
+  }
+  html.${DARK_CLASS} #torn-back-to-top {
+    background: #26292c !important;
+    border-color: #3b4046 !important;
+  }
+  html.${DARK_CLASS} .nav-menu-mobile-switch {
+    background: rgba(90, 94, 98, 0.55) !important;
+  }
+
+  #${BUTTON_ID} {
+    position: fixed;
+    top: 6px;
+    left: 6px;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.75);
+    color: #55575a;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  html.${DARK_CLASS} #${BUTTON_ID} {
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(38, 41, 44, 0.85);
+    color: #c9c8c2;
+  }
+  #${BUTTON_ID}:hover,
+  #${BUTTON_ID}:active,
+  #${BUTTON_ID}:focus-visible {
+    color: #fff;
+    border-color: #fff;
+    background: rgba(38, 41, 44, 0.9);
+  }
+  #${BUTTON_ID} svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+  }
+`;
+  var MOON = `<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 12.2A6.6 6.6 0 0 1 7.8 4 6.6 6.6 0 1 0 16 12.2Z"/></svg>`;
+  var SUN = `<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.6"/><path d="M10 1.6v2.2M10 16.2v2.2M18.4 10h-2.2M3.8 10H1.6M15.9 4.1l-1.6 1.6M5.7 14.3l-1.6 1.6M15.9 15.9l-1.6-1.6M5.7 5.7 4.1 4.1"/></svg>`;
+  function systemTheme() {
+    try {
+      return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } catch {
+      return "light";
     }
   }
-  if (document.body) {
-    onReady();
+  function currentTheme() {
+    const stored = readSetting(THEME_SETTING, "");
+    return stored === "dark" || stored === "light" ? stored : systemTheme();
+  }
+  function applyTheme(theme) {
+    document.documentElement.classList.toggle(DARK_CLASS, theme === "dark");
+    const button = document.getElementById(BUTTON_ID);
+    if (button) paintButton(button, theme);
+  }
+  function paintButton(button, theme) {
+    const toDark = theme === "light";
+    button.innerHTML = toDark ? MOON : SUN;
+    const label = toDark ? "Switch to dark mode" : "Switch to light mode";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  }
+  function injectStyle() {
+    if (document.getElementById(STYLE_ID2)) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID2;
+    style.textContent = CSS3;
+    (document.head ?? document.documentElement).appendChild(style);
+  }
+  function addButton() {
+    if (!document.body || document.getElementById(BUTTON_ID)) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = BUTTON_ID;
+    paintButton(button, currentTheme());
+    button.addEventListener("click", () => {
+      const next = currentTheme() === "dark" ? "light" : "dark";
+      writeSetting(THEME_SETTING, next);
+      applyTheme(next);
+    });
+    document.body.appendChild(button);
+  }
+  function installWikiTheme() {
+    injectStyle();
+    applyTheme(currentTheme());
+    if (document.body) {
+      addButton();
+    } else {
+      document.addEventListener("DOMContentLoaded", addButton, { once: true });
+    }
+  }
+
+  // src/autumns-ui-enhancer/index.ts
+  var PREFERENCES_PATH = "/preferences.php";
+  var GAME_HOST = "www.torn.com";
+  var onGame = location.hostname === GAME_HOST;
+  if (onGame) {
+    installPageJumpBlock();
+    installRequestCapture();
   } else {
+    installWikiTheme();
+  }
+  function onReady() {
+    injectStyles();
+    if (!onGame) {
+      installListSort();
+      return;
+    }
+    installNewsTicker();
+    if (location.pathname === PREFERENCES_PATH) {
+      installPreferencesPanel();
+      return;
+    }
+    installListDisplay();
+    installListSort();
+  }
+  if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", onReady, { once: true });
+  } else {
+    onReady();
   }
 })();

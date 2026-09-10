@@ -1,22 +1,4 @@
-// List Display Extension
-//
-// Torn's paged lists (bounties, and everything else built on the same
-// "gallery-wrapper pagination" widget) show 20 rows and step by 20. This
-// adds an "Items per page" dropdown above the top right of the list, fills
-// the list out to the chosen size, and re-points the pager so next/previous
-// and the page numbers all step by that size instead.
-//
-// The server will not budge on 20: a request with count/limit/length/rows/
-// perPage/amount/size all still come back with exactly 20 rows. So a larger
-// page is assembled here by repeating the request Torn itself just made
-// with a higher start, and appending the rows. At the 100 cap that is five
-// requests for one view - the same five the pager would have made if you
-// had clicked next four times.
-//
-// Navigation is entirely hash-driven on these pages: setting
-// location.hash to "...&start=60" makes Torn fetch and render that page on
-// its own. That is what the pager rewrite uses, so nothing here has to know
-// which endpoint a given page talks to.
+// An items-per-page control for Torn's paged lists, and a pager that steps by it.
 
 import { log } from "./debug";
 import {
@@ -26,12 +8,6 @@ import {
   writeSetting,
 } from "./settings";
 
-// ------------------------------------------------------------- selectors
-//
-// Torn's hashed class names change between deploys, so everything matched
-// here is either a stable unhashed class or plain structure. Kept together
-// because these are the first things to break.
-
 /** The pager widget. Pages usually carry two, above and below the list. */
 const PAGINATION_SELECTOR = ".pagination";
 /** A numbered page link; the attribute holds Torn's own 20-per-page index. */
@@ -40,14 +16,17 @@ const PAGE_LINK_SELECTOR = "a.page-number[page]";
 const PAGE_GAP_SELECTOR = "span.points";
 const ARROW_PREV_SELECTOR = "i.pagination-left";
 const ARROW_NEXT_SELECTOR = "i.pagination-right";
-/** Torn marks a dead arrow rather than removing it. */
+/** The class Torn puts on a dead pager arrow. */
 const ARROW_DISABLED_CLASS = "disable";
 /** Layout spacer rows that sit inside a list but are not results. */
 const SPACER_CLASS = "clear";
 /** Candidates for the element that actually holds the result rows. */
 const ROW_CONTAINER_SELECTOR = "ul, ol, tbody";
-
-// --------------------------------------------------------------- tuning
+/** Page furniture that is full of `<ul>`s and is never a result list. */
+const NOT_A_LIST =
+  "#sidebarroot, #header-root, .header-wrapper-top, .header-wrapper-bottom, #chatRoot, .content-title, .breadcrumbs";
+/** As high as the walk goes: past this it is out of the page's content. */
+const CONTENT_ROOT_SELECTOR = ".content-wrapper, #mainContainer";
 
 /** Rows the server returns per request, whatever we ask it for. */
 const PAGE_STEP = 20;
@@ -57,12 +36,7 @@ const PAGE_SIZES = [20, 40, 60, 80, 100];
 const THROTTLE_MS = 150;
 /** Settles the mutation observer before re-reading the page. */
 const SETTLE_MS = 150;
-/**
- * The longest a pass can be held off. Torn and any other script on the page
- * mutate it more or less continuously, and a plain debounce restarts its
- * timer on every one of those - so without a ceiling a pass can be deferred
- * indefinitely on a busy page.
- */
+/** The longest a pass can be held off. */
 const MAX_SETTLE_MS = 1000;
 
 const SIZE_SETTING = "ITEMS_PER_PAGE";
@@ -74,8 +48,6 @@ const EXTRA_ROW_ATTR = "data-aue-extra";
 /** Stops the pager being rebuilt on every mutation it causes itself. */
 const PAGER_STATE_ATTR = "data-aue-pager";
 
-// ---------------------------------------------------------------- state
-
 interface CapturedRequest {
   url: string;
   body: string;
@@ -86,73 +58,37 @@ const START_IN_BODY = /(^|&)start=\d+/;
 /** Matches the paging offset in the URL hash. */
 const START_IN_HASH = /[?&]start=(\d+)/;
 
-/**
- * The last list request Torn made. Repeating it with a different start is
- * how extra rows are fetched, and it means this file never has to know a
- * page's endpoint or step name.
- */
+/** The last list request Torn made. */
 let lastRequest: CapturedRequest | null = null;
 /** Set while this script is issuing its own requests, so they aren't captured. */
 let ownRequest = false;
-/** Bumped to abandon a top-up whose page has since changed underneath it. */
+/** Identifies the page a top-up belongs to. */
 let generation = 0;
-/** True while rows are being appended, so the observer ignores our writes. */
+/** True while this script is changing the list. */
 let writing = false;
-/**
- * The fill in progress, if any.
- *
- * Keyed by the list element as well as the page, because Torn replaces the
- * whole list block on every render: a fill still running against the block
- * that is about to be thrown away must not stand in for the one the new
- * block needs.
- */
+/** The fill in progress, if any. */
 let filling: { key: string; container: Element } | null = null;
 /** Whether Torn has already been nudged into making a list request. */
 let primed = false;
-/**
- * Runs a pass once a replayable request appears.
- *
- * Passes are otherwise only driven by DOM mutations, so a request captured
- * after the last mutation of a render would sit unused until something else
- * happened to move the page - in practice until the reader clicked. The
- * capture is the event worth acting on, so it says so directly.
- */
+/** Runs a pass once a replayable request appears. */
 let onRequestCaptured: (() => void) | null = null;
 
 /** Each pager's markup as Torn rendered it, for putting back on 20. */
 const originalPagers = new WeakMap<Element, string>();
-/**
- * Torn's own page count for each pager, read once before its numbers are
- * rewritten. Without this the rewrite would go on to read back its own
- * renumbered links and shrink the count on every pass. Torn builds a fresh
- * pager element on every render, so these entries never go stale.
- */
+/** Torn's own page count for each pager, read once before its numbers are rewritten. */
 const basePageCounts = new WeakMap<Element, number>();
 
+/** Returns the page size the reader has chosen. */
 function pageSize(): number {
   const stored = Number(readSetting(SIZE_SETTING, String(PAGE_STEP)));
   return PAGE_SIZES.includes(stored) ? stored : PAGE_STEP;
 }
 
-// ---------------------------------------------------- request capture
-
 interface XhrWithUrl extends XMLHttpRequest {
   __aueUrl?: string;
 }
 
-/**
- * Remembers the shape of Torn's list requests. Installed unconditionally at
- * document-start - it only records, and the feature switch is checked before
- * anything is actually fetched.
- */
-/**
- * Records a request only if it could be this list.
- *
- * Torn makes plenty of other POSTs while a page lives, and some carry a
- * "start" of their own. Topping up from one of those fetches a document
- * with no list in it, so nothing gets added and the failure is silent -
- * hence the check that the request goes to the page we are actually on.
- */
+/** Records a request when it is one that could fetch this list. */
 function rememberRequest(url: string, body: string): boolean {
   if (!START_IN_BODY.test(body)) return false;
   let path: string;
@@ -163,11 +99,11 @@ function rememberRequest(url: string, body: string): boolean {
   }
   if (path !== location.pathname) return false;
   lastRequest = { url, body };
-  // Values are stripped - request bodies carry tokens.
   log("capture: list request for", path, body.replace(/=[^&]*/g, "=*"));
   return true;
 }
 
+/** Starts recording the list requests Torn makes. */
 export function installRequestCapture(): void {
   const openOriginal = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (
@@ -184,10 +120,10 @@ export function installRequestCapture(): void {
     body?: Document | XMLHttpRequestBodyInit | null,
   ) {
     if (!ownRequest && typeof body === "string") {
-      const captured = rememberRequest(this.__aueUrl ?? location.pathname, body);
-      // Deliberately not on send: Torn has not got the reply yet, let alone
-      // drawn it, so a pass scheduled here would work on a list about to be
-      // thrown away.
+      const captured = rememberRequest(
+        this.__aueUrl ?? location.pathname,
+        body,
+      );
       if (captured) {
         this.addEventListener("loadend", () => onRequestCaptured?.(), {
           once: true,
@@ -215,16 +151,12 @@ export function installRequestCapture(): void {
     const sent = (
       fetchOriginal as (...a: unknown[]) => Promise<Response>
     ).apply(this, args);
-    // As above - a pass is worth scheduling once the reply is in, not when
-    // the request goes out.
     if (captured) void sent.then(() => onRequestCaptured?.()).catch(() => {});
     return sent;
   } as typeof window.fetch;
 }
 
-// ------------------------------------------------------------ the list
-
-interface ListTarget {
+export interface ListTarget {
   widget: HTMLElement;
   /** The block holding the pager; our dropdown goes directly above it. */
   pagerBlock: HTMLElement;
@@ -234,13 +166,10 @@ interface ListTarget {
   container: HTMLElement;
 }
 
-/**
- * How far out from the pager the list is looked for. A pager and its list
- * are always structurally close; without a limit the walk can escape into
- * the surrounding page and mistake something like a nav menu for a list.
- */
+/** How far out from the pager the list is looked for. */
 const MAX_CLIMB = 4;
 
+/** Whether a child of a list is a result row. */
 function isRow(element: Element): boolean {
   if (element.classList.contains(SPACER_CLASS)) return false;
   return (
@@ -248,22 +177,21 @@ function isRow(element: Element): boolean {
   );
 }
 
-function rowsOf(container: Element): HTMLElement[] {
+/** Returns a list's result rows. */
+export function rowsOf(container: Element): HTMLElement[] {
   return [...container.children].filter(isRow) as HTMLElement[];
 }
 
-/**
- * The busiest list inside a subtree. A full page of results beats a header
- * row, so anything holding a whole page wins outright; failing that, the
- * longest list is the best guess available.
- */
+/** Returns the busiest result list inside a subtree. */
 function findRowContainer(root: Element): HTMLElement | null {
   if (root.id === CONTROL_ID) return null;
+  if (root.closest(NOT_A_LIST)) return null;
   const candidates: HTMLElement[] = [];
   for (const element of root.querySelectorAll<HTMLElement>(
     ROW_CONTAINER_SELECTOR,
   )) {
     if (element.closest(PAGINATION_SELECTOR)) continue;
+    if (element.closest(NOT_A_LIST)) continue;
     if (rowsOf(element).length >= 2) candidates.push(element);
   }
   if (candidates.length === 0) return null;
@@ -275,35 +203,42 @@ function findRowContainer(root: Element): HTMLElement | null {
   );
 }
 
-/**
- * The siblings either side of a node, stepping over our own control.
- *
- * Without that step the control hides the list from the walk the moment it
- * is inserted: the next pass would fail at this level, climb higher, and
- * settle on something else entirely - then move back once the control was
- * out of the way again, ping-ponging on every mutation.
- */
+/** Whether an element is an empty layout spacer. */
+function isSpacer(element: Element): boolean {
+  return (
+    element.childElementCount === 0 && (element.textContent ?? "").trim() === ""
+  );
+}
+
+/** Returns a node's siblings, nearest first. */
 function siblingsOf(node: Element): Element[] {
-  const found: Element[] = [];
-  for (const direction of [
-    "nextElementSibling",
-    "previousElementSibling",
+  const after: Element[] = [];
+  const before: Element[] = [];
+  for (const [direction, into] of [
+    ["nextElementSibling", after],
+    ["previousElementSibling", before],
   ] as const) {
     let sibling = node[direction];
-    while (sibling && sibling.id === CONTROL_ID) sibling = sibling[direction];
-    if (sibling) found.push(sibling);
+    while (sibling) {
+      if (sibling.id !== CONTROL_ID && !isSpacer(sibling)) into.push(sibling);
+      sibling = sibling[direction];
+    }
+  }
+  const found: Element[] = [];
+  for (let step = 0; step < Math.max(after.length, before.length); step += 1) {
+    const next = after[step];
+    const previous = before[step];
+    if (next) found.push(next);
+    if (previous) found.push(previous);
   }
   return found;
 }
 
-/**
- * Walks out from the pager looking for the list it belongs to. The widget
- * usually sits immediately before the list block, sometimes after it, and
- * on some pages both - either way one of them is a sibling at some level.
- */
+/** Returns the list a pager belongs to. */
 function findList(widget: HTMLElement): ListTarget | null {
   let node: Element | null = widget;
-  for (let level = 0; node && node !== document.body && level <= MAX_CLIMB; ) {
+  for (let level = 0; node && node !== document.body && level <= MAX_CLIMB;) {
+    if (node.matches(CONTENT_ROOT_SELECTOR)) break;
     for (const sibling of siblingsOf(node)) {
       const container = findRowContainer(sibling);
       if (container) {
@@ -321,24 +256,25 @@ function findList(widget: HTMLElement): ListTarget | null {
   return null;
 }
 
-function findTarget(): ListTarget | null {
+/** Returns the list on the page, with the pager to hang the control off. */
+export function findTarget(): ListTarget | null {
+  let below: ListTarget | null = null;
   for (const widget of document.querySelectorAll<HTMLElement>(
     PAGINATION_SELECTOR,
   )) {
     if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
     const target = findList(widget);
-    if (target) return target;
+    if (!target) continue;
+    const listIsAfterPager =
+      target.pagerBlock.compareDocumentPosition(target.block) &
+      Node.DOCUMENT_POSITION_FOLLOWING;
+    if (listIsAfterPager) return target;
+    below ??= target;
   }
-  return null;
+  return below;
 }
 
-// ------------------------------------------------------------ the hash
-
-/**
- * The hash prefix a page link points at, ready for a start to be appended.
- * Torn writes these itself ("#/!p=main&"), so reading one back means this
- * never has to know a page's own hash format.
- */
+/** Returns the hash prefix a page link points at. */
 function hashTemplate(widget: Element): string | null {
   const link = widget.querySelector<HTMLAnchorElement>(PAGE_LINK_SELECTOR);
   let href = link?.getAttribute("href") ?? "";
@@ -350,11 +286,13 @@ function hashTemplate(widget: Element): string | null {
   return /[?&]$/.test(href) ? href : `${href}&`;
 }
 
+/** Returns the paging offset the page is currently at. */
 function currentStart(): number {
   const match = START_IN_HASH.exec(location.hash);
   return match ? Number(match[1]) : 0;
 }
 
+/** Sends the reader to a page of the list. */
 function goToPage(widget: Element, page: number): void {
   const template = hashTemplate(widget);
   if (!template) return;
@@ -364,8 +302,6 @@ function goToPage(widget: Element, page: number): void {
   location.hash = `${template}start=${start}`;
 }
 
-// ----------------------------------------------------------- the pager
-
 interface PagerModel {
   /** Torn's own page count, at its fixed 20 per page. */
   base: number;
@@ -373,11 +309,7 @@ interface PagerModel {
   total: number;
 }
 
-/**
- * Torn's own highest page number, which is always counted 20 to a page
- * whatever we are showing. Read once per pager, before the rewrite below
- * replaces those numbers with ours.
- */
+/** Returns Torn's own page count for a pager. */
 function basePageCount(widget: Element): number | null {
   const stored = basePageCounts.get(widget);
   if (stored !== undefined) return stored;
@@ -388,13 +320,9 @@ function basePageCount(widget: Element): number | null {
   if (links.length === 0) return null;
 
   const pageOf = (link: Element) => Number(link.getAttribute("page")) || 1;
-  // Torn tags its highest page. Trust that over scanning, because a scan can
-  // catch a pager Torn has only partly built and read far too low a count.
   const last = widget.querySelector(`${PAGE_LINK_SELECTOR}.last`);
   const pages = last ? pageOf(last) : Math.max(1, ...links.map(pageOf));
 
-  // Only a pager carrying that marker is known to be finished, so only its
-  // count is worth keeping. An unfinished one is used but re-read next pass.
   if (last) basePageCounts.set(widget, pages);
   log(
     "pager: Torn reports",
@@ -406,6 +334,7 @@ function basePageCount(widget: Element): number | null {
   return pages;
 }
 
+/** Returns which page of how many the reader is on. */
 function pagerModel(widget: Element, size: number): PagerModel | null {
   const pages20 = basePageCount(widget);
   if (pages20 === null) return null;
@@ -414,7 +343,7 @@ function pagerModel(widget: Element, size: number): PagerModel | null {
   return { base: pages20, current, total };
 }
 
-/** 1, the pages either side of the current one, and the last page. */
+/** Returns the page numbers a pager should offer. */
 function pagesToShow(model: PagerModel): number[] {
   const wanted = new Set<number>([1, model.total]);
   for (let page = model.current - 2; page <= model.current + 2; page += 1) {
@@ -423,25 +352,22 @@ function pagesToShow(model: PagerModel): number[] {
   return [...wanted].sort((a, b) => a - b);
 }
 
-/**
- * Rebuilds the numbers so they count in the chosen page size. Torn's own
- * markup is cloned rather than recreated, so the pager keeps its styling
- * whatever the current theme is doing.
- */
+/** Clears an element's inline display. */
+function unhide(element: HTMLElement): void {
+  element.style.removeProperty("display");
+}
+
+/** Renumbers a pager to count in the chosen page size. */
 function rewritePager(widget: HTMLElement, size: number): void {
   const model = pagerModel(widget, size);
   if (!model) return;
 
   const state = `${size}:${model.current}:${model.total}`;
-  // Logged past the early return, so the log records rewrites rather than
-  // every pass that looked and found nothing to do.
   if (widget.getAttribute(PAGER_STATE_ATTR) === state) return;
   log("pager: page", model.current, "of", model.total, "at", size, "per page");
 
   if (!originalPagers.has(widget)) {
     originalPagers.set(widget, widget.innerHTML);
-    // Torn's numbering is about to be replaced by ours, so its count has to
-    // be remembered now even if the pager had not finished rendering.
     basePageCounts.set(widget, model.base);
   }
 
@@ -449,14 +375,14 @@ function rewritePager(widget: HTMLElement, size: number): void {
   const gap = widget.querySelector(PAGE_GAP_SELECTOR);
   if (!template) return;
 
-  // Everything after the numbers - usually the next arrow and the right-hand
-  // cap - stays put; the numbers are rebuilt in front of it.
   const nextArrow = widget.querySelector(ARROW_NEXT_SELECTOR)?.closest("a");
   const anchorPoint =
     nextArrow ?? widget.querySelector(".pagination-r") ?? null;
 
   const blank = template.cloneNode(true) as HTMLAnchorElement;
   const blankGap = gap?.cloneNode(true) ?? null;
+  unhide(blank);
+  if (blankGap instanceof HTMLElement) unhide(blankGap);
 
   for (const old of widget.querySelectorAll(
     `${PAGE_LINK_SELECTOR}, ${PAGE_GAP_SELECTOR}`,
@@ -487,7 +413,6 @@ function rewritePager(widget: HTMLElement, size: number): void {
   if (anchorPoint) widget.insertBefore(fragment, anchorPoint);
   else widget.appendChild(fragment);
 
-  // Torn disables an arrow by class rather than removing it, so match that.
   const prev = widget.querySelector(ARROW_PREV_SELECTOR);
   const next = widget.querySelector(ARROW_NEXT_SELECTOR);
   prev?.classList.toggle(ARROW_DISABLED_CLASS, model.current <= 1);
@@ -496,7 +421,7 @@ function rewritePager(widget: HTMLElement, size: number): void {
   widget.setAttribute(PAGER_STATE_ATTR, state);
 }
 
-/** Puts a pager back the way Torn rendered it, for a return to 20. */
+/** Puts a pager back the way Torn rendered it. */
 function restorePager(widget: HTMLElement): void {
   const original = originalPagers.get(widget);
   if (original === undefined) return;
@@ -506,11 +431,7 @@ function restorePager(widget: HTMLElement): void {
   basePageCounts.delete(widget);
 }
 
-/**
- * Takes over pager clicks while a custom page size is in force. Torn's own
- * handler is delegated to the document, so stopping the event during the
- * capture phase keeps it from ever running and jumping by 20.
- */
+/** Takes over pager clicks while a custom page size is in force. */
 function installPagerClicks(): void {
   document.addEventListener(
     "click",
@@ -550,17 +471,12 @@ function installPagerClicks(): void {
   );
 }
 
-// -------------------------------------------------------- fetching rows
-
+/** Waits for a number of milliseconds. */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * The same list in a fetched page. Torn's response is a whole page
- * fragment, so the list is picked out the same way it was on the live page,
- * preferring one that shares a class with it.
- */
+/** Returns the same list, found inside a fetched page. */
 function matchingContainer(
   parsed: Document,
   live: HTMLElement,
@@ -580,6 +496,7 @@ function matchingContainer(
   );
 }
 
+/** Returns the rows of the list at a given offset. */
 async function fetchRows(
   start: number,
   live: HTMLElement,
@@ -612,9 +529,6 @@ async function fetchRows(
 
   const parsed = new DOMParser().parseFromString(html, "text/html");
   const container = matchingContainer(parsed, live);
-  // No list in the reply means the captured request was not this list after
-  // all. Forget it so the next one Torn makes can replace it, rather than
-  // fetching the same useless page again.
   if (!container) lastRequest = null;
   const rows = container ? rowsOf(container) : [];
   log(
@@ -623,62 +537,59 @@ async function fetchRows(
     "->",
     html.length,
     "chars,",
-    container ? `matched ${container.tagName}.${container.className}` : "NO LIST FOUND",
+    container
+      ? `matched ${container.tagName}.${container.className}`
+      : "NO LIST FOUND",
     `${rows.length} rows`,
   );
   return rows;
 }
 
+/** Removes the rows this script added to a list. */
 function removeExtraRows(container: HTMLElement): void {
   for (const row of container.querySelectorAll(`[${EXTRA_ROW_ATTR}]`)) {
     row.remove();
   }
 }
 
-/**
- * Fills the list out to the chosen size by repeating Torn's own request at
- * higher offsets. Runs one request at a time, and gives up the moment the
- * page changes underneath it.
- */
+/** Fills a list out to the chosen page size. */
 async function fillList(target: ListTarget, size: number): Promise<void> {
   const { container } = target;
   const have = rowsOf(container).length;
   if (have >= size) return;
-  // A short page is the end of the list, so there is nothing to add.
   if (have < PAGE_STEP) {
     log("fill: skipped -", have, "rows is a short page, so this is the end");
     return;
   }
 
-  // A list Torn has already replaced is not worth filling; the pass for its
-  // replacement will do the work.
   if (!container.isConnected) return;
 
   const start = currentStart();
   const key = `${start}:${size}`;
-  // Every DOM change on the page schedules another pass, and Torn plus any
-  // other script mutate it constantly. Without this a pass starting mid-fetch
-  // would abandon the one already in flight, and on a busy page no fill would
-  // ever get to finish. It has to be this exact list though - see above.
   if (filling && filling.key === key && filling.container === container) return;
 
   const mine = generation;
   filling = { key, container };
   const requests = Math.ceil(size / PAGE_STEP);
-  log("fill:", have, "rows present, want", size, "-", requests - 1, "more request(s)");
+  log(
+    "fill:",
+    have,
+    "rows present, want",
+    size,
+    "-",
+    requests - 1,
+    "more request(s)",
+  );
   const spacer = container.querySelector(`:scope > .${SPACER_CLASS}`);
 
   try {
     for (let index = 1; index < requests; index += 1) {
       setStatus(`Loading ${index + 1}/${requests}`);
       const rows = await fetchRows(start + index * PAGE_STEP, container);
-      // Only a real navigation or a size change bumps the epoch.
       if (mine !== generation) {
         log("fill: abandoned, the page moved on");
         return;
       }
-      // Torn re-rendered while this was in flight, so these rows belong to a
-      // list that is no longer on the page. The pass for the new one fills it.
       if (!container.isConnected) {
         log("fill: abandoned, Torn replaced the list");
         return;
@@ -710,13 +621,13 @@ async function fillList(target: ListTarget, size: number): Promise<void> {
   }
 }
 
-// -------------------------------------------------------- the dropdown
-
+/** Shows progress beside the dropdown. */
 function setStatus(text: string): void {
   const status = document.querySelector<HTMLElement>(`.${STATUS_CLASS}`);
   if (status) status.textContent = text;
 }
 
+/** Returns the items-per-page control. */
 function buildControl(): HTMLElement {
   const bar = document.createElement("div");
   bar.id = CONTROL_ID;
@@ -748,6 +659,7 @@ function buildControl(): HTMLElement {
   return bar;
 }
 
+/** Applies a newly chosen page size. */
 function onSizeChange(size: number): void {
   writeSetting(SIZE_SETTING, String(size));
   generation += 1;
@@ -765,19 +677,13 @@ function onSizeChange(size: number): void {
   }
   writing = false;
 
-  // Land on a boundary of the new size, so the pages line up from here on.
   const page = Math.floor(currentStart() / size) + 1;
   const before = location.hash;
   goToPage(target.widget, page);
-  // An unchanged hash fires no hashchange, so nothing would re-render.
   if (location.hash === before) setTimeout(() => void apply(), 0);
 }
 
-/**
- * Puts the dropdown directly above the pager and leaves it there. Moving it
- * is deliberately the exception: a move mid-interaction would close the
- * select under the pointer.
- */
+/** Puts the control above the list and keeps it there. */
 function ensureControl(target: ListTarget): void {
   const existing = document.getElementById(CONTROL_ID);
   if (existing) {
@@ -796,23 +702,12 @@ function ensureControl(target: ListTarget): void {
   writing = false;
 }
 
+/** Takes the control off the page. */
 function removeControl(): void {
   document.getElementById(CONTROL_ID)?.remove();
 }
 
-// ----------------------------------------------------------------- run
-
-/**
- * Gets Torn to fetch the list it has already drawn, purely so its request
- * can be captured and replayed at other offsets.
- *
- * Only done when the hash carries no offset yet, which is how these pages
- * are normally entered - that navigation is one Torn would have made itself
- * and lands on the same page the reader is already looking at. Reloading
- * straight onto an offset is left alone rather than bounced through another
- * page: the list simply stays at Torn's own 20 until the next click, which
- * captures a request and brings everything back.
- */
+/** Gets Torn to make a list request that can be replayed. */
 function primeRequest(target: ListTarget): void {
   if (primed || START_IN_HASH.test(location.hash)) return;
   primed = true;
@@ -820,6 +715,7 @@ function primeRequest(target: ListTarget): void {
   goToPage(target.widget, Math.floor(currentStart() / pageSize()) + 1);
 }
 
+/** Brings the list, the pager and the control into line with the chosen size. */
 async function apply(): Promise<void> {
   if (!isEnabled(LIST_DISPLAY_EXTENSION)) {
     removeControl();
@@ -847,11 +743,6 @@ async function apply(): Promise<void> {
     return;
   }
 
-  // Nothing can be topped up until Torn has made a list request worth
-  // replaying, and on a fresh load it renders the list server-side and makes
-  // none. Renumbering the pager over a list that cannot grow is the worst of
-  // both worlds - it looks changed and no rows arrive - so leave the page
-  // exactly as Torn built it until there is something to replay.
   if (!lastRequest) {
     log("apply: no list request to replay yet, leaving the page alone");
     writing = true;
@@ -877,11 +768,10 @@ async function apply(): Promise<void> {
   await fillList(target, size);
 }
 
+/** Adds an items-per-page control to Torn's paged lists. */
 export function installListDisplay(): void {
   installPagerClicks();
 
-  // Torn re-renders the whole list block on every page change, so the work
-  // is redone whenever the DOM settles rather than hooked to one event.
   let timer = 0;
   let deadline = 0;
   const schedule = () => {
