@@ -1,0 +1,14 @@
+{
+  "name": "Autumn's Buy Helper",
+  "version": "0.1.0",
+  "description": "Marks up the item market and other players' bazaars with your own reference prices, so a listing worth buying is obvious at a glance. The source spreadsheet is set from a panel on the preferences page.",
+  "match": [
+    "https://www.torn.com/preferences.php*",
+    "https://www.torn.com/page.php*",
+    "https://www.torn.com/bazaar.php*"
+  ],
+  "grant": "GM_xmlhttpRequest",
+  "connect": "*",
+  "run-at": "document-idle",
+  "noframes": true
+}
