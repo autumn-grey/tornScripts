@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OC Travel Guard
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.1
+// @version      1.0.2
 // @description  Blocks travel to any destination you could not fly back from before your Organised Crime starts.
 // @author       AutumnGrey
 // @license      MIT
@@ -111,7 +111,7 @@
     if (remaining !== null) {
       return { kind: OC_TIMER, startMs: Date.now() + remaining };
     }
-    if (/\d+\s*of\s*\d+\s*slots?\s*filled/i.test(text)) {
+    if (/slots?\s*filled/i.test(text)) {
       return { kind: OC_RECRUITING };
     }
     if (/waiting\s*to\s*initiate/i.test(text)) return { kind: OC_IMMINENT };

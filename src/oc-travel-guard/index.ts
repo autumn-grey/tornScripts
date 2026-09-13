@@ -143,9 +143,9 @@ function classifyOcText(text: string): OcReading | null {
   }
 
   // "3 of 5 slots filled" - still recruiting.
-  // Do not anchor this with \b: the tooltip's lines run together, so the
-  // count arrives glued to the end of the crime's name.
-  if (/\d+\s*of\s*\d+\s*slots?\s*filled/i.test(text)) {
+  // Do not match the count as well: the tooltip's lines run together, so it
+  // arrives glued to whatever the crime is called.
+  if (/slots?\s*filled/i.test(text)) {
     return { kind: OC_RECRUITING };
   }
 
