@@ -123,7 +123,10 @@ function buildSourceSheetField(): HTMLElement {
 
   const hint = document.createElement("div");
   hint.className = "stf-hint";
-  hint.textContent = "Paste a link to a publicly viewable spreadsheet and press enter.";
+  hint.textContent =
+    "Paste a link to a publicly viewable Google sheet with one or more " +
+    "headers called 'item' and press enter. If prompted, select always " +
+    "allow for this domain.";
   field.appendChild(hint);
 
   input.addEventListener("keydown", (event) => {

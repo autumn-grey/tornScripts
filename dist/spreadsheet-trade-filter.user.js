@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Spreadsheet Trade Filter
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.0.1
 // @description  Adds a max button beside every quantity box on the trade item list, and outlines the items that appear on your source spreadsheet.
 // @author       AutumnGrey
 // @license      MIT
@@ -751,7 +751,7 @@
     field.appendChild(status);
     const hint = document.createElement("div");
     hint.className = "stf-hint";
-    hint.textContent = "Paste a link to a publicly viewable spreadsheet and press enter.";
+    hint.textContent = "Paste a link to a publicly viewable Google sheet with one or more headers called 'item' and press enter. If prompted, select always allow for this domain.";
     field.appendChild(hint);
     input.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
