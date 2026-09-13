@@ -150,7 +150,9 @@ function classifyOcText(text: string): OcReading | null {
   }
 
   // "Waiting to initiate..." - the crime is due.
-  if (/waiting\s*to\s*initiate/i.test(text)) return { kind: OC_IMMINENT };
+  // Do not match the words in front of it: the tooltip's lines run together,
+  // so they arrive glued to whatever the crime is called.
+  if (/initiate/i.test(text)) return { kind: OC_IMMINENT };
 
   return null;
 }
