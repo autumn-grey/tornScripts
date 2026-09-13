@@ -1,59 +1,35 @@
 // OC Travel Guard
 //
-// One job: on the travel page, if you could not fly to the selected destination
-// and back before your Organised Crime starts, grey out the button that would
-// commit the flight, swallow clicks on it, and drop an angry raccoon over it.
-//
-// Desktop and mobile put that button in different places. Desktop has a TRAVEL
-// button carrying aria-label="Travel to <country>". Mobile lists destinations
-// in a table and only shows a CONTINUE button once you pick one, inside a
-// confirmation block. Both are handled; see findTravelButtons().
-//
-//   now + 2 * (flight time * FLIGHT_VARIANCE) + SAFETY_MARGIN > OC start
-//     => blocked
-//
-// A crime does not always have a countdown to read. It may be recruiting, it
-// may be about to initiate, or there may be no crime at all. Those are real
-// answers rather than failures, and treating them as such is what stops the
-// tooltip probe running forever; see the OC state machine below.
-//
-// The page also gets a small module below the title: two switches (guard on/off
-// and testing mode) plus a panel reporting the OC countdown, the projected
-// return time, and whether the selected flight is safe.
+// Blocks the button that commits a flight you could not return from before
+// your Organised Crime starts, and reports the maths in a panel below the
+// page title.
 
-// esbuild inlines this as a data: URI at build time (see the loader map in
-// build.mjs), so the built .user.js carries the image and fetches nothing.
+// Inlined as a data: URI at build time.
 import raccoonAngry from "./raccoonAngry.png";
 
 const FLIGHT_VARIANCE = 1.03;
 const SAFETY_MARGIN_MS = 5 * 60_000;
 
-// Testing mode inflates the margin absurdly so every destination blocks, which
-// is the only practical way to eyeball the overlay without an OC due shortly.
-const TEST_SAFETY_MARGIN_MS = 100_000 * 60_000;
-
-// Torn's class names are hashed per deploy, so match on aria-labels, hrefs and
-// framework attributes instead. Everything selector-shaped lives here.
+// Every selector this script matches on.
 const SELECTORS = {
-  // Sidebar OC icon. Its aria-label carries the crime name but NOT the timer;
-  // the countdown only exists in the tooltip it opens on hover.
+  // Sidebar OC icon.
   ocIcon: [
     'a[aria-label^="Organized Crime" i]',
     'a[aria-label^="Organised Crime" i]',
     'a[href*="factions.php"][href*="tab=crimes"]',
   ].join(", "),
+  // The same icon, but only where its aria-label names a crime.
+  ocIconLabelled: [
+    'a[aria-label^="Organized Crime" i]',
+    'a[aria-label^="Organised Crime" i]',
+  ].join(", "),
   // Where floating-ui mounts that tooltip.
   tooltip: '[data-floating-ui-portal], [role="tooltip"]',
   // The travel button, e.g. aria-label="Travel to Argentina".
   travelButton: 'button[aria-label^="Travel to" i]',
-  // Fallback if the aria-label ever changes: scan leaf nodes for the caption.
+  // Leaf nodes scanned for a button's caption.
   buttonish: "button, a, span, div",
-  // Chrome that is never the travel control no matter what it says. Both the
-  // sidebar and the mobile top bar carry a "TRAVEL" link, and the caption
-  // fallback below would otherwise happily grey that out instead.
-  //
-  // Matched by id and role rather than by class substring: Torn's hashed class
-  // names could contain "menu" by accident and swallow a real match.
+  // Chrome that is never the travel control, whatever its caption says.
   navigation: [
     "nav",
     "aside",
@@ -66,12 +42,12 @@ const SELECTORS = {
 
 const BUTTON_LABELS = ["TRAVEL"];
 
-// Mobile commits the flight through a CONTINUE button in its confirmation
-// block, rather than through a TRAVEL button.
+// The caption on mobile's button that commits the flight.
 const CONFIRM_LABELS = ["CONTINUE"];
 
 const BLOCK_ATTR = "data-ocg-blocked";
-const OWN_CLASS = "ocg-own"; // marks nodes we injected, so we never read them back
+// Marks the nodes this script injected.
+const OWN_CLASS = "ocg-own";
 const OVERLAY_CLASS = "ocg-overlay";
 
 const TOGGLE_BAR_CLASS = "ocg-toggle-bar";
@@ -79,7 +55,6 @@ const TOGGLE_ROW_CLASS = "ocg-toggle-row";
 const TOGGLE_SWITCH_CLASS = "ocg-switch";
 const TOGGLE_BAR_ID = "ocg-toggle-bar";
 const PANEL_CLASS = "ocg-panel";
-const TOGGLE_GROUP_CLASS = "ocg-toggle-group";
 const STATUS_GROUP_CLASS = "ocg-status-group";
 const STATUS_ROW_CLASS = "ocg-status-row";
 const STATUS_OC_ID = "ocg-status-oc";
@@ -88,12 +63,10 @@ const STATUS_MESSAGE_ID = "ocg-status-message";
 
 const REPORT_CLASS = "ocg-report";
 const REPORT_COPY_CLASS = "ocg-report-copy";
-// Where a user is asked to send tooltip wording this script did not know.
+// Where the report box sends unrecognised tooltip wording.
 const REPORT_URL = "https://www.torn.com/messages.php#/p=compose&XID=4386333";
 
-// Every destination Torn flies to. Used to recognise the selected country on
-// mobile, where the confirm button does not name it — see
-// findSelectedDestination().
+// Every destination Torn flies to.
 const TRAVEL_COUNTRIES = [
   "Mexico",
   "Cayman Islands",
@@ -137,73 +110,64 @@ function parseWordyDuration(text: string): number | null {
 
 // ------------------------------------------------------------- step 1: OC
 
-// The states an Organized Crime can be in, as read from its tooltip. Anything
-// other than "unknown" is a final answer, and that is what stops the tooltip
-// being reopened forever when there is no countdown to find.
+// The states an Organized Crime can be in, as read from its tooltip.
 const OC_UNKNOWN = "unknown";
 const OC_TIMER = "timer";
 const OC_IMMINENT = "imminent";
 const OC_RECRUITING = "recruiting";
 const OC_NONE = "none";
+const OC_UNREADABLE = "unreadable";
 
 type OcKind =
   | typeof OC_UNKNOWN
   | typeof OC_TIMER
   | typeof OC_IMMINENT
   | typeof OC_RECRUITING
-  | typeof OC_NONE;
+  | typeof OC_NONE
+  | typeof OC_UNREADABLE;
 
-/** A state actually read off a tooltip. "unknown" is never one of these. */
+/** A state actually read off a tooltip. */
 type OcReading =
   | { kind: typeof OC_TIMER; startMs: number }
   | { kind: typeof OC_IMMINENT }
   | { kind: typeof OC_RECRUITING };
 
-/** Works out which of those states a tooltip's text is describing. */
+/** Which state a tooltip's text is describing. */
 function classifyOcText(text: string): OcReading | null {
   if (!/organi[sz]ed\s*crime/i.test(text)) return null;
 
-  // A countdown is the common case, and is tested first because a crime that
-  // has one may also mention its failure chance.
+  // Do not test the wordings below first: a countdown may mention failure too.
   const remaining = parseWordyDuration(text);
   if (remaining !== null) {
     return { kind: OC_TIMER, startMs: Date.now() + remaining };
   }
 
-  // "3 of 5 slots filled" - still recruiting, so it cannot start yet. Also
-  // tested before the wording below, in case a recruiting crime mentions
-  // initiating or failing too.
+  // "3 of 5 slots filled" - still recruiting.
   if (/\b\d+\s*of\s*\d+\s*slots?\s*filled\b/i.test(text)) {
     return { kind: OC_RECRUITING };
   }
 
-  // About to go. The exact wording varies, but it always says one of these.
-  if (/initiat|fail/i.test(text)) return { kind: OC_IMMINENT };
+  // "Waiting to initiate..." - the crime is due.
+  if (/waiting\s*to\s*initiate/i.test(text)) return { kind: OC_IMMINENT };
 
   return null;
 }
 
-// The raw text of the tooltip the last lookup saw. Kept so an unrecognised
-// state can be reported back verbatim instead of guessed at.
+// The raw text of the tooltip the last lookup saw.
 let ocCapturedText = "";
 
-/**
- * Remembers a tooltip's text. One naming the crime beats an unrelated tooltip
- * that merely happened to be open at the time.
- */
+/** Remembers a tooltip's text, preferring one that names the crime. */
 function rememberTooltipText(text: string): void {
   if (/organi[sz]ed\s*crime/i.test(text) || ocCapturedText === "") {
     ocCapturedText = text;
   }
 }
 
-/**
- * Read the OC state out of any tooltip currently mounted. The tooltip text
- * runs together with no separators, e.g.
- *   "Organized CrimeArsonist in Market Forces2 days, 17 hours, 5 minutes..."
- */
+/** Reads the OC state out of any tooltip currently mounted. */
 function scanForOcState(): OcReading | null {
-  for (const node of document.querySelectorAll<HTMLElement>(SELECTORS.tooltip)) {
+  for (const node of document.querySelectorAll<HTMLElement>(
+    SELECTORS.tooltip,
+  )) {
     if (node.closest(`.${OWN_CLASS}`)) continue;
 
     const text = (node.textContent ?? "").trim();
@@ -217,10 +181,7 @@ function scanForOcState(): OcReading | null {
     }
   }
 
-  // Falls back to scanning the whole page's visible text. Only a countdown is
-  // trusted here: a 200-character slice of the page is far too blunt to read
-  // "initiate" or "fail" from, and a false positive there would block every
-  // destination.
+  // Falls back to the page's own text, where only a countdown is trusted.
   const bodyText = document.body.innerText ?? "";
   const idx = bodyText.search(/organi[sz]ed\s*crime/i);
   if (idx !== -1) {
@@ -234,21 +195,18 @@ function scanForOcState(): OcReading | null {
   return null;
 }
 
+/** Whether the sidebar is showing an Organized Crime icon that names a crime. */
+function hasOcIcon(): boolean {
+  return document.querySelector(SELECTORS.ocIconLabelled) !== null;
+}
+
 /** The slice of a React fiber node this script reads. */
 interface FiberNode {
   memoizedProps?: Record<string, unknown> | null;
   return?: FiberNode | null;
 }
 
-/**
- * Open or close the tooltip attached to an OC icon.
- *
- * Synthetic mouse events alone stopped working: React's tooltip listens
- * through its own synthetic system, which ignores events it did not originate.
- * So walk the fiber tree up from the element and call the hover handlers
- * directly, then dispatch native events as well in case the icon is ever
- * rendered by something other than React.
- */
+/** Opens or closes the tooltip attached to an OC icon. */
 function triggerOcTooltip(element: HTMLElement, entering: boolean): void {
   const key = Object.keys(element).find((k) => k.startsWith("__reactFiber"));
   let fiber: FiberNode | null | undefined = key
@@ -273,7 +231,7 @@ function triggerOcTooltip(element: HTMLElement, entering: boolean): void {
     fiber = fiber.return;
   }
 
-  // Also dispatches native events as a fallback.
+  // Do not remove: the fiber handlers alone miss a non-React icon.
   const nativeEvents = entering
     ? ["pointerenter", "mouseenter", "mouseover", "focus"]
     : ["pointerleave", "mouseleave", "mouseout", "blur"];
@@ -288,10 +246,7 @@ function triggerOcTooltip(element: HTMLElement, entering: boolean): void {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Open each OC icon's tooltip in turn and read the crime's state from it, then
- * close it again. Purely a read — the icon is a link we never click.
- */
+/** Opens each OC icon's tooltip in turn and reads the crime's state from it. */
 async function probeIconsForOc(): Promise<OcReading | null> {
   const icons = [...document.querySelectorAll<HTMLElement>(SELECTORS.ocIcon)];
   log("probing", icons.length, "OC icon(s)");
@@ -299,7 +254,6 @@ async function probeIconsForOc(): Promise<OcReading | null> {
   for (const icon of icons) {
     try {
       triggerOcTooltip(icon, true);
-      // floating-ui mounts on a delay and fades in; poll rather than guess.
       for (let attempt = 0; attempt < 10; attempt += 1) {
         await wait(60);
         const found = scanForOcState();
@@ -312,16 +266,13 @@ async function probeIconsForOc(): Promise<OcReading | null> {
   return null;
 }
 
-/** Absolute epoch ms when the OC starts. Only meaningful for timer/imminent. */
+// Absolute epoch ms when the OC starts.
 let ocStartMs: number | null = null;
 let ocState: OcKind = OC_UNKNOWN;
 let ocLookupRunning = false;
 let ocAttempts = 0;
 
-// One fruitless lookup is enough to conclude the user is not in a crime. That
-// lookup already spends up to 600ms per icon waiting for a tooltip, so it is
-// not as hasty as it reads - but a sidebar slower than that will be misread,
-// and only the tab-focus recheck will correct it.
+// Lookups to run before settling on an answer.
 const OC_MAX_ATTEMPTS = 1;
 
 /** Determines and caches the Organized Crime state. */
@@ -333,9 +284,7 @@ async function resolveOcState(): Promise<void> {
     const found = scanForOcState() ?? (await probeIconsForOc());
     if (found !== null) {
       ocState = found.kind;
-      // An imminent crime is treated as starting right now: that shows a
-      // zeroed countdown and blocks every destination, with no special cases
-      // needed anywhere downstream.
+      // An imminent crime counts as starting right now.
       ocStartMs =
         found.kind === OC_TIMER
           ? found.startMs
@@ -345,8 +294,10 @@ async function resolveOcState(): Promise<void> {
       ocAttempts = 0;
     } else {
       ocAttempts += 1;
-      // Nothing recognisable: there is no crime to guard.
-      if (ocAttempts >= OC_MAX_ATTEMPTS) ocState = OC_NONE;
+      // No icon means no crime; an icon we could not read means new wording.
+      if (ocAttempts >= OC_MAX_ATTEMPTS) {
+        ocState = hasOcIcon() ? OC_UNREADABLE : OC_NONE;
+      }
     }
     log(
       "OC state:",
@@ -363,10 +314,7 @@ const OC_RETRY_MAX_MS = 30_000;
 let ocRetryDelayMs = OC_RETRY_MIN_MS;
 let ocRetryTimer = 0;
 
-/**
- * Reopens the question so a settled state can be looked up again. Returns the
- * state that was in force, to fall back on if the recheck finds nothing.
- */
+/** Reopens the OC question, returning the state that was in force. */
 function reopenOcLookup(): OcKind {
   const previous = ocState;
   ocState = OC_UNKNOWN;
@@ -374,12 +322,7 @@ function reopenOcLookup(): OcKind {
   return previous;
 }
 
-/**
- * Schedules another OC lookup with exponential backoff, but only while the
- * state is still unknown. A settled state is never rechecked on a timer: a
- * crime is planned days ahead, so nothing changes under a page that is merely
- * left open.
- */
+/** Schedules another OC lookup, with backoff, while the state is unknown. */
 function scheduleOcRetry(): void {
   clearTimeout(ocRetryTimer);
   if (ocState !== OC_UNKNOWN) return;
@@ -394,21 +337,20 @@ function scheduleOcRetry(): void {
   }, ocRetryDelayMs);
 }
 
-/**
- * Rechecks the OC state immediately. This is the only way a settled state gets
- * revisited, so it is also the only cure for a "no OC" reached because the
- * sidebar had not mounted yet.
- */
+/** Rechecks the OC state immediately, settled or not. */
 function retryOcNow(): void {
   if (ocState === OC_TIMER) return;
   ocRetryDelayMs = OC_RETRY_MIN_MS;
   clearTimeout(ocRetryTimer);
   const previous = reopenOcLookup();
   void resolveOcState().then(() => {
-    // Only a fresh, positive reading may replace a state we already read
-    // successfully - a recheck that finds nothing is far more likely to be a
-    // missed tooltip than a crime that vanished.
-    if (ocState === OC_NONE && previous !== OC_UNKNOWN && previous !== OC_NONE) {
+    // Only a fresh, positive reading may replace one already read.
+    const settledEmpty = ocState === OC_NONE || ocState === OC_UNREADABLE;
+    const hadReading =
+      previous !== OC_UNKNOWN &&
+      previous !== OC_NONE &&
+      previous !== OC_UNREADABLE;
+    if (settledEmpty && hadReading) {
       ocState = previous;
     }
     evaluate();
@@ -433,13 +375,7 @@ function findFlightTimeMs(): number | null {
 
 // ------------------------------------------------------ step 3: the button
 
-/**
- * An element's own text, ignoring any it inherits from descendants. So
- * <button>CONTINUE<i class="icon"></i></button> still reads as "CONTINUE",
- * while a wrapper <div> holding half the page reads as "".
- *
- * Matching on textContent alone would miss the first and match the second.
- */
+/** An element's own text, ignoring any it inherits from descendants. */
 function ownText(element: HTMLElement): string {
   let text = "";
   for (const node of element.childNodes) {
@@ -448,14 +384,7 @@ function ownText(element: HTMLElement): string {
   return text.trim().toUpperCase();
 }
 
-/**
- * Every leaf node whose caption is in `labels`, resolved to its enclosing
- * button or link.
- *
- * `skipNavigation` is opt-in because the exclusion list is broad. Only the
- * TRAVEL fallback needs it, since the nav bar has a TRAVEL link but no
- * CONTINUE.
- */
+/** Every leaf node whose caption is in `labels`, resolved to its button or link. */
 function findByCaption(
   labels: string[],
   skipNavigation: boolean,
@@ -475,16 +404,7 @@ function findByCaption(
   return found;
 }
 
-/**
- * Both shapes of the button that commits a flight: desktop's aria-labelled
- * TRAVEL, and mobile's CONTINUE inside the confirmation.
- *
- * CONTINUE is matched bare, with no attempt to prove it belongs to the travel
- * confirmation. That is safe here for two reasons: @match limits this script
- * to the travel page, which carries only the one CONTINUE, and evaluate() only
- * calls this once a flight time has been read — which on mobile only happens
- * while that confirmation is open.
- */
+/** Both shapes of the button that commits a flight. */
 function findTravelButtons(): HTMLElement[] {
   const found: HTMLElement[] = [];
   const add = (element: HTMLElement) => {
@@ -501,7 +421,7 @@ function findTravelButtons(): HTMLElement[] {
 
   if (found.length > 0) return found;
 
-  // Neither shape found — aria-label may have changed. Match the caption.
+  // Do not pass false here: the nav bar's own TRAVEL link would match too.
   return findByCaption(BUTTON_LABELS, true);
 }
 
@@ -520,8 +440,6 @@ function injectStyles(): void {
     .${OVERLAY_CLASS} {
       position: fixed;
       z-index: ${OVERLAY_Z_INDEX};
-      /* positionOverlays() sizes the box to the raccoon's own aspect
-         ratio, so filling it neither crops nor squashes it. */
       background-image: url("${raccoonAngry}");
       background-size: 100% 100%;
       background-position: center;
@@ -540,8 +458,7 @@ function injectStyles(): void {
       line-height: 1;
       color: #fff;
     }
-    /* Shared vanilla-Torn-panel look: subtle rounded corners, one continuous
-       grey gradient across the whole module rather than per-item. */
+    /* The shared vanilla-Torn panel look. */
     .${PANEL_CLASS} {
       display: flex;
       align-items: stretch;
@@ -561,16 +478,6 @@ function injectStyles(): void {
       -webkit-tap-highlight-color: transparent;
       user-select: none;
     }
-    /* Desktop: the two toggles stack into one column so the module reads
-       as a compact block next to the (also stacked) timer-info panel. The
-       seam between them runs along the top, like a divider in a list. */
-    .${TOGGLE_GROUP_CLASS} {
-      flex-direction: column;
-    }
-    .${TOGGLE_GROUP_CLASS} .${TOGGLE_ROW_CLASS} + .${TOGGLE_ROW_CLASS} {
-      border-top: 1px solid rgba(0, 0, 0, 0.4);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    }
     /* Highlights the row on hover, press, or keyboard focus. */
     .${TOGGLE_ROW_CLASS}:hover,
     .${TOGGLE_ROW_CLASS}:active,
@@ -580,9 +487,7 @@ function injectStyles(): void {
     .${TOGGLE_ROW_CLASS} .ocg-label {
       white-space: nowrap;
     }
-    /* The timer-info panel is always a stacked column: three rows at a
-       slightly smaller font so its total height roughly matches the
-       two stacked toggles beside it. */
+    /* The timer panel is always a stacked column. */
     .${STATUS_GROUP_CLASS} {
       flex-direction: column;
       align-items: stretch;
@@ -596,27 +501,13 @@ function injectStyles(): void {
       white-space: normal;
       font-variant-numeric: tabular-nums;
     }
-    /* Same seam as the toggle module; since hidden rows use display:none,
-       a hidden row's leading seam disappears with it automatically. */
+    /* The same seam as the toggle module. */
     .${STATUS_ROW_CLASS}:not(:first-child) {
       border-top: 1px solid rgba(0, 0, 0, 0.4);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
     }
     .${STATUS_ROW_CLASS} b {
       margin-right: 4px;
-    }
-    /* Mobile: flip the toggles back to side by side (their original
-       layout), while the timer-info panel stays stacked below - it
-       already drops to its own line via the toggle-bar's flex-wrap. */
-    @media (max-width: 700px) {
-      .${TOGGLE_GROUP_CLASS} {
-        flex-direction: row;
-      }
-      .${TOGGLE_GROUP_CLASS} .${TOGGLE_ROW_CLASS} + .${TOGGLE_ROW_CLASS} {
-        border-top: none;
-        border-left: 1px solid rgba(0, 0, 0, 0.4);
-        box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.05);
-      }
     }
     .${TOGGLE_SWITCH_CLASS} {
       position: relative;
@@ -684,9 +575,7 @@ function injectStyles(): void {
     .${TOGGLE_ROW_CLASS}:focus-within input:checked + .ocg-slider::before {
       background: linear-gradient(180deg, #666666 0%, #444444 100%);
     }
-    /* Sits in the same floating layer as the raccoon, one above it, so the
-       two can share a button without the raccoon covering the message.
-       Unlike the raccoon this one is clickable - it has to be. */
+    /* Sits one layer above the raccoon, and unlike it is clickable. */
     .${REPORT_CLASS} {
       position: fixed;
       z-index: ${OVERLAY_Z_INDEX + 1};
@@ -732,21 +621,13 @@ function injectStyles(): void {
 
 // ----------------------------------------------------------------- overlay
 
-// How far the raccoon may extend past the left and right edges of the
-// button. Vertical overflow is unbounded — see positionOverlays().
+// How far the raccoon may extend past the button's left and right edges.
 const OVERLAY_BLEED_PX = 6;
 
-// The overlay is inserted as the button's next sibling rather than appended to
-// <body>, so it only has to out-stack its own neighbours. A max-int z-index
-// there put the raccoon on top of Torn's modals and dropdowns as well.
+// How far the overlay has to out-stack its neighbours.
 const OVERLAY_Z_INDEX = 1;
 
-// The raccoon is scaled by WIDTH and centred on the button, free to hang
-// over the top and bottom. Fitting it to the button's height instead would
-// shrink it to nothing on a short, wide button.
-//
-// Read from the image rather than hardcoded, so swapping the PNG for one of
-// a different shape needs no code change.
+// The raccoon's own proportions, read off the image it is drawn from.
 let raccoonWidth = 100;
 let raccoonHeight = 100;
 const raccoonImage = new Image();
@@ -763,7 +644,7 @@ const overlays = new Map<HTMLElement, HTMLElement>();
 
 function positionOverlays(): void {
   for (const [button, overlay] of overlays) {
-    // Gone from the DOM, or still in it but hidden by the other layout.
+    // Gone from the DOM, or hidden by the other layout.
     if (!button.isConnected || !isVisible(button)) {
       overlay.remove();
       overlays.delete(button);
@@ -774,8 +655,7 @@ function positionOverlays(): void {
     }
     const rect = button.getBoundingClientRect();
 
-    // Never upscale past the image's natural size — a blown-up 100px PNG
-    // just looks blurry.
+    // Never upscale past the image's natural size.
     const width = Math.min(rect.width + OVERLAY_BLEED_PX * 2, raccoonWidth);
     const height = width * (raccoonHeight / raccoonWidth);
 
@@ -787,12 +667,8 @@ function positionOverlays(): void {
   positionReportBoxes();
 }
 
-/**
- * Torn ships the desktop and mobile layouts together and hides one with CSS,
- * so a node can be connected but have no box. Those are not on screen and
- * must not get an overlay — that is what put a second raccoon in the top bar
- * after resizing from mobile back to desktop.
- */
+/** Whether an element actually has a box on screen. */
+// Do not simplify to a DOM-connected check: Torn keeps its unused layout.
 const isVisible = (element: HTMLElement): boolean => {
   const rect = element.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
@@ -810,7 +686,7 @@ function blockButton(button: HTMLElement): void {
   if (!overlays.has(button)) {
     const overlay = document.createElement("div");
     overlay.className = `${OVERLAY_CLASS} ${OWN_CLASS}`;
-    // Placed as the button's next sibling, so it paints directly above it.
+    // Placed as the button's next sibling.
     button.insertAdjacentElement("afterend", overlay);
     overlays.set(button, overlay);
   }
@@ -818,18 +694,13 @@ function blockButton(button: HTMLElement): void {
   positionOverlays();
 }
 
-/** Cheap no-op when nothing is on screen, which is the usual case. */
+/** Repositions the overlays, if there are any. */
 function reconcileOverlays(): void {
   if (overlays.size === 0 && reportBoxes.size === 0) return;
   positionOverlays();
 }
 
-/**
- * The overlay only needs repositioning when something could have moved, and
- * the things that move it are all user input. Reacting to that beats an
- * unconditional per-frame loop, which burned CPU on a page that mostly sits
- * still.
- */
+/** Repositions the overlays whenever user input could have moved a button. */
 function installOverlayReconciler(): void {
   for (const type of ["click", "touchstart", "keydown", "scroll"]) {
     window.addEventListener(type, reconcileOverlays, {
@@ -859,10 +730,7 @@ const REPORT_GAP_PX = 8;
 const REPORT_WIDTH_PX = 260;
 const reportBoxes = new Map<HTMLElement, HTMLElement>();
 
-/**
- * Copies text, falling back to the old selection trick where the clipboard API
- * is unavailable.
- */
+/** Copies text to the clipboard. */
 function copyText(text: string): Promise<void> {
   const selectAndCopy = () =>
     new Promise<void>((resolve, reject) => {
@@ -883,9 +751,6 @@ function copyText(text: string): Promise<void> {
     });
 
   if (navigator.clipboard?.writeText) {
-    // The clipboard API rejects as well as being absent - outside a user
-    // gesture, or under a permissions policy - so treat a rejection the same
-    // as a missing API rather than giving up on it.
     return navigator.clipboard.writeText(text).catch(selectAndCopy);
   }
   return selectAndCopy();
@@ -902,13 +767,12 @@ function buildReportBox(): HTMLElement {
     "this (just click it to copy):";
   box.appendChild(intro);
 
-  // The payload is held in a closure rather than read back off the element, so
-  // the "Copied!" flash can never be copied in place of the real text.
+  // Do not read the payload back off the element: "Copied!" would be copied.
   const payload =
     ocCapturedText === "" ? "(no tooltip text found)" : ocCapturedText;
   const copy = document.createElement("div");
   copy.className = REPORT_COPY_CLASS;
-  // textContent, not innerHTML: this string came off the page.
+  // Do not switch to innerHTML: this string came off the page.
   copy.textContent = payload;
   copy.title = "Click to copy";
   copy.addEventListener("click", () => {
@@ -941,10 +805,7 @@ function buildReportBox(): HTMLElement {
   return box;
 }
 
-/**
- * Places each report box above its button, or below it when the top of the
- * window is in the way.
- */
+/** Places each report box above its button, or below where there is no room. */
 function positionReportBoxes(): void {
   for (const [button, box] of reportBoxes) {
     if (!button.isConnected || !isVisible(button)) {
@@ -977,13 +838,9 @@ function removeReportBoxes(): void {
   reportBoxes.clear();
 }
 
-/**
- * Shows the report box over the travel buttons whenever the OC tooltip said
- * something this script could not read a countdown out of.
- */
+/** Shows the report box wherever a crime's tooltip wording went unrecognised. */
 function updateReportBoxes(): void {
-  const wanted =
-    !isGuardDisabled() && (ocState === OC_IMMINENT || ocState === OC_NONE);
+  const wanted = !isGuardDisabled() && ocState === OC_UNREADABLE;
   if (!wanted) {
     removeReportBoxes();
     return;
@@ -1005,7 +862,7 @@ function updateReportBoxes(): void {
   positionReportBoxes();
 }
 
-/** Belt and braces: kill any event that starts inside a blocked button. */
+/** Kills any event that starts inside a blocked button. */
 function installClickGuard(): void {
   const stop = (event: Event) => {
     const target = event.target;
@@ -1022,7 +879,7 @@ function installClickGuard(): void {
 
 // ------------------------------------------------------------ status panel
 
-/** The "Travel Agency" page heading, ignoring the nav links that say the same. */
+/** The "Travel Agency" page heading. */
 function findHeader(): HTMLElement | null {
   let best: { element: HTMLElement; text: string } | null = null;
 
@@ -1036,8 +893,7 @@ function findHeader(): HTMLElement | null {
       .toUpperCase();
     if (!text.includes("TRAVEL AGENCY") || text.length > 40) continue;
 
-    // Every ancestor of the heading also contains the phrase; the shortest
-    // match is the heading itself.
+    // The shortest match is the heading itself.
     if (best === null || text.length < best.text.length) {
       best = { element, text };
     }
@@ -1048,12 +904,7 @@ function findHeader(): HTMLElement | null {
     : null;
 }
 
-/**
- * The block holding the whole title row, so the module can be inserted after
- * it rather than in the middle of the header's own layout. Walks up while the
- * node still spans its parent's width but is much shorter than it — i.e. while
- * the parent is a container of rows rather than the row itself.
- */
+/** The block holding the whole title row. */
 function findTitleBlock(): HTMLElement | null {
   const title = findHeader();
   if (!title) return null;
@@ -1074,15 +925,7 @@ function findTitleBlock(): HTMLElement | null {
   return title;
 }
 
-/**
- * The destination of the currently selected trip.
- *
- * Desktop names it right in the "Travel to <Country>" button's aria-label.
- * Mobile's confirm button is a plain "Continue" with no aria-label, so as a
- * fallback there we look for the exact country-name text structurally closest
- * to that button — the full country list also appears elsewhere on the page,
- * so proximity to the button is what picks out the selected one.
- */
+/** The destination of the currently selected trip. */
 function findSelectedDestination(): string | null {
   for (const button of document.querySelectorAll<HTMLElement>(
     SELECTORS.travelButton,
@@ -1121,11 +964,7 @@ function findSelectedDestination(): string | null {
   return bestCountry;
 }
 
-/**
- * Debug helper: every short leaf-text element that merely mentions a travel
- * country, whatever its format, so a mismatched pattern can be spotted from
- * the console when findSelectedDestination() comes back empty.
- */
+/** Every short leaf element mentioning a travel country, for the console. */
 function findDestinationCandidates(): string[] {
   const results: string[] = [];
   for (const element of document.body.querySelectorAll<HTMLElement>("*")) {
@@ -1161,10 +1000,7 @@ function formatClockTCT(ms: number): string {
   return `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
 }
 
-/**
- * What the OC row shows for the state we are in. A crime that is recruiting or
- * absent has no countdown to show, so it says why instead.
- */
+/** What the OC row shows for the state we are in. */
 function ocRowText(): string {
   if (ocState === OC_TIMER && ocStartMs !== null) {
     return formatDuration(ocStartMs - Date.now(), true);
@@ -1172,10 +1008,11 @@ function ocRowText(): string {
   if (ocState === OC_IMMINENT) return formatDuration(0, true);
   if (ocState === OC_RECRUITING) return "Waiting for all slots to be filled";
   if (ocState === OC_NONE) return "You are a big plum!";
+  if (ocState === OC_UNREADABLE) return "Unrecognised - please report it!";
   return "unknown";
 }
 
-/** Refresh the OC countdown, return-time and flight-safety rows. */
+/** Refreshes the OC countdown, return-time and flight-safety rows. */
 function updateStatusBar(): void {
   const ocEl = document.getElementById(STATUS_OC_ID);
   const returnEl = document.getElementById(STATUS_RETURN_ID);
@@ -1187,7 +1024,7 @@ function updateStatusBar(): void {
   const destination = findSelectedDestination();
   const flightMs = findFlightTimeMs();
 
-  // Nothing selected yet, so there is no trip to report on.
+  // Nothing selected yet.
   if (destination === null || flightMs === null) {
     log(
       "return time hidden - destination:",
@@ -1200,8 +1037,7 @@ function updateStatusBar(): void {
     return;
   }
 
-  const safetyMarginMs = isTestMode() ? TEST_SAFETY_MARGIN_MS : SAFETY_MARGIN_MS;
-  const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + safetyMarginMs;
+  const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
   const returnAtMs = Date.now() + roundTripMs;
 
   returnEl.style.display = "";
@@ -1209,8 +1045,7 @@ function updateStatusBar(): void {
     `<b>Return from ${destination}:</b> ${formatClockTCT(returnAtMs)} TCT` +
     ` - ${formatDuration(roundTripMs, false)} from now`;
 
-  // Recruiting, or not in a crime at all: there is nothing to be late for, so
-  // there is no early/late figure to report.
+  // Recruiting, or not in a crime at all.
   if (ocState === OC_RECRUITING || ocState === OC_NONE) {
     messageEl.style.display = "";
     messageEl.style.color = ocState === OC_RECRUITING ? "#4caf50" : "#f44336";
@@ -1247,7 +1082,7 @@ function updateStatusBar(): void {
   messageEl.innerHTML = text;
 }
 
-/** Insert the switches and status panel just below the page title. */
+/** Inserts the guard switch and status panel just below the page title. */
 function injectToggle(): void {
   if (document.getElementById(TOGGLE_BAR_ID)) return;
   const titleBlock = findTitleBlock();
@@ -1257,18 +1092,11 @@ function injectToggle(): void {
   bar.id = TOGGLE_BAR_ID;
   bar.className = `${TOGGLE_BAR_CLASS} ${OWN_CLASS}`;
   bar.innerHTML = `
-      <div class="${PANEL_CLASS} ${TOGGLE_GROUP_CLASS}">
+      <div class="${PANEL_CLASS}">
         <div class="${TOGGLE_ROW_CLASS}">
           <span class="ocg-label">Travel Blocker</span>
           <label class="${TOGGLE_SWITCH_CLASS}">
             <input type="checkbox" data-ocg-role="guard" ${isGuardDisabled() ? "" : "checked"}>
-            <span class="ocg-slider"></span>
-          </label>
-        </div>
-        <div class="${TOGGLE_ROW_CLASS}">
-          <span class="ocg-label">Testing Mode</span>
-          <label class="${TOGGLE_SWITCH_CLASS}">
-            <input type="checkbox" data-ocg-role="test" ${isTestMode() ? "checked" : ""}>
             <span class="ocg-slider"></span>
           </label>
         </div>
@@ -1289,34 +1117,11 @@ function injectToggle(): void {
       setGuardDisabled(!(event.target as HTMLInputElement).checked);
       evaluate();
     });
-  bar
-    .querySelector<HTMLInputElement>('[data-ocg-role="test"]')
-    ?.addEventListener("change", (event) => {
-      setTestMode((event.target as HTMLInputElement).checked);
-      evaluate();
-    });
 }
 
 // -------------------------------------------------------------- main loop
 
-/** Testing mode: inflate the margin so everything blocks, to eyeball it. */
-const isTestMode = () => {
-  try {
-    return localStorage.getItem("OCG_TEST") === "1";
-  } catch {
-    return false;
-  }
-};
-
-const setTestMode = (enabled: boolean) => {
-  try {
-    localStorage.setItem("OCG_TEST", enabled ? "1" : "0");
-  } catch {
-    // Private mode, or storage disabled — the switch just won't persist.
-  }
-};
-
-/** The guard switched off entirely, for when the maths gets it wrong. */
+/** Whether the guard is switched off entirely. */
 const isGuardDisabled = () => {
   try {
     return localStorage.getItem("OCG_DISABLED") === "1";
@@ -1329,7 +1134,7 @@ const setGuardDisabled = (disabled: boolean) => {
   try {
     localStorage.setItem("OCG_DISABLED", disabled ? "1" : "0");
   } catch {
-    // As above.
+    // The switch just won't persist.
   }
 };
 
@@ -1342,13 +1147,13 @@ function evaluate(): void {
     return;
   }
 
-  // Recruiting, or not in a crime: nothing to get back for.
+  // Recruiting, or not in a crime at all.
   if (ocState === OC_RECRUITING || ocState === OC_NONE) {
     unblockAll();
     return;
   }
 
-  // About to initiate, so no destination is far enough away to be safe.
+  // About to initiate, so every destination blocks.
   if (ocState === OC_IMMINENT) {
     const imminentButtons = findTravelButtons();
     log("blocking", imminentButtons.length, "button(s) - OC imminent");
@@ -1362,8 +1167,7 @@ function evaluate(): void {
     return;
   }
 
-  const safetyMarginMs = isTestMode() ? TEST_SAFETY_MARGIN_MS : SAFETY_MARGIN_MS;
-  const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + safetyMarginMs;
+  const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
   const backAtMs = Date.now() + roundTripMs;
   log(
     "back at",
@@ -1386,7 +1190,7 @@ async function main(): Promise<void> {
   injectStyles();
   installClickGuard();
 
-  // Exposed so the console can poke at it while we're still tuning selectors.
+  // The console handle.
   Object.assign(window as unknown as Record<string, unknown>, {
     __ocg: {
       scanForOcState,
@@ -1398,7 +1202,7 @@ async function main(): Promise<void> {
       findTravelButtons,
       findHeader,
       evaluate,
-      // __ocg.diagnose() in the console when it silently does nothing.
+      // Reports what each step of the search found.
       diagnose() {
         const describe = (element: HTMLElement) => {
           const id = element.id ? `#${element.id}` : "";
@@ -1413,7 +1217,6 @@ async function main(): Promise<void> {
           flightMinutes: (findFlightTimeMs() ?? 0) / 60_000 || null,
           selectedDestination: findSelectedDestination(),
           destinationCandidates: findDestinationCandidates(),
-          testMode: isTestMode(),
           travelButtons: findTravelButtons().map(describe),
           blocked: [
             ...document.querySelectorAll<HTMLElement>(`[${BLOCK_ATTR}]`),
@@ -1430,8 +1233,7 @@ async function main(): Promise<void> {
       get ocState() {
         return ocState;
       },
-      // Lets a state be forced from the console to see how it renders:
-      // __ocg.ocState = "recruiting"; __ocg.evaluate();
+      // Forces a state, to see how it renders.
       set ocState(value: OcKind) {
         ocState = value;
       },
@@ -1441,7 +1243,7 @@ async function main(): Promise<void> {
   injectToggle();
   installOverlayReconciler();
 
-  // The OC row counts down, so it has to tick even when nothing else changes.
+  // Ticks the countdown in the OC row.
   window.setInterval(updateStatusBar, 1000);
 
   await resolveOcState();
@@ -1449,15 +1251,11 @@ async function main(): Promise<void> {
 
   let pending = 0;
   const observer = new MutationObserver(() => {
-    // Torn re-renders the title block on navigation within the page, taking
-    // the module with it.
+    // Torn re-renders the title block on navigation within the page.
     injectToggle();
     clearTimeout(pending);
     pending = window.setTimeout(() => {
-      // Retries OC discovery on DOM changes only while the state is still
-      // unknown. Opening the tooltip is itself a DOM change, so without a
-      // state that can settle, this fed itself and flashed the tooltip open
-      // and shut forever.
+      // Do not retry once settled: opening the tooltip is itself a DOM change.
       if (ocState === OC_UNKNOWN) {
         void resolveOcState().then(evaluate);
       } else {
@@ -1472,11 +1270,10 @@ async function main(): Promise<void> {
     attributeFilter: ["style", "class", "hidden"],
   });
 
-  // The overlay is position:fixed, so it has to follow the button around.
+  // Follows the button as the page scrolls.
   window.addEventListener("scroll", positionOverlays, true);
 
-  // A resize can cross Torn's mobile/desktop breakpoint and swap which set of
-  // buttons is on screen, so repositioning is not enough — re-run the search.
+  // A resize can swap which set of buttons is on screen.
   let resizePending = 0;
   window.addEventListener("resize", () => {
     positionOverlays();
@@ -1486,8 +1283,7 @@ async function main(): Promise<void> {
 
   scheduleOcRetry();
 
-  // Coming back to a backgrounded tab is the most likely moment for the
-  // sidebar to finally be there.
+  // Rechecks the OC when the tab comes back to the foreground.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") retryOcNow();
   });

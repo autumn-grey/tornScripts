@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         OC Travel Guard
 // @namespace    https://github.com/autumn-grey
-// @version      0.5.6
+// @version      1.0.0
 // @description  Blocks travel to any destination you could not fly back from before your Organised Crime starts.
 // @author       AutumnGrey
 // @license      MIT
+// @match        https://www.torn.com/page.php?sid=travel*
 // @match        https://www.torn.com/travelagency.php*
 // @grant        none
 // @run-at       document-idle
@@ -21,27 +22,25 @@
   // src/oc-travel-guard/index.ts
   var FLIGHT_VARIANCE = 1.03;
   var SAFETY_MARGIN_MS = 5 * 6e4;
-  var TEST_SAFETY_MARGIN_MS = 1e5 * 6e4;
   var SELECTORS = {
-    // Sidebar OC icon. Its aria-label carries the crime name but NOT the timer;
-    // the countdown only exists in the tooltip it opens on hover.
+    // Sidebar OC icon.
     ocIcon: [
       'a[aria-label^="Organized Crime" i]',
       'a[aria-label^="Organised Crime" i]',
       'a[href*="factions.php"][href*="tab=crimes"]'
     ].join(", "),
+    // The same icon, but only where its aria-label names a crime.
+    ocIconLabelled: [
+      'a[aria-label^="Organized Crime" i]',
+      'a[aria-label^="Organised Crime" i]'
+    ].join(", "),
     // Where floating-ui mounts that tooltip.
     tooltip: '[data-floating-ui-portal], [role="tooltip"]',
     // The travel button, e.g. aria-label="Travel to Argentina".
     travelButton: 'button[aria-label^="Travel to" i]',
-    // Fallback if the aria-label ever changes: scan leaf nodes for the caption.
+    // Leaf nodes scanned for a button's caption.
     buttonish: "button, a, span, div",
-    // Chrome that is never the travel control no matter what it says. Both the
-    // sidebar and the mobile top bar carry a "TRAVEL" link, and the caption
-    // fallback below would otherwise happily grey that out instead.
-    //
-    // Matched by id and role rather than by class substring: Torn's hashed class
-    // names could contain "menu" by accident and swallow a real match.
+    // Chrome that is never the travel control, whatever its caption says.
     navigation: [
       "nav",
       "aside",
@@ -61,7 +60,6 @@
   var TOGGLE_SWITCH_CLASS = "ocg-switch";
   var TOGGLE_BAR_ID = "ocg-toggle-bar";
   var PANEL_CLASS = "ocg-panel";
-  var TOGGLE_GROUP_CLASS = "ocg-toggle-group";
   var STATUS_GROUP_CLASS = "ocg-status-group";
   var STATUS_ROW_CLASS = "ocg-status-row";
   var STATUS_OC_ID = "ocg-status-oc";
@@ -106,6 +104,7 @@
   var OC_IMMINENT = "imminent";
   var OC_RECRUITING = "recruiting";
   var OC_NONE = "none";
+  var OC_UNREADABLE = "unreadable";
   function classifyOcText(text) {
     if (!/organi[sz]ed\s*crime/i.test(text)) return null;
     const remaining = parseWordyDuration(text);
@@ -115,7 +114,7 @@
     if (/\b\d+\s*of\s*\d+\s*slots?\s*filled\b/i.test(text)) {
       return { kind: OC_RECRUITING };
     }
-    if (/initiat|fail/i.test(text)) return { kind: OC_IMMINENT };
+    if (/waiting\s*to\s*initiate/i.test(text)) return { kind: OC_IMMINENT };
     return null;
   }
   var ocCapturedText = "";
@@ -125,7 +124,9 @@
     }
   }
   function scanForOcState() {
-    for (const node of document.querySelectorAll(SELECTORS.tooltip)) {
+    for (const node of document.querySelectorAll(
+      SELECTORS.tooltip
+    )) {
       if (node.closest(`.${OWN_CLASS}`)) continue;
       const text = (node.textContent ?? "").trim();
       if (text.length === 0 || text.length > 300) continue;
@@ -146,6 +147,9 @@
       }
     }
     return null;
+  }
+  function hasOcIcon() {
+    return document.querySelector(SELECTORS.ocIconLabelled) !== null;
   }
   function triggerOcTooltip(element, entering) {
     const key = Object.keys(element).find((k) => k.startsWith("__reactFiber"));
@@ -208,7 +212,9 @@
         ocAttempts = 0;
       } else {
         ocAttempts += 1;
-        if (ocAttempts >= OC_MAX_ATTEMPTS) ocState = OC_NONE;
+        if (ocAttempts >= OC_MAX_ATTEMPTS) {
+          ocState = hasOcIcon() ? OC_UNREADABLE : OC_NONE;
+        }
       }
       log(
         "OC state:",
@@ -248,7 +254,9 @@
     clearTimeout(ocRetryTimer);
     const previous = reopenOcLookup();
     void resolveOcState().then(() => {
-      if (ocState === OC_NONE && previous !== OC_UNKNOWN && previous !== OC_NONE) {
+      const settledEmpty = ocState === OC_NONE || ocState === OC_UNREADABLE;
+      const hadReading = previous !== OC_UNKNOWN && previous !== OC_NONE && previous !== OC_UNREADABLE;
+      if (settledEmpty && hadReading) {
         ocState = previous;
       }
       evaluate();
@@ -311,8 +319,6 @@
     .${OVERLAY_CLASS} {
       position: fixed;
       z-index: ${OVERLAY_Z_INDEX};
-      /* positionOverlays() sizes the box to the raccoon's own aspect
-         ratio, so filling it neither crops nor squashes it. */
       background-image: url("${raccoonAngry_default}");
       background-size: 100% 100%;
       background-position: center;
@@ -331,8 +337,7 @@
       line-height: 1;
       color: #fff;
     }
-    /* Shared vanilla-Torn-panel look: subtle rounded corners, one continuous
-       grey gradient across the whole module rather than per-item. */
+    /* The shared vanilla-Torn panel look. */
     .${PANEL_CLASS} {
       display: flex;
       align-items: stretch;
@@ -352,16 +357,6 @@
       -webkit-tap-highlight-color: transparent;
       user-select: none;
     }
-    /* Desktop: the two toggles stack into one column so the module reads
-       as a compact block next to the (also stacked) timer-info panel. The
-       seam between them runs along the top, like a divider in a list. */
-    .${TOGGLE_GROUP_CLASS} {
-      flex-direction: column;
-    }
-    .${TOGGLE_GROUP_CLASS} .${TOGGLE_ROW_CLASS} + .${TOGGLE_ROW_CLASS} {
-      border-top: 1px solid rgba(0, 0, 0, 0.4);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    }
     /* Highlights the row on hover, press, or keyboard focus. */
     .${TOGGLE_ROW_CLASS}:hover,
     .${TOGGLE_ROW_CLASS}:active,
@@ -371,9 +366,7 @@
     .${TOGGLE_ROW_CLASS} .ocg-label {
       white-space: nowrap;
     }
-    /* The timer-info panel is always a stacked column: three rows at a
-       slightly smaller font so its total height roughly matches the
-       two stacked toggles beside it. */
+    /* The timer panel is always a stacked column. */
     .${STATUS_GROUP_CLASS} {
       flex-direction: column;
       align-items: stretch;
@@ -387,27 +380,13 @@
       white-space: normal;
       font-variant-numeric: tabular-nums;
     }
-    /* Same seam as the toggle module; since hidden rows use display:none,
-       a hidden row's leading seam disappears with it automatically. */
+    /* The same seam as the toggle module. */
     .${STATUS_ROW_CLASS}:not(:first-child) {
       border-top: 1px solid rgba(0, 0, 0, 0.4);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
     }
     .${STATUS_ROW_CLASS} b {
       margin-right: 4px;
-    }
-    /* Mobile: flip the toggles back to side by side (their original
-       layout), while the timer-info panel stays stacked below - it
-       already drops to its own line via the toggle-bar's flex-wrap. */
-    @media (max-width: 700px) {
-      .${TOGGLE_GROUP_CLASS} {
-        flex-direction: row;
-      }
-      .${TOGGLE_GROUP_CLASS} .${TOGGLE_ROW_CLASS} + .${TOGGLE_ROW_CLASS} {
-        border-top: none;
-        border-left: 1px solid rgba(0, 0, 0, 0.4);
-        box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.05);
-      }
     }
     .${TOGGLE_SWITCH_CLASS} {
       position: relative;
@@ -475,9 +454,7 @@
     .${TOGGLE_ROW_CLASS}:focus-within input:checked + .ocg-slider::before {
       background: linear-gradient(180deg, #666666 0%, #444444 100%);
     }
-    /* Sits in the same floating layer as the raccoon, one above it, so the
-       two can share a button without the raccoon covering the message.
-       Unlike the raccoon this one is clickable - it has to be. */
+    /* Sits one layer above the raccoon, and unlike it is clickable. */
     .${REPORT_CLASS} {
       position: fixed;
       z-index: ${OVERLAY_Z_INDEX + 1};
@@ -692,7 +669,7 @@
     reportBoxes.clear();
   }
   function updateReportBoxes() {
-    const wanted = !isGuardDisabled() && (ocState === OC_IMMINENT || ocState === OC_NONE);
+    const wanted = !isGuardDisabled() && ocState === OC_UNREADABLE;
     if (!wanted) {
       removeReportBoxes();
       return;
@@ -820,6 +797,7 @@
     if (ocState === OC_IMMINENT) return formatDuration(0, true);
     if (ocState === OC_RECRUITING) return "Waiting for all slots to be filled";
     if (ocState === OC_NONE) return "You are a big plum!";
+    if (ocState === OC_UNREADABLE) return "Unrecognised - please report it!";
     return "unknown";
   }
   function updateStatusBar() {
@@ -841,8 +819,7 @@
       messageEl.style.display = "none";
       return;
     }
-    const safetyMarginMs = isTestMode() ? TEST_SAFETY_MARGIN_MS : SAFETY_MARGIN_MS;
-    const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + safetyMarginMs;
+    const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
     const returnAtMs = Date.now() + roundTripMs;
     returnEl.style.display = "";
     returnEl.innerHTML = `<b>Return from ${destination}:</b> ${formatClockTCT(returnAtMs)} TCT - ${formatDuration(roundTripMs, false)} from now`;
@@ -884,18 +861,11 @@
     bar.id = TOGGLE_BAR_ID;
     bar.className = `${TOGGLE_BAR_CLASS} ${OWN_CLASS}`;
     bar.innerHTML = `
-      <div class="${PANEL_CLASS} ${TOGGLE_GROUP_CLASS}">
+      <div class="${PANEL_CLASS}">
         <div class="${TOGGLE_ROW_CLASS}">
           <span class="ocg-label">Travel Blocker</span>
           <label class="${TOGGLE_SWITCH_CLASS}">
             <input type="checkbox" data-ocg-role="guard" ${isGuardDisabled() ? "" : "checked"}>
-            <span class="ocg-slider"></span>
-          </label>
-        </div>
-        <div class="${TOGGLE_ROW_CLASS}">
-          <span class="ocg-label">Testing Mode</span>
-          <label class="${TOGGLE_SWITCH_CLASS}">
-            <input type="checkbox" data-ocg-role="test" ${isTestMode() ? "checked" : ""}>
             <span class="ocg-slider"></span>
           </label>
         </div>
@@ -912,24 +882,7 @@
       setGuardDisabled(!event.target.checked);
       evaluate();
     });
-    bar.querySelector('[data-ocg-role="test"]')?.addEventListener("change", (event) => {
-      setTestMode(event.target.checked);
-      evaluate();
-    });
   }
-  var isTestMode = () => {
-    try {
-      return localStorage.getItem("OCG_TEST") === "1";
-    } catch {
-      return false;
-    }
-  };
-  var setTestMode = (enabled) => {
-    try {
-      localStorage.setItem("OCG_TEST", enabled ? "1" : "0");
-    } catch {
-    }
-  };
   var isGuardDisabled = () => {
     try {
       return localStorage.getItem("OCG_DISABLED") === "1";
@@ -965,8 +918,7 @@
       unblockAll();
       return;
     }
-    const safetyMarginMs = isTestMode() ? TEST_SAFETY_MARGIN_MS : SAFETY_MARGIN_MS;
-    const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + safetyMarginMs;
+    const roundTripMs = 2 * flightMs * FLIGHT_VARIANCE + SAFETY_MARGIN_MS;
     const backAtMs = Date.now() + roundTripMs;
     log(
       "back at",
@@ -996,7 +948,7 @@
         findTravelButtons,
         findHeader,
         evaluate,
-        // __ocg.diagnose() in the console when it silently does nothing.
+        // Reports what each step of the search found.
         diagnose() {
           const describe = (element) => {
             const id = element.id ? `#${element.id}` : "";
@@ -1011,7 +963,6 @@
             flightMinutes: (findFlightTimeMs() ?? 0) / 6e4 || null,
             selectedDestination: findSelectedDestination(),
             destinationCandidates: findDestinationCandidates(),
-            testMode: isTestMode(),
             travelButtons: findTravelButtons().map(describe),
             blocked: [
               ...document.querySelectorAll(`[${BLOCK_ATTR}]`)
@@ -1028,8 +979,7 @@
         get ocState() {
           return ocState;
         },
-        // Lets a state be forced from the console to see how it renders:
-        // __ocg.ocState = "recruiting"; __ocg.evaluate();
+        // Forces a state, to see how it renders.
         set ocState(value) {
           ocState = value;
         }
