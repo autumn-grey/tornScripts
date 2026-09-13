@@ -289,8 +289,8 @@ let ocState: OcKind = OC_UNKNOWN;
 let ocLookupRunning = false;
 let ocAttempts = 0;
 
-// Lookups to run before settling on an answer.
-const OC_MAX_ATTEMPTS = 1;
+// Lookups that must come back empty-handed before settling on "no crime".
+const OC_MAX_ATTEMPTS = 4;
 
 /** Determines and caches the Organized Crime state. */
 async function resolveOcState(): Promise<void> {
@@ -309,12 +309,14 @@ async function resolveOcState(): Promise<void> {
             ? Date.now()
             : null;
       ocAttempts = 0;
+    } else if (hasOcIcon()) {
+      // An icon we could not read means a wording we do not know.
+      ocState = OC_UNREADABLE;
+      ocAttempts = 0;
     } else {
+      // No icon yet, which is either no crime or a sidebar still mounting.
       ocAttempts += 1;
-      // No icon means no crime; an icon we could not read means new wording.
-      if (ocAttempts >= OC_MAX_ATTEMPTS) {
-        ocState = hasOcIcon() ? OC_UNREADABLE : OC_NONE;
-      }
+      if (ocAttempts >= OC_MAX_ATTEMPTS) ocState = OC_NONE;
     }
     log(
       "OC state:",
@@ -1272,9 +1274,12 @@ async function main(): Promise<void> {
     injectToggle();
     clearTimeout(pending);
     pending = window.setTimeout(() => {
-      // Do not retry once settled: opening the tooltip is itself a DOM change.
+      // Do not retry on any other settled state: opening the tooltip is
+      // itself a DOM change.
       if (ocState === OC_UNKNOWN) {
         void resolveOcState().then(evaluate);
+      } else if (ocState === OC_NONE && hasOcIcon()) {
+        retryOcNow();
       } else {
         evaluate();
       }
