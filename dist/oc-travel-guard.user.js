@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OC Travel Guard
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.0.1
 // @description  Blocks travel to any destination you could not fly back from before your Organised Crime starts.
 // @author       AutumnGrey
 // @license      MIT
@@ -111,7 +111,7 @@
     if (remaining !== null) {
       return { kind: OC_TIMER, startMs: Date.now() + remaining };
     }
-    if (/\b\d+\s*of\s*\d+\s*slots?\s*filled\b/i.test(text)) {
+    if (/\d+\s*of\s*\d+\s*slots?\s*filled/i.test(text)) {
       return { kind: OC_RECRUITING };
     }
     if (/waiting\s*to\s*initiate/i.test(text)) return { kind: OC_IMMINENT };
@@ -149,7 +149,8 @@
     return null;
   }
   function hasOcIcon() {
-    return document.querySelector(SELECTORS.ocIconLabelled) !== null;
+    if (document.querySelector(SELECTORS.ocIconLabelled) !== null) return true;
+    return /organi[sz]ed\s*crime/i.test(ocCapturedText);
   }
   function triggerOcTooltip(element, entering) {
     const key = Object.keys(element).find((k) => k.startsWith("__reactFiber"));

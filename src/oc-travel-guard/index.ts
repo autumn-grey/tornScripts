@@ -143,7 +143,9 @@ function classifyOcText(text: string): OcReading | null {
   }
 
   // "3 of 5 slots filled" - still recruiting.
-  if (/\b\d+\s*of\s*\d+\s*slots?\s*filled\b/i.test(text)) {
+  // Do not anchor this with \b: the tooltip's lines run together, so the
+  // count arrives glued to the end of the crime's name.
+  if (/\d+\s*of\s*\d+\s*slots?\s*filled/i.test(text)) {
     return { kind: OC_RECRUITING };
   }
 
@@ -195,9 +197,10 @@ function scanForOcState(): OcReading | null {
   return null;
 }
 
-/** Whether the sidebar is showing an Organized Crime icon that names a crime. */
+/** Whether anything on the page says the user is in a crime at all. */
 function hasOcIcon(): boolean {
-  return document.querySelector(SELECTORS.ocIconLabelled) !== null;
+  if (document.querySelector(SELECTORS.ocIconLabelled) !== null) return true;
+  return /organi[sz]ed\s*crime/i.test(ocCapturedText);
 }
 
 /** The slice of a React fiber node this script reads. */
