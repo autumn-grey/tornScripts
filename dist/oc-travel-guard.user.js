@@ -124,6 +124,16 @@
     }
   }
   function scanForOcState() {
+    for (const icon of document.querySelectorAll(SELECTORS.ocIcon)) {
+      const label = (icon.getAttribute("aria-label") ?? "").trim();
+      if (label === "") continue;
+      rememberTooltipText(label);
+      const state = classifyOcText(label);
+      if (state !== null) {
+        log("OC icon:", state.kind, "|", label);
+        return state;
+      }
+    }
     for (const node of document.querySelectorAll(
       SELECTORS.tooltip
     )) {

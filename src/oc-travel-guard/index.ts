@@ -165,8 +165,20 @@ function rememberTooltipText(text: string): void {
   }
 }
 
-/** Reads the OC state out of any tooltip currently mounted. */
+/** Reads the OC state off the sidebar icon, or any tooltip currently mounted. */
 function scanForOcState(): OcReading | null {
+  for (const icon of document.querySelectorAll<HTMLElement>(SELECTORS.ocIcon)) {
+    const label = (icon.getAttribute("aria-label") ?? "").trim();
+    if (label === "") continue;
+
+    rememberTooltipText(label);
+    const state = classifyOcText(label);
+    if (state !== null) {
+      log("OC icon:", state.kind, "|", label);
+      return state;
+    }
+  }
+
   for (const node of document.querySelectorAll<HTMLElement>(
     SELECTORS.tooltip,
   )) {
