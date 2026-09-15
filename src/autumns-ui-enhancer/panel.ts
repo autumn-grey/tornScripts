@@ -1,6 +1,14 @@
 // The "Autumn's Scripts" switch panel on preferences.php.
 
-import { FEATURES, PANEL_FOOTNOTE, isEnabled, setEnabled } from "./settings";
+import {
+  FEATURES,
+  PANEL_FOOTNOTE,
+  RECIPIENT_SETTING,
+  isEnabled,
+  readSetting,
+  setEnabled,
+  writeSetting,
+} from "./settings";
 import { PANEL_ID, injectStyles } from "./styles";
 
 const PREFS_PANEL_SELECTORS = [
@@ -16,6 +24,54 @@ function findPrefsPanel(): Element | null {
     if (element) return element;
   }
   return null;
+}
+
+/** Returns the row holding the default recipient for the buy send form. */
+function buildRecipientRow(): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "aue-row";
+
+  const label = document.createElement("span");
+  label.className = "aue-label";
+  label.textContent = "Item Recipient Default";
+  const note = document.createElement("span");
+  note.className = "aue-note";
+  note.textContent = "user ID, filled in for you when sending";
+  label.appendChild(note);
+  row.appendChild(label);
+
+  const field = document.createElement("span");
+  field.className = "aue-field";
+  row.appendChild(field);
+
+  const input = document.createElement("input");
+  input.className = "aue-input";
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.placeholder = "none";
+  input.value = readSetting(RECIPIENT_SETTING, "");
+  field.appendChild(input);
+
+  const lookup = document.createElement("a");
+  lookup.className = "aue-field-link";
+  lookup.target = "_blank";
+  lookup.rel = "noopener";
+  lookup.textContent = "check";
+  field.appendChild(lookup);
+
+  const refresh = (): void => {
+    lookup.href = "https://www.torn.com/profiles.php?XID=" + input.value;
+    lookup.hidden = input.value === "";
+  };
+
+  input.addEventListener("input", () => {
+    input.value = input.value.replace(/\D+/g, "");
+    writeSetting(RECIPIENT_SETTING, input.value);
+    refresh();
+  });
+  refresh();
+
+  return row;
 }
 
 /** Returns the preferences panel. */
@@ -63,6 +119,8 @@ function buildPanel(): HTMLElement {
     row.appendChild(toggle);
     body.appendChild(row);
   }
+
+  body.appendChild(buildRecipientRow());
 
   const footnote = document.createElement("div");
   footnote.className = "aue-footnote";

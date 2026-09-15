@@ -5,6 +5,7 @@ import { installListSort } from "./listSort";
 import { installNewsTicker } from "./newsTicker";
 import { installPageJumpBlock } from "./pageJumpBlock";
 import { installPreferencesPanel } from "./panel";
+import { SHOP_PATHS, installShopSend } from "./shopSend";
 import { injectStyles } from "./styles";
 import { installWikiTheme } from "./wikiTheme";
 
@@ -35,6 +36,7 @@ function onReady(): void {
     installPreferencesPanel();
     return;
   }
+  if (SHOP_PATHS.includes(location.pathname)) installShopSend();
   installListDisplay();
   installListSort();
 }

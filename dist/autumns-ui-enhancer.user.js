@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.11.0
-// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, and scrolls the news ticker with arrows for stepping through the headlines. Switched on and off from a panel on the preferences page.
+// @version      0.13.1
+// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and offers a send form for anything bought in a shop, prefilled with your usual recipient and the amount you bought. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/*
@@ -53,12 +53,20 @@
     label: "News Ticker Controls",
     defaultOn: true
   };
+  var SHOP_SEND = {
+    key: "SHOP_SEND",
+    label: "Buy Features",
+    note: "send option after buying from a shop",
+    defaultOn: true
+  };
+  var RECIPIENT_SETTING = "SEND_RECIPIENT";
   var PANEL_FOOTNOTE = "Dark/Light Mode switch and table sorting in Torn Wiki enabled by default.";
   var FEATURES = [
     PAGE_JUMP_BLOCK,
     LIST_DISPLAY_EXTENSION,
     LIST_SORTING,
-    NEWS_TICKER
+    NEWS_TICKER,
+    SHOP_SEND
   ];
   function isEnabled(feature) {
     try {
@@ -69,9 +77,9 @@
       return feature.defaultOn;
     }
   }
-  function setEnabled(feature, on2) {
+  function setEnabled(feature, on3) {
     try {
-      localStorage.setItem(SETTING_PREFIX + feature.key, on2 ? "1" : "0");
+      localStorage.setItem(SETTING_PREFIX + feature.key, on3 ? "1" : "0");
     } catch {
     }
   }
@@ -922,6 +930,8 @@
   var BAR_CLASS = "aue-ticker-bar";
   var NAV_ID = "aue-ticker-nav";
   var OVERLAY_ID = "aue-ticker-overlay";
+  var ACTIVE_SLIDE = /enter-done|enter-active|swiper-slide-active/;
+  var MATCH_MIN_LENGTH = 8;
   var MANUAL_CLASS = "aue-ticker-manual";
   var OVERFLOW_SLACK = 4;
   var SCROLL_SPEED = 34;
@@ -989,8 +999,18 @@
   function headlines(bar) {
     return readHeadlines(bar) ?? seen;
   }
+  function liveHeadline(bar) {
+    const slides = Array.from(bar.querySelectorAll(SLIDE_SELECTOR)).reverse();
+    const slide = slides.find((item) => ACTIVE_SLIDE.test(item.className));
+    return (slide ?? slides[0])?.querySelector(HEADLINE_SELECTOR) ?? bar.querySelector(HEADLINE_SELECTOR);
+  }
+  function compareText(html) {
+    const box = document.createElement("div");
+    box.innerHTML = html;
+    return (box.textContent ?? "").replace(/[[d:s]+]s*$/, "").replace(/s+/g, " ").trim().toLowerCase();
+  }
   function remember(bar) {
-    const headline = bar.querySelector(HEADLINE_SELECTOR);
+    const headline = liveHeadline(bar);
     const html = headline?.innerHTML ?? "";
     if (!html) return;
     const id = headline?.textContent?.trim() ?? html;
@@ -999,10 +1019,13 @@
     seen.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
   }
   function liveIndex(bar, list) {
-    const showing = bar.querySelector(HEADLINE_SELECTOR)?.textContent?.trim().toLowerCase();
+    const showing = compareText(liveHeadline(bar)?.innerHTML ?? "");
     if (!showing) return 0;
-    const strip = (html) => html.replace(/<[^>]*>/g, "").trim().toLowerCase();
-    const at = list.findIndex((item) => strip(item.html) === showing);
+    const at = list.findIndex((item) => {
+      const text = compareText(item.html);
+      if (text.length < MATCH_MIN_LENGTH) return text === showing;
+      return showing.startsWith(text) || text.startsWith(showing);
+    });
     return at === -1 ? 0 : at;
   }
   var scroller = null;
@@ -1501,7 +1524,7 @@
     box-sizing: border-box;
     padding-right: 38px;
   }
-  .aue-ticker-manual .news-ticker-enter-done {
+  .aue-ticker-manual > *:not(#aue-ticker-overlay):not(#aue-ticker-nav) {
     visibility: hidden;
   }
 
@@ -1567,6 +1590,87 @@
   #aue-ticker-overlay .aue-ticker-text {
     white-space: nowrap;
   }
+  .aue-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .aue-input {
+    width: 76px;
+    padding: 2px 6px;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 4px;
+    background: #f2f2f2;
+    color: #000;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+  }
+  .aue-field-link {
+    color: #a9d1ff;
+    font-size: 11px;
+    text-decoration: none;
+  }
+  .aue-field-link:hover {
+    text-decoration: underline;
+  }
+
+  .aue-send {
+    margin: 4px 0 6px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+  }
+  .aue-send-btn {
+    height: 22px;
+    padding: 0 12px;
+    line-height: 22px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .aue-send-body {
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 4px;
+    background: #111;
+    overflow: hidden;
+  }
+  .aue-send-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 8px;
+    background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
+    color: #fff;
+  }
+  .aue-send-link {
+    color: #a9d1ff;
+    text-decoration: none;
+    font-size: 11px;
+  }
+  .aue-send-link:hover {
+    text-decoration: underline;
+  }
+  .aue-send-close {
+    border: 0;
+    padding: 0 4px;
+    background: none;
+    color: #fff;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .aue-send-status {
+    padding: 6px 8px;
+    color: #ccc;
+    font-size: 11px;
+  }
+  .aue-send-frame {
+    display: block;
+    width: 100%;
+    height: 320px;
+    border: 0;
+    background: #111;
+  }
 `;
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) return;
@@ -1588,6 +1692,45 @@
       if (element) return element;
     }
     return null;
+  }
+  function buildRecipientRow() {
+    const row = document.createElement("div");
+    row.className = "aue-row";
+    const label = document.createElement("span");
+    label.className = "aue-label";
+    label.textContent = "Item Recipient Default";
+    const note = document.createElement("span");
+    note.className = "aue-note";
+    note.textContent = "user ID, filled in for you when sending";
+    label.appendChild(note);
+    row.appendChild(label);
+    const field = document.createElement("span");
+    field.className = "aue-field";
+    row.appendChild(field);
+    const input = document.createElement("input");
+    input.className = "aue-input";
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.placeholder = "none";
+    input.value = readSetting(RECIPIENT_SETTING, "");
+    field.appendChild(input);
+    const lookup = document.createElement("a");
+    lookup.className = "aue-field-link";
+    lookup.target = "_blank";
+    lookup.rel = "noopener";
+    lookup.textContent = "check";
+    field.appendChild(lookup);
+    const refresh = () => {
+      lookup.href = "https://www.torn.com/profiles.php?XID=" + input.value;
+      lookup.hidden = input.value === "";
+    };
+    input.addEventListener("input", () => {
+      input.value = input.value.replace(/\D+/g, "");
+      writeSetting(RECIPIENT_SETTING, input.value);
+      refresh();
+    });
+    refresh();
+    return row;
   }
   function buildPanel() {
     const panel = document.createElement("div");
@@ -1625,6 +1768,7 @@
       row.appendChild(toggle);
       body.appendChild(row);
     }
+    body.appendChild(buildRecipientRow());
     const footnote = document.createElement("div");
     footnote.className = "aue-footnote";
     footnote.textContent = PANEL_FOOTNOTE;
@@ -1650,6 +1794,280 @@
       childList: true,
       subtree: true
     });
+  }
+
+  // src/autumns-ui-enhancer/shopSend.ts
+  var SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
+  var ITEMS_URL = "https://www.torn.com/item.php";
+  var MARKED_ATTR = "data-aue-send";
+  var BOUGHT_TEXT = /\byou (?:bought|purchased|have bought)\b/i;
+  var BOUGHT_AMOUNT = /\byou (?:bought|purchased|have bought)\s+(?:a|an|the)?\s*([\d,]+)\s*x?\b/i;
+  var MESSAGE_MAX_LENGTH = 300;
+  var ITEM_IMAGE = /\/items\/(\d+)\//;
+  var ANCESTOR_LIMIT = 6;
+  var FRAME_READY_MS = 2e4;
+  var POLL_MS = 250;
+  var FILL_DELAY_MS = 300;
+  var ROW_SELECTOR = "li, tr";
+  var SEND_SELECTORS = [
+    "[aria-label='Send' i]",
+    "[title='Send' i]",
+    "a[href*='send' i]",
+    "[class*='send' i]"
+  ];
+  var USER_FIELD_SELECTOR = "input[name*='user' i], input[placeholder*='user' i], input[id*='user' i]";
+  var AMOUNT_FIELD_SELECTOR = "input[name*='amount' i], input[placeholder*='amount' i], input[id*='amount' i], input[type='number']";
+  var TEXT_FIELD_SELECTOR = "input[type='text'], input[type='number'], input:not([type])";
+  var FRAME_CSS = `
+  #sidebarroot,
+  #header-root,
+  .header-wrapper-top,
+  .header-wrapper-bottom,
+  #chatRoot,
+  #footer,
+  .footer,
+  .content-title,
+  .links-top-wrap,
+  .breadcrumbs,
+  .ad-wrapper {
+    display: none !important;
+  }
+  body { background: #111 !important; }
+`;
+  function on2() {
+    return isEnabled(SHOP_SEND);
+  }
+  function itemIdIn(scope) {
+    const tagged = scope.matches("[data-item], [data-itemid]") ? scope : scope.querySelector("[data-item], [data-itemid]");
+    const attribute = tagged?.getAttribute("data-item") ?? tagged?.getAttribute("data-itemid") ?? null;
+    if (attribute && /^\d+$/.test(attribute)) return attribute;
+    const image = scope.querySelector("img[src*='/items/']");
+    const match = ITEM_IMAGE.exec(image?.getAttribute("src") ?? "");
+    return match?.[1] ?? null;
+  }
+  function itemIdFor(message) {
+    let node = message;
+    for (let depth = 0; node && depth < ANCESTOR_LIMIT; depth += 1) {
+      const id = itemIdIn(node);
+      if (id) return id;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function findRow(doc, itemId) {
+    const tagged = doc.querySelector(
+      `[data-item="${itemId}"], [data-itemid="${itemId}"]`
+    );
+    if (tagged) return tagged.closest(ROW_SELECTOR) ?? tagged;
+    const images = doc.querySelectorAll("img[src*='/items/']");
+    for (const image of images) {
+      const match = ITEM_IMAGE.exec(image.getAttribute("src") ?? "");
+      if (match && match[1] === itemId) {
+        return image.closest(ROW_SELECTOR) ?? image.parentElement;
+      }
+    }
+    return null;
+  }
+  function findSendControl(row) {
+    for (const selector of SEND_SELECTORS) {
+      const control = row.querySelector(selector);
+      if (control) return control;
+    }
+    return null;
+  }
+  function defaultRecipient() {
+    return readSetting(RECIPIENT_SETTING, "").replace(/\D+/g, "");
+  }
+  function amountBought(message) {
+    const match = BOUGHT_AMOUNT.exec(message.textContent ?? "");
+    const amount = match?.[1]?.replace(/,/g, "") ?? "";
+    return /^[1-9]\d*$/.test(amount) ? amount : null;
+  }
+  function fillField(input, value) {
+    const view = input.ownerDocument.defaultView;
+    const setter = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(input),
+      "value"
+    )?.set;
+    if (setter) {
+      setter.call(input, value);
+    } else {
+      input.value = value;
+    }
+    const EventClass = view?.Event ?? Event;
+    input.dispatchEvent(new EventClass("input", { bubbles: true }));
+    input.dispatchEvent(new EventClass("change", { bubbles: true }));
+  }
+  function sendFormScope(row) {
+    if (row.querySelector(TEXT_FIELD_SELECTOR)) return row;
+    const next = row.nextElementSibling;
+    if (next?.querySelector(TEXT_FIELD_SELECTOR)) return next;
+    return row;
+  }
+  function fillSendForm(row, amount) {
+    const scope = sendFormScope(row);
+    const boxes = Array.from(
+      scope.querySelectorAll(TEXT_FIELD_SELECTOR)
+    ).filter((box) => !box.disabled && !box.readOnly);
+    if (boxes.length === 0) return;
+    const recipient = defaultRecipient();
+    const userBox = scope.querySelector(USER_FIELD_SELECTOR) ?? boxes[0];
+    const amountBox = scope.querySelector(AMOUNT_FIELD_SELECTOR) ?? (boxes[1] === userBox ? boxes[0] : boxes[1]);
+    if (recipient && userBox && userBox.value === "") {
+      fillField(userBox, recipient);
+      log("send: recipient", recipient);
+    }
+    if (amount && amountBox && amountBox !== userBox) {
+      fillField(amountBox, amount);
+      log("send: amount", amount);
+    }
+  }
+  function sendFormOpen(row) {
+    return row.querySelector("input[type='text'], input[type='number']") !== null;
+  }
+  function styleFrame(doc) {
+    if (doc.getElementById("aue-send-frame-styles")) return;
+    const style = doc.createElement("style");
+    style.id = "aue-send-frame-styles";
+    style.textContent = FRAME_CSS;
+    (doc.head ?? doc.documentElement).appendChild(style);
+  }
+  function openInFrame(frame, itemId, amount, status) {
+    const started = Date.now();
+    const attempt = () => {
+      let doc = null;
+      try {
+        doc = frame.contentDocument;
+      } catch {
+        doc = null;
+      }
+      const expired = Date.now() - started >= FRAME_READY_MS;
+      if (!doc || !doc.body) {
+        if (!expired) setTimeout(attempt, POLL_MS);
+        return;
+      }
+      styleFrame(doc);
+      const row = findRow(doc, itemId);
+      if (!row) {
+        if (!expired) {
+          setTimeout(attempt, POLL_MS);
+          return;
+        }
+        status.textContent = "Couldn't find that item in the panel below - scroll to it there.";
+        log("send: item", itemId, "not found on the items page");
+        return;
+      }
+      if (!sendFormOpen(row)) findSendControl(row)?.click();
+      setTimeout(() => fillSendForm(row, amount), FILL_DELAY_MS);
+      const view = frame.contentWindow;
+      if (view) {
+        const top = row.getBoundingClientRect().top + view.scrollY - 6;
+        view.scrollTo(0, Math.max(0, top));
+      }
+      status.hidden = true;
+      log("send: showing item", itemId);
+    };
+    attempt();
+  }
+  function buildFrame(itemId, amount, status) {
+    const frame = document.createElement("iframe");
+    frame.className = "aue-send-frame";
+    frame.src = ITEMS_URL;
+    frame.addEventListener(
+      "load",
+      () => openInFrame(frame, itemId, amount, status)
+    );
+    return frame;
+  }
+  function buildPanel2(itemId, amount) {
+    const panel = document.createElement("div");
+    panel.className = "aue-send";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "torn-btn aue-send-btn";
+    button.textContent = "Send this item";
+    panel.appendChild(button);
+    const body = document.createElement("div");
+    body.className = "aue-send-body";
+    body.hidden = true;
+    panel.appendChild(body);
+    const bar = document.createElement("div");
+    bar.className = "aue-send-bar";
+    body.appendChild(bar);
+    const link = document.createElement("a");
+    link.className = "aue-send-link";
+    link.href = ITEMS_URL;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "Open items page";
+    bar.appendChild(link);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "aue-send-close";
+    close.textContent = "X";
+    close.setAttribute("aria-label", "Close");
+    bar.appendChild(close);
+    const status = document.createElement("div");
+    status.className = "aue-send-status";
+    body.appendChild(status);
+    close.addEventListener("click", () => {
+      body.hidden = true;
+      body.querySelector("iframe")?.remove();
+      button.hidden = false;
+    });
+    button.addEventListener("click", () => {
+      button.hidden = true;
+      body.hidden = false;
+      status.hidden = false;
+      status.textContent = "Loading your items...";
+      if (!body.querySelector("iframe")) {
+        body.appendChild(buildFrame(itemId, amount, status));
+      }
+    });
+    return panel;
+  }
+  function isPurchaseMessage(element) {
+    if (element.hasAttribute(MARKED_ATTR)) return false;
+    if (element.closest(".aue-send")) return false;
+    const text = element.textContent ?? "";
+    return text.length <= MESSAGE_MAX_LENGTH && BOUGHT_TEXT.test(text);
+  }
+  function offerSend(message) {
+    message.setAttribute(MARKED_ATTR, "1");
+    const itemId = itemIdFor(message);
+    if (!itemId) {
+      log("send: no item id near", message);
+      return;
+    }
+    message.insertAdjacentElement(
+      "afterend",
+      buildPanel2(itemId, amountBought(message))
+    );
+  }
+  function scan(root) {
+    const found = [];
+    if (isPurchaseMessage(root)) found.push(root);
+    for (const element of root.querySelectorAll("*")) {
+      if (isPurchaseMessage(element)) found.push(element);
+    }
+    for (const message of found) {
+      if (found.some((other) => other !== message && message.contains(other))) {
+        continue;
+      }
+      offerSend(message);
+    }
+  }
+  function installShopSend() {
+    if (!on2()) return;
+    scan(document.body);
+    new MutationObserver((records) => {
+      if (!on2()) return;
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof Element) scan(node);
+        }
+      }
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   // src/autumns-ui-enhancer/wikiTheme.ts
@@ -1866,6 +2284,7 @@
       installPreferencesPanel();
       return;
     }
+    if (SHOP_PATHS.includes(location.pathname)) installShopSend();
     installListDisplay();
     installListSort();
   }
