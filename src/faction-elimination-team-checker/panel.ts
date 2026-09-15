@@ -1,6 +1,6 @@
-import { ApiError, factionIdFromUrl, fetchTeams, isKeyProblem } from "./api";
+import { ApiError, factionIdFromUrl, fetchCompetition, isKeyProblem } from "./api";
 import { log } from "./debug";
-import { Cancelled, loadRoster } from "./roster";
+import { Cancelled, scanRoster } from "./roster";
 import {
   Roster,
   SortOrder,
@@ -9,10 +9,12 @@ import {
   readPanelOpen,
   readRoster,
   readSort,
-  rosterIsFresh,
+  readTeams,
+  teamsAreFresh,
   writeApiKey,
   writePanelOpen,
   writeSort,
+  writeTeams,
 } from "./settings";
 import {
   COLLAPSED_CLASS,
@@ -21,7 +23,7 @@ import {
   PANEL_ID,
   injectStyles,
 } from "./styles";
-import { TeamInfo, darkTheme, iconUrl, indexTeams, slugify } from "./teams";
+import { TeamInfo, darkTheme, iconUrl, indexTeams, seasonKey, slugify } from "./teams";
 
 // Unhashed landmarks, most specific first. The panel goes directly before
 // whichever is found, so it lands above TornTools' member filter.
@@ -38,9 +40,10 @@ interface Row {
 }
 
 let teamIndex = new Map<string, TeamInfo>();
+let season = "";
 let rows: Row[] = [];
 let sort: SortOrder = readSort();
-let loadToken = 0;
+let scanToken = 0;
 
 /** The element the panel is inserted before, or null when none is on the page. */
 function findAnchor(): Element | null {
@@ -57,10 +60,10 @@ function findAnchor(): Element | null {
   return null;
 }
 
-/** Turns a stored roster into the lines the panel shows. */
+/** Turns a stored scan into the lines the panel shows. */
 function buildRows(roster: Roster): Row[] {
   const built: Row[] = [];
-  const history = readHistory();
+  const history = readHistory(season);
 
   for (const entry of roster.entries) {
     if (entry.team) {
@@ -109,6 +112,13 @@ function sortRows(list: Row[]): Row[] {
   });
 }
 
+/** An empty badge, for a team with no icon to show. */
+function buildPlaceholder(): HTMLElement {
+  const placeholder = document.createElement("span");
+  placeholder.className = "et-no-team";
+  return placeholder;
+}
+
 /** Builds the badge shown beside a member's team. */
 function buildBadge(row: Row): HTMLElement {
   const badge = document.createElement("span");
@@ -117,26 +127,31 @@ function buildBadge(row: Row): HTMLElement {
   if (row.state === "eliminated") badge.classList.add(ELIMINATED_CLASS);
   if (row.state === "left") badge.classList.add(LEFT_CLASS);
 
-  if (row.slug) {
-    const image = document.createElement("img");
-    const dark = darkTheme();
-    image.src = iconUrl(row.slug, dark);
-    image.alt = row.teamName;
-    image.loading = "lazy";
-    image.addEventListener(
-      "error",
-      () => {
-        image.src = iconUrl(row.slug, !dark);
-      },
-      { once: true },
-    );
-    badge.appendChild(image);
-  } else {
-    const placeholder = document.createElement("span");
-    placeholder.className = "et-no-team";
-    badge.appendChild(placeholder);
+  if (!row.slug) {
+    badge.appendChild(buildPlaceholder());
+    return badge;
   }
 
+  const image = document.createElement("img");
+  const dark = darkTheme();
+  let tried = false;
+
+  image.src = iconUrl(row.slug, dark);
+  image.alt = row.teamName;
+  image.loading = "lazy";
+
+  // A team Torn has named but has no icon for leaves an empty badge rather
+  // than a broken one.
+  image.addEventListener("error", () => {
+    if (!tried) {
+      tried = true;
+      image.src = iconUrl(row.slug, !dark);
+      return;
+    }
+    image.replaceWith(buildPlaceholder());
+  });
+
+  badge.appendChild(image);
   return badge;
 }
 
@@ -242,77 +257,142 @@ function describe(error: unknown): string {
     if (isKeyProblem(error)) return `Key rejected: ${error.message}`;
     return error.message;
   }
-  return "Something went wrong loading the roster.";
+  return "Something went wrong talking to Torn.";
 }
 
-/** How long ago a stored roster was loaded. */
-function describeAge(roster: Roster): string {
-  const minutes = Math.round((Date.now() - roster.fetchedAt) / 60_000);
+/** How long ago something was fetched. */
+function describeAge(at: number): string {
+  const minutes = Math.round((Date.now() - at) / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes} minutes ago`;
-  return `${Math.round(minutes / 60)} hours ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 24 ? `${hours} hours ago` : `${Math.round(hours / 24)} days ago`;
 }
 
-/** Loads the teams and the faction's standings, then draws the list. */
-async function load(options: { force: boolean }): Promise<void> {
-  const token = ++loadToken;
-  const key = readApiKey();
-  const button = document.getElementById("et-refresh") as HTMLButtonElement | null;
+/** Turns both buttons on or off while something is running. */
+function setBusy(busy: boolean): void {
+  for (const id of ["et-refresh-teams", "et-scan"]) {
+    const button = document.getElementById(id) as HTMLButtonElement | null;
+    if (button) button.disabled = busy;
+  }
+}
 
+/** Draws the stored scan for the season the standings describe. */
+function showStoredRoster(): void {
+  const roster = readRoster(factionIdFromUrl() ?? 0, season);
+  rows = roster ? buildRows(roster) : [];
+  renderList();
+}
+
+/** Loads the standings, from storage when they are still young enough. */
+async function loadTeams(force: boolean): Promise<boolean> {
+  const key = readApiKey();
   if (!key) {
     rows = [];
     renderList();
-    setStatus("none", "Enter a public API key to load your faction.");
-    return;
+    setStatus("none", "Enter a public API key to get started.");
+    return false;
   }
 
-  const factionId = factionIdFromUrl();
-  const cached = readRoster(factionId ?? 0);
+  const stored = readTeams();
+  if (stored && !force && teamsAreFresh(stored)) {
+    teamIndex = indexTeams(stored.teams);
+    season = stored.season;
+    log("teams from storage", season);
+    return true;
+  }
 
-  if (button) button.disabled = true;
-  setStatus("working", "Loading teams...");
+  setStatus("working", "Checking which teams are still in...");
+
+  const competition = await fetchCompetition(key);
+  if (!competition.teams.length) {
+    rows = [];
+    renderList();
+    setStatus("none", "Torn is not running a team competition at the moment.");
+    return false;
+  }
+
+  season = seasonKey(competition.name, competition.teams);
+  teamIndex = indexTeams(competition.teams);
+  writeTeams({ season, fetchedAt: Date.now(), teams: competition.teams });
+
+  return true;
+}
+
+/** Says how many of the shown members are on a team that is out. */
+function summarise(): string {
+  if (!rows.length) return "No members scanned yet. Press Check for leavers.";
+
+  const out = rows.filter((row) => row.state === "eliminated").length;
+  const left = rows.filter((row) => row.state === "left").length;
+  const parts = [`${rows.length} in a team`];
+  if (out) parts.push(`${out} eliminated`);
+  if (left) parts.push(`${left} left`);
+  return `${parts.join(", ")}.`;
+}
+
+/** Refreshes the standings and redraws, without touching the member scan. */
+async function refreshTeams(force: boolean): Promise<void> {
+  setBusy(true);
 
   try {
-    teamIndex = indexTeams(await fetchTeams(key));
-    if (token !== loadToken) return;
+    if (!(await loadTeams(force))) return;
+    showStoredRoster();
 
-    if (cached && !options.force && rosterIsFresh(cached)) {
-      rows = buildRows(cached);
-      renderList();
-      setStatus("ok", `Showing ${rows.length} members, loaded ${describeAge(cached)}.`);
-      return;
-    }
-
-    if (cached) {
-      rows = buildRows(cached);
-      renderList();
-    }
-
-    const roster = await loadRoster(
-      key,
-      factionId,
-      ({ done, total }) => {
-        if (token !== loadToken) return;
-        setStatus("working", `Checking members... ${done}/${total}`);
-      },
-      () => token !== loadToken,
-    );
-
-    if (token !== loadToken) return;
-    rows = buildRows(roster);
-    renderList();
-    setStatus("ok", `Showing ${rows.length} members in a team.`);
+    const stored = readTeams();
+    const age = stored ? describeAge(stored.fetchedAt) : "just now";
+    setStatus("ok", `${summarise()} Teams checked ${age}.`);
   } catch (error) {
-    if (error instanceof Cancelled || token !== loadToken) return;
-    log("load failed", error);
+    log("teams failed", error);
     setStatus("error", describe(error));
   } finally {
-    if (token === loadToken && button) button.disabled = false;
+    setBusy(false);
   }
 }
 
-/** Builds the API key field and the refresh button. */
-function buildKeyField(): HTMLElement {
+/** Walks every member again, which is the only way a leaver turns up. */
+async function scanMembers(options: { forceTeams: boolean }): Promise<void> {
+  const token = ++scanToken;
+  const key = readApiKey();
+  if (!key) {
+    rows = [];
+    renderList();
+    setStatus("none", "Enter a public API key to get started.");
+    return;
+  }
+
+  setBusy(true);
+
+  try {
+    if (!(await loadTeams(options.forceTeams))) return;
+    showStoredRoster();
+
+    const roster = await scanRoster(
+      key,
+      season,
+      factionIdFromUrl(),
+      ({ done, total }) => {
+        if (token !== scanToken) return;
+        setStatus("working", `Checking members... ${done}/${total}`);
+      },
+      () => token !== scanToken,
+    );
+
+    if (token !== scanToken) return;
+    rows = buildRows(roster);
+    renderList();
+    setStatus("ok", summarise());
+  } catch (error) {
+    if (error instanceof Cancelled || token !== scanToken) return;
+    log("scan failed", error);
+    setStatus("error", describe(error));
+  } finally {
+    if (token === scanToken) setBusy(false);
+  }
+}
+
+/** Builds the API key field and the two buttons. */
+function buildControls(): HTMLElement {
   const field = document.createElement("div");
 
   const label = document.createElement("label");
@@ -334,12 +414,21 @@ function buildKeyField(): HTMLElement {
   input.value = readApiKey();
   row.appendChild(input);
 
-  const refresh = document.createElement("button");
-  refresh.id = "et-refresh";
-  refresh.type = "button";
-  refresh.className = "et-button torn-btn";
-  refresh.textContent = "Refresh";
-  row.appendChild(refresh);
+  const teamsButton = document.createElement("button");
+  teamsButton.id = "et-refresh-teams";
+  teamsButton.type = "button";
+  teamsButton.className = "et-button torn-btn";
+  teamsButton.textContent = "Refresh teams";
+  teamsButton.title = "Check which teams have been eliminated. One call.";
+  row.appendChild(teamsButton);
+
+  const scanButton = document.createElement("button");
+  scanButton.id = "et-scan";
+  scanButton.type = "button";
+  scanButton.className = "et-button torn-btn";
+  scanButton.textContent = "Check for leavers";
+  scanButton.title = "Ask Torn about every member again. Takes about a minute.";
+  row.appendChild(scanButton);
 
   field.appendChild(row);
 
@@ -351,23 +440,29 @@ function buildKeyField(): HTMLElement {
   const hint = document.createElement("div");
   hint.className = "et-hint";
   hint.textContent =
-    "A public access key is enough. The first load asks Torn about every " +
-    "member in turn, so it takes about a minute, and the result is kept for " +
-    "12 hours.";
+    "Entering a key scans the whole faction, which takes about a minute. " +
+    "After that, eliminations are checked on their own every 12 hours, and " +
+    "who is on which team only changes when you press Check for leavers.";
   field.appendChild(hint);
 
-  const submit = (): void => {
+  // A key on its own shows nothing, so entering one runs the full scan
+  // rather than leaving an empty panel behind.
+  // Do not drop the comparison: Enter and the blur that follows it would
+  // otherwise start the scan twice.
+  const keyEntered = (): void => {
+    if (input.value.trim() === readApiKey()) return;
     writeApiKey(input.value);
-    void load({ force: true });
+    void scanMembers({ forceTeams: true });
   };
 
-  input.addEventListener("change", submit);
+  input.addEventListener("change", keyEntered);
   input.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    submit();
+    keyEntered();
   });
-  refresh.addEventListener("click", submit);
+  teamsButton.addEventListener("click", () => void refreshTeams(true));
+  scanButton.addEventListener("click", () => void scanMembers({ forceTeams: false }));
 
   return field;
 }
@@ -385,7 +480,7 @@ function buildTitle(panel: HTMLElement): HTMLElement {
   title.appendChild(caret);
 
   const text = document.createElement("span");
-  text.textContent = "Elimination Teams";
+  text.textContent = "Faction Elimination Team Checker";
   title.appendChild(text);
 
   const count = document.createElement("span");
@@ -424,7 +519,7 @@ function buildPanel(): HTMLElement {
 
   const body = document.createElement("div");
   body.className = "et-body";
-  body.appendChild(buildKeyField());
+  body.appendChild(buildControls());
 
   const list = document.createElement("div");
   list.id = "et-list";
@@ -455,5 +550,5 @@ export function installPanel(): void {
   injectStyles();
   anchor.insertAdjacentElement("beforebegin", buildPanel());
   watchTheme();
-  void load({ force: false });
+  void refreshTeams(false);
 }

@@ -27,9 +27,21 @@ export function iconUrl(slug: string, dark: boolean): string {
   return `${ICON_BASE}/${slug}-${dark ? "dark" : "light"}.svg`;
 }
 
-/** Turns the competition standings into a lookup from team name to team. */
+/** Turns the standings into a lookup from team name to team. */
 export function indexTeams(teams: TeamInfo[]): Map<string, TeamInfo> {
   const index = new Map<string, TeamInfo>();
   for (const team of teams) index.set(team.name.toLowerCase(), team);
   return index;
+}
+
+// Torn replaces the teams each year and gives them fresh ids, so the set of
+// ids in play is what tells one year's competition from the next.
+
+/** Names the competition a set of teams belongs to. */
+export function seasonKey(competition: string, teams: TeamInfo[]): string {
+  const ids = teams
+    .map((team) => team.id)
+    .sort((a, b) => a - b)
+    .join(",");
+  return `${competition}:${ids}`;
 }

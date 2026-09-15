@@ -35,22 +35,31 @@ async function request(url: string): Promise<Record<string, unknown>> {
   return body;
 }
 
-/** Every elimination team, with the ones already out marked. */
-export async function fetchTeams(key: string): Promise<TeamInfo[]> {
+/** The competition Torn is currently running. */
+export interface Competition {
+  name: string;
+  teams: TeamInfo[];
+}
+
+/** The running competition and its teams, with the ones already out marked. */
+export async function fetchCompetition(key: string): Promise<Competition> {
   const body = await request(`${V1}/torn/?selections=competition&key=${encodeURIComponent(key)}`);
-  const competition = body.competition as { teams?: unknown[] } | undefined;
+  const competition = body.competition as { name?: string; teams?: unknown[] } | undefined;
   const teams = Array.isArray(competition?.teams) ? competition.teams : [];
 
-  return teams
-    .map((entry) => entry as { teamID?: number; name?: string; lives?: number })
-    .filter((entry) => typeof entry.name === "string")
-    .map((entry) => ({
-      id: entry.teamID ?? 0,
-      name: entry.name as string,
-      slug: slugify(entry.name as string),
-      lives: entry.lives ?? 0,
-      eliminated: (entry.lives ?? 0) <= 0,
-    }));
+  return {
+    name: competition?.name ?? "",
+    teams: teams
+      .map((entry) => entry as { teamID?: number; name?: string; lives?: number })
+      .filter((entry) => typeof entry.name === "string")
+      .map((entry) => ({
+        id: entry.teamID ?? 0,
+        name: entry.name as string,
+        slug: slugify(entry.name as string),
+        lives: entry.lives ?? 0,
+        eliminated: (entry.lives ?? 0) <= 0,
+      })),
+  };
 }
 
 /** One faction member, as the member list gives them. */

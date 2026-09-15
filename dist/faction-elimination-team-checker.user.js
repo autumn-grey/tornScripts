@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Elimination Teams
+// @name         Faction Elimination Team Checker
 // @namespace    https://github.com/autumn-grey
-// @version      1.1.0
+// @version      1.2.2
 // @description  Adds a collapsible panel to the faction page showing which elimination team each faction member is on, with eliminated teams greyed out.
 // @author       AutumnGrey
 // @license      MIT
@@ -10,13 +10,13 @@
 // @grant        GM_getValue
 // @run-at       document-idle
 // @noframes     true
-// @downloadURL  https://raw.githubusercontent.com/autumn-grey/tornScripts/main/dist/elimination-teams.user.js
-// @updateURL    https://raw.githubusercontent.com/autumn-grey/tornScripts/main/dist/elimination-teams.user.js
+// @downloadURL  https://raw.githubusercontent.com/autumn-grey/tornScripts/main/dist/faction-elimination-team-checker.user.js
+// @updateURL    https://raw.githubusercontent.com/autumn-grey/tornScripts/main/dist/faction-elimination-team-checker.user.js
 // ==/UserScript==
 
 "use strict";
 (() => {
-  // src/elimination-teams/debug.ts
+  // src/faction-elimination-team-checker/debug.ts
   var DEBUG_KEY = "ET_DEBUG";
   function debugging() {
     try {
@@ -30,7 +30,7 @@
     console.debug("[ET]", ...parts);
   }
 
-  // src/elimination-teams/teams.ts
+  // src/faction-elimination-team-checker/teams.ts
   var ICON_BASE = "https://www.torn.com/images/v2/competition/elimination/team-icons";
   function slugify(name) {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -46,8 +46,12 @@
     for (const team of teams) index.set(team.name.toLowerCase(), team);
     return index;
   }
+  function seasonKey(competition, teams) {
+    const ids = teams.map((team) => team.id).sort((a, b) => a - b).join(",");
+    return `${competition}:${ids}`;
+  }
 
-  // src/elimination-teams/api.ts
+  // src/faction-elimination-team-checker/api.ts
   var V1 = "https://api.torn.com";
   var V2 = "https://api.torn.com/v2";
   var ApiError = class extends Error {
@@ -71,17 +75,20 @@
     if (error) throw new ApiError(error.code ?? 0, error.error ?? "Unknown API error.");
     return body;
   }
-  async function fetchTeams(key) {
+  async function fetchCompetition(key) {
     const body = await request(`${V1}/torn/?selections=competition&key=${encodeURIComponent(key)}`);
     const competition = body.competition;
     const teams = Array.isArray(competition?.teams) ? competition.teams : [];
-    return teams.map((entry) => entry).filter((entry) => typeof entry.name === "string").map((entry) => ({
-      id: entry.teamID ?? 0,
-      name: entry.name,
-      slug: slugify(entry.name),
-      lives: entry.lives ?? 0,
-      eliminated: (entry.lives ?? 0) <= 0
-    }));
+    return {
+      name: competition?.name ?? "",
+      teams: teams.map((entry) => entry).filter((entry) => typeof entry.name === "string").map((entry) => ({
+        id: entry.teamID ?? 0,
+        name: entry.name,
+        slug: slugify(entry.name),
+        lives: entry.lives ?? 0,
+        eliminated: (entry.lives ?? 0) <= 0
+      }))
+    };
   }
   async function fetchMembers(key, factionId) {
     const path = factionId ? `${V2}/faction/${factionId}/members` : `${V2}/faction/members`;
@@ -104,14 +111,15 @@
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
-  // src/elimination-teams/settings.ts
+  // src/faction-elimination-team-checker/settings.ts
   var SETTING_PREFIX = "ET_";
   var API_KEY_NAME = "ET_API_KEY";
   var PANEL_OPEN_KEY = "PANEL_OPEN";
   var SORT_KEY = "SORT";
+  var TEAMS_KEY = "TEAMS";
   var ROSTER_KEY = "ROSTER";
   var HISTORY_KEY = "HISTORY";
-  var ROSTER_MAX_AGE_MS = 12 * 60 * 60 * 1e3;
+  var TEAMS_MAX_AGE_MS = 12 * 60 * 60 * 1e3;
   function readSetting(key, fallback) {
     try {
       return localStorage.getItem(SETTING_PREFIX + key) ?? fallback;
@@ -123,6 +131,16 @@
     try {
       localStorage.setItem(SETTING_PREFIX + key, value);
     } catch {
+    }
+  }
+  function readJson(key) {
+    const raw = readSetting(key, "");
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
     }
   }
   function readApiKey() {
@@ -146,65 +164,65 @@
     writeSetting(PANEL_OPEN_KEY, open ? "1" : "0");
   }
   function readSort() {
-    const raw = readSetting(SORT_KEY, "");
-    const [column, direction] = raw.split(":");
+    const [column, direction] = readSetting(SORT_KEY, "").split(":");
     if (column !== "name" && column !== "team") return { column: "team", ascending: true };
     return { column, ascending: direction !== "desc" };
   }
   function writeSort(sort2) {
     writeSetting(SORT_KEY, `${sort2.column}:${sort2.ascending ? "asc" : "desc"}`);
   }
-  function readRoster(factionId) {
-    const raw = readSetting(ROSTER_KEY, "");
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return null;
-      const roster = parsed;
-      if (roster.factionId !== factionId) return null;
-      if (!Array.isArray(roster.entries)) return null;
-      return {
-        factionId,
-        fetchedAt: typeof roster.fetchedAt === "number" ? roster.fetchedAt : 0,
-        entries: roster.entries.filter(
-          (entry) => !!entry && typeof entry.id === "number" && typeof entry.name === "string"
-        )
-      };
-    } catch {
-      return null;
-    }
+  function readTeams() {
+    const stored = readJson(TEAMS_KEY);
+    if (!stored || typeof stored.season !== "string") return null;
+    if (!Array.isArray(stored.teams)) return null;
+    return {
+      season: stored.season,
+      fetchedAt: typeof stored.fetchedAt === "number" ? stored.fetchedAt : 0,
+      teams: stored.teams.filter(
+        (team) => !!team && typeof team.name === "string"
+      )
+    };
+  }
+  function writeTeams(teams) {
+    writeSetting(TEAMS_KEY, JSON.stringify(teams));
+  }
+  function teamsAreFresh(teams) {
+    return Date.now() - teams.fetchedAt < TEAMS_MAX_AGE_MS;
+  }
+  function readRoster(factionId, season2) {
+    const stored = readJson(ROSTER_KEY);
+    if (!stored || stored.season !== season2 || stored.factionId !== factionId) return null;
+    if (!Array.isArray(stored.entries)) return null;
+    return {
+      season: season2,
+      factionId,
+      fetchedAt: typeof stored.fetchedAt === "number" ? stored.fetchedAt : 0,
+      entries: stored.entries.filter(
+        (entry) => !!entry && typeof entry.id === "number" && typeof entry.name === "string"
+      )
+    };
   }
   function writeRoster(roster) {
     writeSetting(ROSTER_KEY, JSON.stringify(roster));
   }
-  function rosterIsFresh(roster) {
-    return Date.now() - roster.fetchedAt < ROSTER_MAX_AGE_MS;
-  }
-  function readHistory() {
-    const raw = readSetting(HISTORY_KEY, "");
-    if (!raw) return {};
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return {};
-      const history = {};
-      for (const [id, team] of Object.entries(parsed)) {
-        if (typeof team === "string" && team) history[id] = team;
-      }
-      return history;
-    } catch {
-      return {};
+  function readHistory(season2) {
+    const stored = readJson(HISTORY_KEY);
+    if (!stored || stored.season !== season2 || !stored.teams) return {};
+    const history = {};
+    for (const [id, team] of Object.entries(stored.teams)) {
+      if (typeof team === "string" && team) history[id] = team;
     }
-  }
-  function rememberTeams(entries) {
-    const history = readHistory();
-    for (const entry of entries) {
-      if (entry.team) history[String(entry.id)] = entry.team;
-    }
-    writeSetting(HISTORY_KEY, JSON.stringify(history));
     return history;
   }
+  function rememberTeams(season2, entries) {
+    const teams = readHistory(season2);
+    for (const entry of entries) {
+      if (entry.team) teams[String(entry.id)] = entry.team;
+    }
+    writeSetting(HISTORY_KEY, JSON.stringify({ season: season2, teams }));
+  }
 
-  // src/elimination-teams/roster.ts
+  // src/faction-elimination-team-checker/roster.ts
   var CALL_SPACING_MS = 700;
   var RATE_LIMIT_BACKOFF_MS = 15e3;
   function wait(ms) {
@@ -212,7 +230,7 @@
   }
   var Cancelled = class extends Error {
   };
-  async function loadRoster(key, factionId, onProgress, cancelled) {
+  async function scanRoster(key, season2, factionId, onProgress, cancelled) {
     const members = await fetchMembers(key, factionId);
     const entries = [];
     onProgress({ done: 0, total: members.length });
@@ -238,16 +256,17 @@
       await wait(CALL_SPACING_MS);
     }
     const roster = {
+      season: season2,
       factionId: factionId ?? 0,
       fetchedAt: Date.now(),
       entries
     };
     writeRoster(roster);
-    rememberTeams(entries);
+    rememberTeams(season2, entries);
     return roster;
   }
 
-  // src/elimination-teams/styles.ts
+  // src/faction-elimination-team-checker/styles.ts
   var STYLE_ID = "et-styles";
   var PANEL_ID = "et-panel";
   var COLLAPSED_CLASS = "et-collapsed";
@@ -508,12 +527,13 @@
     (document.head ?? document.documentElement).appendChild(style);
   }
 
-  // src/elimination-teams/panel.ts
+  // src/faction-elimination-team-checker/panel.ts
   var ANCHOR_SELECTORS = [".tt-filter", ".members-list", ".f-war-list"];
   var teamIndex = /* @__PURE__ */ new Map();
+  var season = "";
   var rows = [];
   var sort = readSort();
-  var loadToken = 0;
+  var scanToken = 0;
   function findAnchor() {
     for (const selector of ANCHOR_SELECTORS) {
       const element = document.querySelector(selector);
@@ -526,7 +546,7 @@
   }
   function buildRows(roster) {
     const built = [];
-    const history = readHistory();
+    const history = readHistory(season);
     for (const entry of roster.entries) {
       if (entry.team) {
         const team2 = teamIndex.get(entry.team.toLowerCase());
@@ -563,30 +583,35 @@
       return a.name.localeCompare(b.name, void 0, { sensitivity: "base" });
     });
   }
+  function buildPlaceholder() {
+    const placeholder = document.createElement("span");
+    placeholder.className = "et-no-team";
+    return placeholder;
+  }
   function buildBadge(row) {
     const badge = document.createElement("span");
     badge.className = "et-badge";
     if (row.state === "eliminated") badge.classList.add(ELIMINATED_CLASS);
     if (row.state === "left") badge.classList.add(LEFT_CLASS);
-    if (row.slug) {
-      const image = document.createElement("img");
-      const dark = darkTheme();
-      image.src = iconUrl(row.slug, dark);
-      image.alt = row.teamName;
-      image.loading = "lazy";
-      image.addEventListener(
-        "error",
-        () => {
-          image.src = iconUrl(row.slug, !dark);
-        },
-        { once: true }
-      );
-      badge.appendChild(image);
-    } else {
-      const placeholder = document.createElement("span");
-      placeholder.className = "et-no-team";
-      badge.appendChild(placeholder);
+    if (!row.slug) {
+      badge.appendChild(buildPlaceholder());
+      return badge;
     }
+    const image = document.createElement("img");
+    const dark = darkTheme();
+    let tried = false;
+    image.src = iconUrl(row.slug, dark);
+    image.alt = row.teamName;
+    image.loading = "lazy";
+    image.addEventListener("error", () => {
+      if (!tried) {
+        tried = true;
+        image.src = iconUrl(row.slug, !dark);
+        return;
+      }
+      image.replaceWith(buildPlaceholder());
+    });
+    badge.appendChild(image);
     return badge;
   }
   function buildRow(row) {
@@ -665,63 +690,114 @@
       if (isKeyProblem(error)) return `Key rejected: ${error.message}`;
       return error.message;
     }
-    return "Something went wrong loading the roster.";
+    return "Something went wrong talking to Torn.";
   }
-  function describeAge(roster) {
-    const minutes = Math.round((Date.now() - roster.fetchedAt) / 6e4);
+  function describeAge(at) {
+    const minutes = Math.round((Date.now() - at) / 6e4);
     if (minutes < 1) return "just now";
     if (minutes < 60) return `${minutes} minutes ago`;
-    return `${Math.round(minutes / 60)} hours ago`;
+    const hours = Math.round(minutes / 60);
+    return hours < 24 ? `${hours} hours ago` : `${Math.round(hours / 24)} days ago`;
   }
-  async function load(options) {
-    const token = ++loadToken;
+  function setBusy(busy) {
+    for (const id of ["et-refresh-teams", "et-scan"]) {
+      const button = document.getElementById(id);
+      if (button) button.disabled = busy;
+    }
+  }
+  function showStoredRoster() {
+    const roster = readRoster(factionIdFromUrl() ?? 0, season);
+    rows = roster ? buildRows(roster) : [];
+    renderList();
+  }
+  async function loadTeams(force) {
     const key = readApiKey();
-    const button = document.getElementById("et-refresh");
     if (!key) {
       rows = [];
       renderList();
-      setStatus("none", "Enter a public API key to load your faction.");
-      return;
+      setStatus("none", "Enter a public API key to get started.");
+      return false;
     }
-    const factionId = factionIdFromUrl();
-    const cached = readRoster(factionId ?? 0);
-    if (button) button.disabled = true;
-    setStatus("working", "Loading teams...");
-    try {
-      teamIndex = indexTeams(await fetchTeams(key));
-      if (token !== loadToken) return;
-      if (cached && !options.force && rosterIsFresh(cached)) {
-        rows = buildRows(cached);
-        renderList();
-        setStatus("ok", `Showing ${rows.length} members, loaded ${describeAge(cached)}.`);
-        return;
-      }
-      if (cached) {
-        rows = buildRows(cached);
-        renderList();
-      }
-      const roster = await loadRoster(
-        key,
-        factionId,
-        ({ done, total }) => {
-          if (token !== loadToken) return;
-          setStatus("working", `Checking members... ${done}/${total}`);
-        },
-        () => token !== loadToken
-      );
-      if (token !== loadToken) return;
-      rows = buildRows(roster);
+    const stored = readTeams();
+    if (stored && !force && teamsAreFresh(stored)) {
+      teamIndex = indexTeams(stored.teams);
+      season = stored.season;
+      log("teams from storage", season);
+      return true;
+    }
+    setStatus("working", "Checking which teams are still in...");
+    const competition = await fetchCompetition(key);
+    if (!competition.teams.length) {
+      rows = [];
       renderList();
-      setStatus("ok", `Showing ${rows.length} members in a team.`);
+      setStatus("none", "Torn is not running a team competition at the moment.");
+      return false;
+    }
+    season = seasonKey(competition.name, competition.teams);
+    teamIndex = indexTeams(competition.teams);
+    writeTeams({ season, fetchedAt: Date.now(), teams: competition.teams });
+    return true;
+  }
+  function summarise() {
+    if (!rows.length) return "No members scanned yet. Press Check for leavers.";
+    const out = rows.filter((row) => row.state === "eliminated").length;
+    const left = rows.filter((row) => row.state === "left").length;
+    const parts = [`${rows.length} in a team`];
+    if (out) parts.push(`${out} eliminated`);
+    if (left) parts.push(`${left} left`);
+    return `${parts.join(", ")}.`;
+  }
+  async function refreshTeams(force) {
+    setBusy(true);
+    try {
+      if (!await loadTeams(force)) return;
+      showStoredRoster();
+      const stored = readTeams();
+      const age = stored ? describeAge(stored.fetchedAt) : "just now";
+      setStatus("ok", `${summarise()} Teams checked ${age}.`);
     } catch (error) {
-      if (error instanceof Cancelled || token !== loadToken) return;
-      log("load failed", error);
+      log("teams failed", error);
       setStatus("error", describe(error));
     } finally {
-      if (token === loadToken && button) button.disabled = false;
+      setBusy(false);
     }
   }
-  function buildKeyField() {
+  async function scanMembers(options) {
+    const token = ++scanToken;
+    const key = readApiKey();
+    if (!key) {
+      rows = [];
+      renderList();
+      setStatus("none", "Enter a public API key to get started.");
+      return;
+    }
+    setBusy(true);
+    try {
+      if (!await loadTeams(options.forceTeams)) return;
+      showStoredRoster();
+      const roster = await scanRoster(
+        key,
+        season,
+        factionIdFromUrl(),
+        ({ done, total }) => {
+          if (token !== scanToken) return;
+          setStatus("working", `Checking members... ${done}/${total}`);
+        },
+        () => token !== scanToken
+      );
+      if (token !== scanToken) return;
+      rows = buildRows(roster);
+      renderList();
+      setStatus("ok", summarise());
+    } catch (error) {
+      if (error instanceof Cancelled || token !== scanToken) return;
+      log("scan failed", error);
+      setStatus("error", describe(error));
+    } finally {
+      if (token === scanToken) setBusy(false);
+    }
+  }
+  function buildControls() {
     const field = document.createElement("div");
     const label = document.createElement("label");
     label.className = "et-field-label";
@@ -739,12 +815,20 @@
     input.placeholder = "Public access key";
     input.value = readApiKey();
     row.appendChild(input);
-    const refresh = document.createElement("button");
-    refresh.id = "et-refresh";
-    refresh.type = "button";
-    refresh.className = "et-button torn-btn";
-    refresh.textContent = "Refresh";
-    row.appendChild(refresh);
+    const teamsButton = document.createElement("button");
+    teamsButton.id = "et-refresh-teams";
+    teamsButton.type = "button";
+    teamsButton.className = "et-button torn-btn";
+    teamsButton.textContent = "Refresh teams";
+    teamsButton.title = "Check which teams have been eliminated. One call.";
+    row.appendChild(teamsButton);
+    const scanButton = document.createElement("button");
+    scanButton.id = "et-scan";
+    scanButton.type = "button";
+    scanButton.className = "et-button torn-btn";
+    scanButton.textContent = "Check for leavers";
+    scanButton.title = "Ask Torn about every member again. Takes about a minute.";
+    row.appendChild(scanButton);
     field.appendChild(row);
     const status = document.createElement("div");
     status.id = "et-status";
@@ -752,19 +836,21 @@
     field.appendChild(status);
     const hint = document.createElement("div");
     hint.className = "et-hint";
-    hint.textContent = "A public access key is enough. The first load asks Torn about every member in turn, so it takes about a minute, and the result is kept for 12 hours.";
+    hint.textContent = "Entering a key scans the whole faction, which takes about a minute. After that, eliminations are checked on their own every 12 hours, and who is on which team only changes when you press Check for leavers.";
     field.appendChild(hint);
-    const submit = () => {
+    const keyEntered = () => {
+      if (input.value.trim() === readApiKey()) return;
       writeApiKey(input.value);
-      void load({ force: true });
+      void scanMembers({ forceTeams: true });
     };
-    input.addEventListener("change", submit);
+    input.addEventListener("change", keyEntered);
     input.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      submit();
+      keyEntered();
     });
-    refresh.addEventListener("click", submit);
+    teamsButton.addEventListener("click", () => void refreshTeams(true));
+    scanButton.addEventListener("click", () => void scanMembers({ forceTeams: false }));
     return field;
   }
   function buildTitle(panel) {
@@ -777,7 +863,7 @@
     caret.textContent = "▾";
     title.appendChild(caret);
     const text = document.createElement("span");
-    text.textContent = "Elimination Teams";
+    text.textContent = "Faction Elimination Team Checker";
     title.appendChild(text);
     const count = document.createElement("span");
     count.id = "et-count";
@@ -807,7 +893,7 @@
     panel.appendChild(buildTitle(panel));
     const body = document.createElement("div");
     body.className = "et-body";
-    body.appendChild(buildKeyField());
+    body.appendChild(buildControls());
     const list = document.createElement("div");
     list.id = "et-list";
     body.appendChild(list);
@@ -829,10 +915,10 @@
     injectStyles();
     anchor.insertAdjacentElement("beforebegin", buildPanel());
     watchTheme();
-    void load({ force: false });
+    void refreshTeams(false);
   }
 
-  // src/elimination-teams/index.ts
+  // src/faction-elimination-team-checker/index.ts
   function onReady() {
     installPanel();
     new MutationObserver(() => installPanel()).observe(document.body, {

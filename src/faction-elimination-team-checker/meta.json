@@ -1,6 +1,6 @@
 {
-  "name": "Elimination Teams",
-  "version": "1.1.0",
+  "name": "Faction Elimination Team Checker",
+  "version": "1.2.2",
   "description": "Adds a collapsible panel to the faction page showing which elimination team each faction member is on, with eliminated teams greyed out.",
   "match": [
     "https://www.torn.com/factions.php*"

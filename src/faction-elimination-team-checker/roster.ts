@@ -11,18 +11,19 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** How far through the member list a load has got. */
+/** How far through the member list a scan has got. */
 export interface Progress {
   done: number;
   total: number;
 }
 
-/** Stops a load that is still running. */
+/** Stops a scan that is still running. */
 export class Cancelled extends Error {}
 
 /** Walks a faction's members and stores each one's elimination team. */
-export async function loadRoster(
+export async function scanRoster(
   key: string,
+  season: string,
   factionId: number | null,
   onProgress: (progress: Progress) => void,
   cancelled: () => boolean,
@@ -57,11 +58,12 @@ export async function loadRoster(
   }
 
   const roster: Roster = {
+    season,
     factionId: factionId ?? 0,
     fetchedAt: Date.now(),
     entries,
   };
   writeRoster(roster);
-  rememberTeams(entries);
+  rememberTeams(season, entries);
   return roster;
 }

@@ -1,9 +1,9 @@
-// Elimination Teams
+// Faction Elimination Team Checker
 //
 //   settings.ts  the API key, the sort order and the stored roster
 //   api.ts       the Torn API calls this script makes
 //   teams.ts     the elimination teams and their icons
-//   roster.ts    walking a faction's members for their standings
+//   roster.ts    walking a faction's members for their teams
 //   panel.ts     the panel above the member filter
 //   styles.ts    every style the script injects
 //   debug.ts     logging, off unless ET_DEBUG is switched on
