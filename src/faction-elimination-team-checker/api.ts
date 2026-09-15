@@ -92,9 +92,17 @@ export async function fetchTeamOf(key: string, userId: number): Promise<string |
   return team && team.toLowerCase() !== "unknown" ? team : null;
 }
 
-/** The faction whose page is being looked at, or null for the key owner's own. */
+/** The faction whose page is being looked at, or null when the URL names none. */
 export function factionIdFromUrl(): number | null {
   const id = new URLSearchParams(location.search).get("ID");
   const parsed = Number(id);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** The faction the key's owner belongs to, or 0 when they are in none. */
+export async function fetchOwnFactionId(key: string): Promise<number> {
+  const body = await request(`${V1}/user/?selections=profile&key=${encodeURIComponent(key)}`);
+  const faction = body.faction as { faction_id?: number } | undefined;
+  const id = faction?.faction_id ?? body.faction_id;
+  return typeof id === "number" && id > 0 ? id : 0;
 }

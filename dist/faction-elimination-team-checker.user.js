@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faction Elimination Team Checker
 // @namespace    https://github.com/autumn-grey
-// @version      1.2.2
+// @version      1.3.1
 // @description  Adds a collapsible panel to the faction page showing which elimination team each faction member is on, with eliminated teams greyed out.
 // @author       AutumnGrey
 // @license      MIT
@@ -110,6 +110,12 @@
     const parsed = Number(id);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
+  async function fetchOwnFactionId(key) {
+    const body = await request(`${V1}/user/?selections=profile&key=${encodeURIComponent(key)}`);
+    const faction = body.faction;
+    const id = faction?.faction_id ?? body.faction_id;
+    return typeof id === "number" && id > 0 ? id : 0;
+  }
 
   // src/faction-elimination-team-checker/settings.ts
   var SETTING_PREFIX = "ET_";
@@ -118,6 +124,7 @@
   var SORT_KEY = "SORT";
   var TEAMS_KEY = "TEAMS";
   var ROSTER_KEY = "ROSTER";
+  var OWN_FACTION_KEY = "OWN_FACTION";
   var HISTORY_KEY = "HISTORY";
   var TEAMS_MAX_AGE_MS = 12 * 60 * 60 * 1e3;
   function readSetting(key, fallback) {
@@ -189,8 +196,18 @@
   function teamsAreFresh(teams) {
     return Date.now() - teams.fetchedAt < TEAMS_MAX_AGE_MS;
   }
+  function readOwnFactionId() {
+    const stored = Number(readSetting(OWN_FACTION_KEY, ""));
+    return Number.isFinite(stored) && stored > 0 ? stored : 0;
+  }
+  function writeOwnFactionId(factionId) {
+    writeSetting(OWN_FACTION_KEY, String(factionId));
+  }
+  function rosterKey(factionId) {
+    return `${ROSTER_KEY}_${factionId}`;
+  }
   function readRoster(factionId, season2) {
-    const stored = readJson(ROSTER_KEY);
+    const stored = readJson(rosterKey(factionId)) ?? readJson(ROSTER_KEY);
     if (!stored || stored.season !== season2 || stored.factionId !== factionId) return null;
     if (!Array.isArray(stored.entries)) return null;
     return {
@@ -203,7 +220,7 @@
     };
   }
   function writeRoster(roster) {
-    writeSetting(ROSTER_KEY, JSON.stringify(roster));
+    writeSetting(rosterKey(roster.factionId), JSON.stringify(roster));
   }
   function readHistory(season2) {
     const stored = readJson(HISTORY_KEY);
@@ -257,7 +274,7 @@
     }
     const roster = {
       season: season2,
-      factionId: factionId ?? 0,
+      factionId,
       fetchedAt: Date.now(),
       entries
     };
@@ -333,12 +350,19 @@
     align-items: center;
     gap: 6px;
   }
-  .et-text-input {
-    box-sizing: border-box;
+  .et-key-field {
+    position: relative;
+    display: flex;
+    align-items: center;
     flex: 1 1 260px;
     min-width: 0;
     max-width: 420px;
-    padding: 4px 7px;
+  }
+  .et-text-input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 4px 28px 4px 7px;
     border: 1px solid rgba(0, 0, 0, 0.5);
     border-radius: 4px;
     background: #f2f2f2;
@@ -351,6 +375,34 @@
     outline: none;
     border-color: #fff;
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+  }
+  .et-eye {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: none;
+    color: #555;
+    cursor: pointer;
+  }
+  .et-eye:hover {
+    color: #000;
+  }
+  .et-eye:focus-visible {
+    outline: 1px solid #4a90d9;
+  }
+  .et-eye svg {
+    width: 15px;
+    height: 15px;
+    display: block;
   }
   /* Paint, font and border come from Torn's own torn-btn; only the size is
      ours, because a full-size button crowds the field. */
@@ -705,8 +757,17 @@
       if (button) button.disabled = busy;
     }
   }
-  function showStoredRoster() {
-    const roster = readRoster(factionIdFromUrl() ?? 0, season);
+  async function resolveFactionId(key) {
+    const fromUrl = factionIdFromUrl();
+    if (fromUrl) return fromUrl;
+    const stored = readOwnFactionId();
+    if (stored) return stored;
+    const own = await fetchOwnFactionId(key);
+    if (own) writeOwnFactionId(own);
+    return own;
+  }
+  function showStoredRoster(factionId) {
+    const roster = readRoster(factionId, season);
     rows = roster ? buildRows(roster) : [];
     renderList();
   }
@@ -751,7 +812,7 @@
     setBusy(true);
     try {
       if (!await loadTeams(force)) return;
-      showStoredRoster();
+      showStoredRoster(await resolveFactionId(readApiKey()));
       const stored = readTeams();
       const age = stored ? describeAge(stored.fetchedAt) : "just now";
       setStatus("ok", `${summarise()} Teams checked ${age}.`);
@@ -774,11 +835,12 @@
     setBusy(true);
     try {
       if (!await loadTeams(options.forceTeams)) return;
-      showStoredRoster();
+      const factionId = await resolveFactionId(key);
+      showStoredRoster(factionId);
       const roster = await scanRoster(
         key,
         season,
-        factionIdFromUrl(),
+        factionId,
         ({ done, total }) => {
           if (token !== scanToken) return;
           setStatus("working", `Checking members... ${done}/${total}`);
@@ -797,6 +859,45 @@
       if (token === scanToken) setBusy(false);
     }
   }
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var EYE_PATHS = ["M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"];
+  var EYE_OFF_PATHS = [
+    "M17.9 17.9A10.1 10.1 0 0 1 12 20C5 20 1 12 1 12a18.5 18.5 0 0 1 5.1-5.9",
+    "M9.9 4.2A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.2 3.2",
+    "M14.1 14.1a3 3 0 1 1-4.2-4.2",
+    "M1 1l22 22"
+  ];
+  function buildEye(hidden) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    for (const definition of hidden ? EYE_OFF_PATHS : EYE_PATHS) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", definition);
+      svg.appendChild(path);
+    }
+    return svg;
+  }
+  function buildEyeToggle(input) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "et-eye";
+    const apply = (shown) => {
+      input.type = shown ? "text" : "password";
+      button.title = shown ? "Hide key" : "Show key";
+      button.setAttribute("aria-label", button.title);
+      button.setAttribute("aria-pressed", String(shown));
+      button.textContent = "";
+      button.appendChild(buildEye(shown));
+    };
+    apply(false);
+    button.addEventListener("click", () => apply(input.type === "password"));
+    return button;
+  }
   function buildControls() {
     const field = document.createElement("div");
     const label = document.createElement("label");
@@ -806,6 +907,8 @@
     field.appendChild(label);
     const row = document.createElement("div");
     row.className = "et-key-row";
+    const keyField = document.createElement("div");
+    keyField.className = "et-key-field";
     const input = document.createElement("input");
     input.id = "et-api-key";
     input.className = "et-text-input";
@@ -814,7 +917,9 @@
     input.autocomplete = "off";
     input.placeholder = "Public access key";
     input.value = readApiKey();
-    row.appendChild(input);
+    keyField.appendChild(input);
+    keyField.appendChild(buildEyeToggle(input));
+    row.appendChild(keyField);
     const teamsButton = document.createElement("button");
     teamsButton.id = "et-refresh-teams";
     teamsButton.type = "button";
@@ -836,7 +941,7 @@
     field.appendChild(status);
     const hint = document.createElement("div");
     hint.className = "et-hint";
-    hint.textContent = "Entering a key scans the whole faction, which takes about a minute. After that, eliminations are checked on their own every 12 hours, and who is on which team only changes when you press Check for leavers.";
+    hint.textContent = "Entering a key scans the whole faction, which takes about a minute. After that, eliminations are checked on their own every 12 hours or by pressing refresh teams. Pressing check for leavers will see if any members have left a team since the last scan, unfortunately members who left before your first scan cannot be checked with an API (unless someone knows a way?)";
     field.appendChild(hint);
     const keyEntered = () => {
       if (input.value.trim() === readApiKey()) return;

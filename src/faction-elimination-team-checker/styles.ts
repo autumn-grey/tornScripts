@@ -72,12 +72,19 @@ const CSS = `
     align-items: center;
     gap: 6px;
   }
-  .et-text-input {
-    box-sizing: border-box;
+  .et-key-field {
+    position: relative;
+    display: flex;
+    align-items: center;
     flex: 1 1 260px;
     min-width: 0;
     max-width: 420px;
-    padding: 4px 7px;
+  }
+  .et-text-input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 4px 28px 4px 7px;
     border: 1px solid rgba(0, 0, 0, 0.5);
     border-radius: 4px;
     background: #f2f2f2;
@@ -90,6 +97,34 @@ const CSS = `
     outline: none;
     border-color: #fff;
     box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+  }
+  .et-eye {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: none;
+    color: #555;
+    cursor: pointer;
+  }
+  .et-eye:hover {
+    color: #000;
+  }
+  .et-eye:focus-visible {
+    outline: 1px solid #4a90d9;
+  }
+  .et-eye svg {
+    width: 15px;
+    height: 15px;
+    display: block;
   }
   /* Paint, font and border come from Torn's own torn-btn; only the size is
      ours, because a full-size button crowds the field. */

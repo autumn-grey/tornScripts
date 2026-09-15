@@ -24,7 +24,7 @@ export class Cancelled extends Error {}
 export async function scanRoster(
   key: string,
   season: string,
-  factionId: number | null,
+  factionId: number,
   onProgress: (progress: Progress) => void,
   cancelled: () => boolean,
 ): Promise<Roster> {
@@ -59,7 +59,7 @@ export async function scanRoster(
 
   const roster: Roster = {
     season,
-    factionId: factionId ?? 0,
+    factionId,
     fetchedAt: Date.now(),
     entries,
   };

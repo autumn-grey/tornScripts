@@ -16,6 +16,9 @@ const TEAMS_KEY = "TEAMS";
 /** The scanned faction, which only changes when someone joins or leaves. */
 const ROSTER_KEY = "ROSTER";
 
+/** The faction the key's owner belongs to, once it has been looked up. */
+const OWN_FACTION_KEY = "OWN_FACTION";
+
 /** The last team each member was seen on. */
 const HISTORY_KEY = "HISTORY";
 
@@ -154,9 +157,26 @@ export interface Roster {
 // the teams are replaced each year, so a roster or a remembered team from
 // last year would otherwise be read as this year's.
 
+/** The faction the key's owner belongs to, or 0 when it is not known yet. */
+export function readOwnFactionId(): number {
+  const stored = Number(readSetting(OWN_FACTION_KEY, ""));
+  return Number.isFinite(stored) && stored > 0 ? stored : 0;
+}
+
+/** Remembers which faction the key's owner belongs to. */
+export function writeOwnFactionId(factionId: number): void {
+  writeSetting(OWN_FACTION_KEY, String(factionId));
+}
+
+/** Returns the storage slot holding one faction's scan. */
+function rosterKey(factionId: number): string {
+  return `${ROSTER_KEY}_${factionId}`;
+}
+
 /** Reads the stored scan for a faction and season, or null when there is none. */
 export function readRoster(factionId: number, season: string): Roster | null {
-  const stored = readJson<Roster>(ROSTER_KEY);
+  // Do not remove: scans made before per-faction slots live under the old key.
+  const stored = readJson<Roster>(rosterKey(factionId)) ?? readJson<Roster>(ROSTER_KEY);
   if (!stored || stored.season !== season || stored.factionId !== factionId) return null;
   if (!Array.isArray(stored.entries)) return null;
 
@@ -173,7 +193,7 @@ export function readRoster(factionId: number, season: string): Roster | null {
 
 /** Stores a scanned faction. */
 export function writeRoster(roster: Roster): void {
-  writeSetting(ROSTER_KEY, JSON.stringify(roster));
+  writeSetting(rosterKey(roster.factionId), JSON.stringify(roster));
 }
 
 // Torn stops naming a team the moment someone leaves it, and offers nothing

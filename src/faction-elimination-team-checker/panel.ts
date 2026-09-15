@@ -1,4 +1,10 @@
-import { ApiError, factionIdFromUrl, fetchCompetition, isKeyProblem } from "./api";
+import {
+  ApiError,
+  factionIdFromUrl,
+  fetchCompetition,
+  fetchOwnFactionId,
+  isKeyProblem,
+} from "./api";
 import { log } from "./debug";
 import { Cancelled, scanRoster } from "./roster";
 import {
@@ -6,12 +12,14 @@ import {
   SortOrder,
   readApiKey,
   readHistory,
+  readOwnFactionId,
   readPanelOpen,
   readRoster,
   readSort,
   readTeams,
   teamsAreFresh,
   writeApiKey,
+  writeOwnFactionId,
   writePanelOpen,
   writeSort,
   writeTeams,
@@ -277,9 +285,22 @@ function setBusy(busy: boolean): void {
   }
 }
 
+/** The faction being looked at, asking Torn only the first time. */
+async function resolveFactionId(key: string): Promise<number> {
+  const fromUrl = factionIdFromUrl();
+  if (fromUrl) return fromUrl;
+
+  const stored = readOwnFactionId();
+  if (stored) return stored;
+
+  const own = await fetchOwnFactionId(key);
+  if (own) writeOwnFactionId(own);
+  return own;
+}
+
 /** Draws the stored scan for the season the standings describe. */
-function showStoredRoster(): void {
-  const roster = readRoster(factionIdFromUrl() ?? 0, season);
+function showStoredRoster(factionId: number): void {
+  const roster = readRoster(factionId, season);
   rows = roster ? buildRows(roster) : [];
   renderList();
 }
@@ -337,7 +358,7 @@ async function refreshTeams(force: boolean): Promise<void> {
 
   try {
     if (!(await loadTeams(force))) return;
-    showStoredRoster();
+    showStoredRoster(await resolveFactionId(readApiKey()));
 
     const stored = readTeams();
     const age = stored ? describeAge(stored.fetchedAt) : "just now";
@@ -365,12 +386,14 @@ async function scanMembers(options: { forceTeams: boolean }): Promise<void> {
 
   try {
     if (!(await loadTeams(options.forceTeams))) return;
-    showStoredRoster();
+
+    const factionId = await resolveFactionId(key);
+    showStoredRoster(factionId);
 
     const roster = await scanRoster(
       key,
       season,
-      factionIdFromUrl(),
+      factionId,
       ({ done, total }) => {
         if (token !== scanToken) return;
         setStatus("working", `Checking members... ${done}/${total}`);
@@ -391,6 +414,57 @@ async function scanMembers(options: { forceTeams: boolean }): Promise<void> {
   }
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+const EYE_PATHS = ["M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"];
+
+const EYE_OFF_PATHS = [
+  "M17.9 17.9A10.1 10.1 0 0 1 12 20C5 20 1 12 1 12a18.5 18.5 0 0 1 5.1-5.9",
+  "M9.9 4.2A9.1 9.1 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.2 3.2",
+  "M14.1 14.1a3 3 0 1 1-4.2-4.2",
+  "M1 1l22 22",
+];
+
+/** Builds the eye drawn on the reveal button. */
+function buildEye(hidden: boolean): SVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+
+  for (const definition of hidden ? EYE_OFF_PATHS : EYE_PATHS) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", definition);
+    svg.appendChild(path);
+  }
+
+  return svg;
+}
+
+/** Builds the button that shows and hides the key. */
+function buildEyeToggle(input: HTMLInputElement): HTMLElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "et-eye";
+
+  const apply = (shown: boolean): void => {
+    input.type = shown ? "text" : "password";
+    button.title = shown ? "Hide key" : "Show key";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-pressed", String(shown));
+    button.textContent = "";
+    button.appendChild(buildEye(shown));
+  };
+
+  apply(false);
+  button.addEventListener("click", () => apply(input.type === "password"));
+
+  return button;
+}
+
 /** Builds the API key field and the two buttons. */
 function buildControls(): HTMLElement {
   const field = document.createElement("div");
@@ -404,6 +478,9 @@ function buildControls(): HTMLElement {
   const row = document.createElement("div");
   row.className = "et-key-row";
 
+  const keyField = document.createElement("div");
+  keyField.className = "et-key-field";
+
   const input = document.createElement("input");
   input.id = "et-api-key";
   input.className = "et-text-input";
@@ -412,7 +489,9 @@ function buildControls(): HTMLElement {
   input.autocomplete = "off";
   input.placeholder = "Public access key";
   input.value = readApiKey();
-  row.appendChild(input);
+  keyField.appendChild(input);
+  keyField.appendChild(buildEyeToggle(input));
+  row.appendChild(keyField);
 
   const teamsButton = document.createElement("button");
   teamsButton.id = "et-refresh-teams";
@@ -441,8 +520,11 @@ function buildControls(): HTMLElement {
   hint.className = "et-hint";
   hint.textContent =
     "Entering a key scans the whole faction, which takes about a minute. " +
-    "After that, eliminations are checked on their own every 12 hours, and " +
-    "who is on which team only changes when you press Check for leavers.";
+    "After that, eliminations are checked on their own every 12 hours or by " +
+    "pressing refresh teams. Pressing check for leavers will see if any " +
+    "members have left a team since the last scan, unfortunately members who " +
+    "left before your first scan cannot be checked with an API (unless " +
+    "someone knows a way?)";
   field.appendChild(hint);
 
   // A key on its own shows nothing, so entering one runs the full scan
