@@ -40,12 +40,14 @@ export const NEWS_TICKER: Feature = {
 export const SHOP_SEND: Feature = {
   key: "SHOP_SEND",
   label: "Buy Features",
-  note: "send option after buying from a shop",
   defaultOn: true,
 };
 
 /** Where the default recipient is kept. */
 export const RECIPIENT_SETTING = "SEND_RECIPIENT";
+
+/** Where the text shown in the recipient box is kept. */
+export const RECIPIENT_LABEL = "SEND_RECIPIENT_LABEL";
 
 /** The line printed under the switches. */
 export const PANEL_FOOTNOTE =

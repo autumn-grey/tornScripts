@@ -9,12 +9,12 @@ const CSS = `
     container-type: inline-size;
     margin: 10px 0 0;
     border-radius: 5px;
-    overflow: hidden;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     font-family: Arial, Helvetica, sans-serif;
     color: #fff;
   }
   .aue-title {
+    border-radius: 5px 5px 0 0;
     height: 30px;
     line-height: 30px;
     padding: 0 0 0 10px;
@@ -67,6 +67,16 @@ const CSS = `
   .aue-label {
     line-height: 22px;
   }
+  .aue-row-stack {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .aue-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
   .aue-note {
     display: block;
     margin-top: -4px;
@@ -75,6 +85,7 @@ const CSS = `
     opacity: 0.7;
   }
   .aue-footnote {
+    border-radius: 0 0 5px 5px;
     padding: 6px 12px;
     background: linear-gradient(180deg, #3a3a3a 0%, #2e2e2e 100%);
     box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
@@ -284,13 +295,14 @@ const CSS = `
     white-space: nowrap;
   }
   .aue-field {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;
     flex-shrink: 0;
   }
   .aue-input {
-    width: 76px;
+    width: 166px;
     padding: 2px 6px;
     border: 1px solid rgba(0, 0, 0, 0.5);
     border-radius: 4px;
@@ -308,66 +320,115 @@ const CSS = `
     text-decoration: underline;
   }
 
-  .aue-send {
-    margin: 4px 0 6px;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 12px;
-  }
-  .aue-send-btn {
-    height: 22px;
-    padding: 0 12px;
-    line-height: 22px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .aue-send-body {
-    border: 1px solid rgba(0, 0, 0, 0.5);
+  .aue-suggest {
+    position: absolute;
+    z-index: 60;
+    top: 100%;
+    left: 0;
+    width: 200px;
+    max-height: 190px;
+    overflow-y: auto;
+    border: 1px solid rgba(0, 0, 0, 0.6);
     border-radius: 4px;
-    background: #111;
-    overflow: hidden;
+    background: #2e2e2e;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6);
   }
-  .aue-send-bar {
+  .aue-suggest-option {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 10px;
+    gap: 6px;
+    width: 100%;
     padding: 4px 8px;
-    background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
+    border: 0;
+    background: none;
+    color: #a9d1ff;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .aue-suggest-option:hover,
+  .aue-suggest-option:focus-visible {
+    background: #414141;
+  }
+  .aue-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #777;
+    flex-shrink: 0;
+  }
+  .aue-dot-on {
+    background: #6ac46a;
+  }
+
+  .aue-send-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin: 0 0 0 10px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #64a4ff;
+    vertical-align: middle;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .aue-send-trigger svg {
+    width: 15px;
+    height: 15px;
+  }
+  .aue-send-trigger:hover,
+  .aue-send-trigger:focus-visible {
     color: #fff;
+  }
+  .aue-send-trigger-loose {
+    display: block;
+    margin: 4px auto;
+  }
+  .aue-send {
+    display: block;
+    margin: 0 0 10px;
+    overflow: hidden;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    text-align: left;
+  }
+  .aue-send[hidden] {
+    display: none;
   }
   .aue-send-link {
     color: #a9d1ff;
     text-decoration: none;
-    font-size: 11px;
   }
   .aue-send-link:hover {
     text-decoration: underline;
   }
-  .aue-send-close {
-    border: 0;
-    padding: 0 4px;
-    background: none;
-    color: #fff;
-    font-size: 12px;
-    line-height: 1;
-    cursor: pointer;
-  }
   .aue-send-status {
     padding: 6px 8px;
+    background: #111;
     color: #ccc;
     font-size: 11px;
+  }
+  .aue-send-frame-waiting {
+    height: 0 !important;
+    visibility: hidden;
   }
   .aue-send-frame {
     display: block;
     width: 100%;
-    height: 320px;
+    height: 220px;
     border: 0;
-    background: #111;
+    background: transparent;
   }
 `;
 
 /** Puts this script's stylesheet on the page. */
 export function injectStyles(): void {
+  document.documentElement.setAttribute("data-aue", __SCRIPT_VERSION__);
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ID;

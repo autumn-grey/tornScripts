@@ -1,10 +1,12 @@
 // Autumn's UI Enhancer - starts each feature on the pages it applies to.
 
+import { log } from "./debug";
 import { installListDisplay, installRequestCapture } from "./listDisplay";
 import { installListSort } from "./listSort";
 import { installNewsTicker } from "./newsTicker";
 import { installPageJumpBlock } from "./pageJumpBlock";
 import { installPreferencesPanel } from "./panel";
+import { ITEMS_PATH, installItemSend } from "./itemSend";
 import { SHOP_PATHS, installShopSend } from "./shopSend";
 import { injectStyles } from "./styles";
 import { installWikiTheme } from "./wikiTheme";
@@ -15,30 +17,44 @@ const GAME_HOST = "www.torn.com";
 /** The game, as opposed to the wiki on its own host. */
 const onGame = location.hostname === GAME_HOST;
 
+// Do not remove: one feature throwing must not stop the others starting.
+
+/** Starts one feature, surviving anything it throws. */
+function start(name: string, install: () => void): void {
+  try {
+    install();
+  } catch (error) {
+    log("failed to start", name, error);
+  }
+}
+
 if (onGame) {
-  installPageJumpBlock();
-  installRequestCapture();
+  start("page jump block", installPageJumpBlock);
+  start("request capture", installRequestCapture);
 } else {
-  installWikiTheme();
+  start("wiki theme", installWikiTheme);
 }
 
 /** Starts every feature that needs the page to exist first. */
 function onReady(): void {
-  injectStyles();
+  start("styles", injectStyles);
 
   if (!onGame) {
-    installListSort();
+    start("list sort", installListSort);
     return;
   }
 
-  installNewsTicker();
+  start("news ticker", installNewsTicker);
   if (location.pathname === PREFERENCES_PATH) {
-    installPreferencesPanel();
+    start("preferences panel", installPreferencesPanel);
     return;
   }
-  if (SHOP_PATHS.includes(location.pathname)) installShopSend();
-  installListDisplay();
-  installListSort();
+  if (SHOP_PATHS.includes(location.pathname)) {
+    start("shop send", installShopSend);
+  }
+  if (location.pathname === ITEMS_PATH) start("item send", installItemSend);
+  start("list display", installListDisplay);
+  start("list sort", installListSort);
 }
 
 if (document.readyState === "loading") {

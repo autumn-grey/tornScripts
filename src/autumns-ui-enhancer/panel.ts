@@ -3,6 +3,7 @@
 import {
   FEATURES,
   PANEL_FOOTNOTE,
+  RECIPIENT_LABEL,
   RECIPIENT_SETTING,
   isEnabled,
   readSetting,
@@ -10,6 +11,12 @@ import {
   writeSetting,
 } from "./settings";
 import { PANEL_ID, injectStyles } from "./styles";
+import { FoundUser, MIN_QUERY, searchUsers } from "./userSearch";
+
+/** Settles typing before Torn is asked for names. */
+const SEARCH_DELAY_MS = 250;
+/** Leaves a click on the list time to land before it closes. */
+const BLUR_MS = 150;
 
 const PREFS_PANEL_SELECTORS = [
   ".preferences-container",
@@ -29,16 +36,22 @@ function findPrefsPanel(): Element | null {
 /** Returns the row holding the default recipient for the buy send form. */
 function buildRecipientRow(): HTMLElement {
   const row = document.createElement("div");
-  row.className = "aue-row";
+  row.className = "aue-row aue-row-stack";
+
+  const heading = document.createElement("span");
+  heading.className = "aue-heading";
+  row.appendChild(heading);
 
   const label = document.createElement("span");
   label.className = "aue-label";
   label.textContent = "Item Recipient Default";
-  const note = document.createElement("span");
-  note.className = "aue-note";
-  note.textContent = "user ID, filled in for you when sending";
-  label.appendChild(note);
-  row.appendChild(label);
+  heading.appendChild(label);
+
+  const lookup = document.createElement("a");
+  lookup.className = "aue-field-link";
+  lookup.target = "_blank";
+  lookup.rel = "noopener";
+  heading.appendChild(lookup);
 
   const field = document.createElement("span");
   field.className = "aue-field";
@@ -47,27 +60,76 @@ function buildRecipientRow(): HTMLElement {
   const input = document.createElement("input");
   input.className = "aue-input";
   input.type = "text";
-  input.inputMode = "numeric";
-  input.placeholder = "none";
-  input.value = readSetting(RECIPIENT_SETTING, "");
+  input.placeholder = "name or ID";
+  input.value = readSetting(RECIPIENT_LABEL, readSetting(RECIPIENT_SETTING, ""));
   field.appendChild(input);
 
-  const lookup = document.createElement("a");
-  lookup.className = "aue-field-link";
-  lookup.target = "_blank";
-  lookup.rel = "noopener";
-  lookup.textContent = "check";
-  field.appendChild(lookup);
+  const list = document.createElement("div");
+  list.className = "aue-suggest";
+  list.hidden = true;
+  field.appendChild(list);
 
   const refresh = (): void => {
-    lookup.href = "https://www.torn.com/profiles.php?XID=" + input.value;
-    lookup.hidden = input.value === "";
+    const id = readSetting(RECIPIENT_SETTING, "");
+    lookup.href = `https://www.torn.com/profiles.php?XID=${id}`;
+    lookup.textContent = id ? `[${id}]` : "";
+    lookup.hidden = id === "";
   };
 
-  input.addEventListener("input", () => {
-    input.value = input.value.replace(/\D+/g, "");
-    writeSetting(RECIPIENT_SETTING, input.value);
+  /** Keeps a chosen user as the recipient. */
+  const choose = (name: string, id: string): void => {
+    input.value = `${name} [${id}]`;
+    writeSetting(RECIPIENT_SETTING, id);
+    writeSetting(RECIPIENT_LABEL, input.value);
+    list.hidden = true;
     refresh();
+  };
+
+  /** Draws the names Torn offered for what has been typed. */
+  const offer = (users: FoundUser[]): void => {
+    list.replaceChildren();
+    for (const user of users) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "aue-suggest-option";
+
+      const dot = document.createElement("span");
+      dot.className = user.online ? "aue-dot aue-dot-on" : "aue-dot";
+      option.appendChild(dot);
+      option.appendChild(document.createTextNode(`${user.name} [${user.id}]`));
+
+      option.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        choose(user.name, user.id);
+      });
+      list.appendChild(option);
+    }
+    list.hidden = users.length === 0;
+  };
+
+  let timer = 0;
+  input.addEventListener("input", () => {
+    const typed = input.value.trim();
+    const id = /^\d+$/.test(typed) ? typed : (/\[(\d+)\]/.exec(typed)?.[1] ?? "");
+    writeSetting(RECIPIENT_SETTING, id);
+    writeSetting(RECIPIENT_LABEL, typed);
+    refresh();
+
+    clearTimeout(timer);
+    if (typed.length < MIN_QUERY || /^\d+$/.test(typed)) {
+      list.hidden = true;
+      return;
+    }
+    timer = window.setTimeout(() => {
+      void searchUsers(typed).then(offer);
+    }, SEARCH_DELAY_MS);
+  });
+
+  input.addEventListener("blur", () => {
+    window.setTimeout(() => (list.hidden = true), BLUR_MS);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") list.hidden = true;
   });
   refresh();
 
