@@ -4,3 +4,6 @@ declare module "*.png" {
   const dataUri: string;
   export default dataUri;
 }
+
+/** The version from the script's meta.json, put in by the build. */
+declare const __SCRIPT_VERSION__: string;
