@@ -12,6 +12,9 @@ import {
 export const SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
 
 const ITEMS_URL = "https://www.torn.com/item.php";
+/** Where a panel keeps what was bought. */
+const ITEM_ATTR = "data-aue-item";
+const AMOUNT_ATTR = "data-aue-amount";
 /** Marks a purchase message that has already been given a send option. */
 const MARKED_ATTR = "data-aue-send";
 /** The text Torn puts on a purchase message. */
@@ -220,7 +223,12 @@ function openInFrame(
     const expired = Date.now() - started >= FRAME_READY_MS;
 
     if (!doc || !doc.body) {
-      if (!expired) setTimeout(attempt, POLL_MS);
+      if (!expired) {
+        setTimeout(attempt, POLL_MS);
+        return;
+      }
+      status.textContent = "Torn would not show your items here - use the link above.";
+      log("send: the items page never loaded in the frame");
       return;
     }
 
@@ -271,6 +279,8 @@ function buildFrame(
 function buildPanel(itemId: string, amount: string | null): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "aue-send";
+  panel.setAttribute(ITEM_ATTR, itemId);
+  if (amount) panel.setAttribute(AMOUNT_ATTR, amount);
 
   const button = document.createElement("button");
   button.type = "button";
@@ -306,23 +316,60 @@ function buildPanel(itemId: string, amount: string | null): HTMLElement {
   status.className = "aue-send-status";
   body.appendChild(status);
 
-  close.addEventListener("click", () => {
-    body.hidden = true;
-    body.querySelector("iframe")?.remove();
-    button.hidden = false;
-  });
-
-  button.addEventListener("click", () => {
-    button.hidden = true;
-    body.hidden = false;
-    status.hidden = false;
-    status.textContent = "Loading your items...";
-    if (!body.querySelector("iframe")) {
-      body.appendChild(buildFrame(itemId, amount, status));
-    }
-  });
-
   return panel;
+}
+
+/** Shows the framed send form for the item a panel was built for. */
+function openPanel(panel: HTMLElement): void {
+  const button = panel.querySelector<HTMLElement>(".aue-send-btn");
+  const body = panel.querySelector<HTMLElement>(".aue-send-body");
+  const status = panel.querySelector<HTMLElement>(".aue-send-status");
+  const itemId = panel.getAttribute(ITEM_ATTR);
+  if (!button || !body || !status || !itemId) return;
+
+  button.hidden = true;
+  body.hidden = false;
+  status.hidden = false;
+  status.textContent = "Loading your items...";
+  if (!body.querySelector("iframe")) {
+    const amount = panel.getAttribute(AMOUNT_ATTR);
+    body.appendChild(buildFrame(itemId, amount, status));
+  }
+  log("send: opened item", itemId);
+}
+
+/** Puts a panel back to its button. */
+function closePanel(panel: HTMLElement): void {
+  const button = panel.querySelector<HTMLElement>(".aue-send-btn");
+  const body = panel.querySelector<HTMLElement>(".aue-send-body");
+  if (!button || !body) return;
+  body.hidden = true;
+  body.querySelector("iframe")?.remove();
+  button.hidden = false;
+}
+
+// Do not remove the delegation: Torn clones injected markup, which drops
+// listeners bound to the buttons themselves.
+
+/** Works the send panels from one listener on the page. */
+function installClicks(): void {
+  document.addEventListener(
+    "click",
+    (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const panel = target.closest<HTMLElement>(".aue-send");
+      if (!panel) return;
+
+      const opening = target.closest(".aue-send-btn") !== null;
+      if (!opening && !target.closest(".aue-send-close")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (opening) openPanel(panel);
+      else closePanel(panel);
+    },
+    true,
+  );
 }
 
 /** Whether an element is a purchase message with no send option yet. */
@@ -365,6 +412,7 @@ function scan(root: Element): void {
 /** Adds a send option to items bought from a shop. */
 export function installShopSend(): void {
   if (!on()) return;
+  installClicks();
   scan(document.body);
   new MutationObserver((records) => {
     if (!on()) return;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.13.1
+// @version      0.13.2
 // @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and offers a send form for anything bought in a shop, prefilled with your usual recipient and the amount you bought. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
@@ -1799,6 +1799,8 @@
   // src/autumns-ui-enhancer/shopSend.ts
   var SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
   var ITEMS_URL = "https://www.torn.com/item.php";
+  var ITEM_ATTR = "data-aue-item";
+  var AMOUNT_ATTR = "data-aue-amount";
   var MARKED_ATTR = "data-aue-send";
   var BOUGHT_TEXT = /\byou (?:bought|purchased|have bought)\b/i;
   var BOUGHT_AMOUNT = /\byou (?:bought|purchased|have bought)\s+(?:a|an|the)?\s*([\d,]+)\s*x?\b/i;
@@ -1943,7 +1945,12 @@
       }
       const expired = Date.now() - started >= FRAME_READY_MS;
       if (!doc || !doc.body) {
-        if (!expired) setTimeout(attempt, POLL_MS);
+        if (!expired) {
+          setTimeout(attempt, POLL_MS);
+          return;
+        }
+        status.textContent = "Torn would not show your items here - use the link above.";
+        log("send: the items page never loaded in the frame");
         return;
       }
       styleFrame(doc);
@@ -1982,6 +1989,8 @@
   function buildPanel2(itemId, amount) {
     const panel = document.createElement("div");
     panel.className = "aue-send";
+    panel.setAttribute(ITEM_ATTR, itemId);
+    if (amount) panel.setAttribute(AMOUNT_ATTR, amount);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "torn-btn aue-send-btn";
@@ -2010,21 +2019,49 @@
     const status = document.createElement("div");
     status.className = "aue-send-status";
     body.appendChild(status);
-    close.addEventListener("click", () => {
-      body.hidden = true;
-      body.querySelector("iframe")?.remove();
-      button.hidden = false;
-    });
-    button.addEventListener("click", () => {
-      button.hidden = true;
-      body.hidden = false;
-      status.hidden = false;
-      status.textContent = "Loading your items...";
-      if (!body.querySelector("iframe")) {
-        body.appendChild(buildFrame(itemId, amount, status));
-      }
-    });
     return panel;
+  }
+  function openPanel(panel) {
+    const button = panel.querySelector(".aue-send-btn");
+    const body = panel.querySelector(".aue-send-body");
+    const status = panel.querySelector(".aue-send-status");
+    const itemId = panel.getAttribute(ITEM_ATTR);
+    if (!button || !body || !status || !itemId) return;
+    button.hidden = true;
+    body.hidden = false;
+    status.hidden = false;
+    status.textContent = "Loading your items...";
+    if (!body.querySelector("iframe")) {
+      const amount = panel.getAttribute(AMOUNT_ATTR);
+      body.appendChild(buildFrame(itemId, amount, status));
+    }
+    log("send: opened item", itemId);
+  }
+  function closePanel(panel) {
+    const button = panel.querySelector(".aue-send-btn");
+    const body = panel.querySelector(".aue-send-body");
+    if (!button || !body) return;
+    body.hidden = true;
+    body.querySelector("iframe")?.remove();
+    button.hidden = false;
+  }
+  function installClicks() {
+    document.addEventListener(
+      "click",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const panel = target.closest(".aue-send");
+        if (!panel) return;
+        const opening = target.closest(".aue-send-btn") !== null;
+        if (!opening && !target.closest(".aue-send-close")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (opening) openPanel(panel);
+        else closePanel(panel);
+      },
+      true
+    );
   }
   function isPurchaseMessage(element) {
     if (element.hasAttribute(MARKED_ATTR)) return false;
@@ -2059,6 +2096,7 @@
   }
   function installShopSend() {
     if (!on2()) return;
+    installClicks();
     scan(document.body);
     new MutationObserver((records) => {
       if (!on2()) return;

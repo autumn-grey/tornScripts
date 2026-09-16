@@ -1,6 +1,6 @@
 {
   "name": "Autumn's UI Enhancer",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and offers a send form for anything bought in a shop, prefilled with your usual recipient and the amount you bought. Switched on and off from a panel on the preferences page.",
   "match": [
     "https://www.torn.com/*",
