@@ -1,7 +1,7 @@
 {
   "name": "Spreadsheet Trade Filter",
-  "version": "1.1.0",
-  "description": "Adds a max button beside every quantity box on the trade item list, and highlights the items that appear on your source spreadsheet.",
+  "version": "1.0.2",
+  "description": "Adds a max button beside every quantity box on the trade item list, and outlines the items that appear on your source spreadsheet.",
   "match": [
     "https://www.torn.com/trade.php*"
   ],
