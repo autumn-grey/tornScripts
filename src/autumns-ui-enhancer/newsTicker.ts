@@ -15,6 +15,11 @@ const HEADLINE_SELECTOR = ".headline";
 const BAR_CLASS = "aue-ticker-bar";
 const NAV_ID = "aue-ticker-nav";
 const OVERLAY_ID = "aue-ticker-overlay";
+/** Marks the slide Torn currently has on show. */
+const ACTIVE_SLIDE = /enter-done|enter-active|swiper-slide-active/;
+/** Below this, two headlines are only the same when they match exactly. */
+const MATCH_MIN_LENGTH = 8;
+
 /** Put on the bar while an arrow-chosen headline is showing. */
 const MANUAL_CLASS = "aue-ticker-manual";
 
@@ -129,9 +134,30 @@ function headlines(bar: Element): Headline[] {
   return readHeadlines(bar) ?? seen;
 }
 
+/** Returns the headline element the live ticker is showing. */
+function liveHeadline(bar: Element): Element | null {
+  const slides = Array.from(bar.querySelectorAll(SLIDE_SELECTOR)).reverse();
+  const slide = slides.find((item) => ACTIVE_SLIDE.test(item.className));
+  return (
+    (slide ?? slides[0])?.querySelector(HEADLINE_SELECTOR) ??
+    bar.querySelector(HEADLINE_SELECTOR)
+  );
+}
+
+/** Returns headline text reduced to what can be compared. */
+function compareText(html: string): string {
+  const box = document.createElement("div");
+  box.innerHTML = html;
+  return (box.textContent ?? "")
+    .replace(/[[d:s]+]s*$/, "")
+    .replace(/s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 /** Records the headline on show. */
 function remember(bar: Element): void {
-  const headline = bar.querySelector(HEADLINE_SELECTOR);
+  const headline = liveHeadline(bar);
   const html = headline?.innerHTML ?? "";
   if (!html) return;
   const id = headline?.textContent?.trim() ?? html;
@@ -142,17 +168,13 @@ function remember(bar: Element): void {
 
 /** Returns which headline the live ticker is showing. */
 function liveIndex(bar: Element, list: Headline[]): number {
-  const showing = bar
-    .querySelector(HEADLINE_SELECTOR)
-    ?.textContent?.trim()
-    .toLowerCase();
+  const showing = compareText(liveHeadline(bar)?.innerHTML ?? "");
   if (!showing) return 0;
-  const strip = (html: string) =>
-    html
-      .replace(/<[^>]*>/g, "")
-      .trim()
-      .toLowerCase();
-  const at = list.findIndex((item) => strip(item.html) === showing);
+  const at = list.findIndex((item) => {
+    const text = compareText(item.html);
+    if (text.length < MATCH_MIN_LENGTH) return text === showing;
+    return showing.startsWith(text) || text.startsWith(showing);
+  });
   return at === -1 ? 0 : at;
 }
 

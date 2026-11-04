@@ -94,6 +94,7 @@ for (const { name, dir, meta } of scripts) {
     // Images are inlined as data: URIs so each .user.js stays standalone —
     // no runtime fetch, nothing to host, nothing to break on a repo rename.
     loader: { ".png": "dataurl" },
+    define: { __SCRIPT_VERSION__: JSON.stringify(meta.version) },
     banner: { js: renderMeta(meta, name) },
     legalComments: "inline",
     charset: "utf8",

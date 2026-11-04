@@ -143,12 +143,16 @@ function classifyOcText(text: string): OcReading | null {
   }
 
   // "3 of 5 slots filled" - still recruiting.
-  if (/\b\d+\s*of\s*\d+\s*slots?\s*filled\b/i.test(text)) {
+  // Do not match the count as well: the tooltip's lines run together, so it
+  // arrives glued to whatever the crime is called.
+  if (/slots?\s*filled/i.test(text)) {
     return { kind: OC_RECRUITING };
   }
 
   // "Waiting to initiate..." - the crime is due.
-  if (/waiting\s*to\s*initiate/i.test(text)) return { kind: OC_IMMINENT };
+  // Do not match the words in front of it: the tooltip's lines run together,
+  // so they arrive glued to whatever the crime is called.
+  if (/initiate/i.test(text)) return { kind: OC_IMMINENT };
 
   return null;
 }
@@ -163,8 +167,20 @@ function rememberTooltipText(text: string): void {
   }
 }
 
-/** Reads the OC state out of any tooltip currently mounted. */
+/** Reads the OC state off the sidebar icon, or any tooltip currently mounted. */
 function scanForOcState(): OcReading | null {
+  for (const icon of document.querySelectorAll<HTMLElement>(SELECTORS.ocIcon)) {
+    const label = (icon.getAttribute("aria-label") ?? "").trim();
+    if (label === "") continue;
+
+    rememberTooltipText(label);
+    const state = classifyOcText(label);
+    if (state !== null) {
+      log("OC icon:", state.kind, "|", label);
+      return state;
+    }
+  }
+
   for (const node of document.querySelectorAll<HTMLElement>(
     SELECTORS.tooltip,
   )) {
@@ -195,9 +211,10 @@ function scanForOcState(): OcReading | null {
   return null;
 }
 
-/** Whether the sidebar is showing an Organized Crime icon that names a crime. */
+/** Whether anything on the page says the user is in a crime at all. */
 function hasOcIcon(): boolean {
-  return document.querySelector(SELECTORS.ocIconLabelled) !== null;
+  if (document.querySelector(SELECTORS.ocIconLabelled) !== null) return true;
+  return /organi[sz]ed\s*crime/i.test(ocCapturedText);
 }
 
 /** The slice of a React fiber node this script reads. */
@@ -272,8 +289,8 @@ let ocState: OcKind = OC_UNKNOWN;
 let ocLookupRunning = false;
 let ocAttempts = 0;
 
-// Lookups to run before settling on an answer.
-const OC_MAX_ATTEMPTS = 1;
+// Lookups that must come back empty-handed before settling on "no crime".
+const OC_MAX_ATTEMPTS = 4;
 
 /** Determines and caches the Organized Crime state. */
 async function resolveOcState(): Promise<void> {
@@ -292,12 +309,14 @@ async function resolveOcState(): Promise<void> {
             ? Date.now()
             : null;
       ocAttempts = 0;
+    } else if (hasOcIcon()) {
+      // An icon we could not read means a wording we do not know.
+      ocState = OC_UNREADABLE;
+      ocAttempts = 0;
     } else {
+      // No icon yet, which is either no crime or a sidebar still mounting.
       ocAttempts += 1;
-      // No icon means no crime; an icon we could not read means new wording.
-      if (ocAttempts >= OC_MAX_ATTEMPTS) {
-        ocState = hasOcIcon() ? OC_UNREADABLE : OC_NONE;
-      }
+      if (ocAttempts >= OC_MAX_ATTEMPTS) ocState = OC_NONE;
     }
     log(
       "OC state:",
@@ -1255,9 +1274,12 @@ async function main(): Promise<void> {
     injectToggle();
     clearTimeout(pending);
     pending = window.setTimeout(() => {
-      // Do not retry once settled: opening the tooltip is itself a DOM change.
+      // Do not retry on any other settled state: opening the tooltip is
+      // itself a DOM change.
       if (ocState === OC_UNKNOWN) {
         void resolveOcState().then(evaluate);
+      } else if (ocState === OC_NONE && hasOcIcon()) {
+        retryOcNow();
       } else {
         evaluate();
       }

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.11.0
-// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, and scrolls the news ticker with arrows for stepping through the headlines. Switched on and off from a panel on the preferences page.
+// @version      0.16.3
+// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and offers a send form for anything bought in a shop, prefilled with your usual recipient and the amount you bought. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/*
@@ -53,12 +53,20 @@
     label: "News Ticker Controls",
     defaultOn: true
   };
+  var SHOP_SEND = {
+    key: "SHOP_SEND",
+    label: "Buy Features",
+    defaultOn: true
+  };
+  var RECIPIENT_SETTING = "SEND_RECIPIENT";
+  var RECIPIENT_LABEL = "SEND_RECIPIENT_LABEL";
   var PANEL_FOOTNOTE = "Dark/Light Mode switch and table sorting in Torn Wiki enabled by default.";
   var FEATURES = [
     PAGE_JUMP_BLOCK,
     LIST_DISPLAY_EXTENSION,
     LIST_SORTING,
-    NEWS_TICKER
+    NEWS_TICKER,
+    SHOP_SEND
   ];
   function isEnabled(feature) {
     try {
@@ -69,9 +77,9 @@
       return feature.defaultOn;
     }
   }
-  function setEnabled(feature, on2) {
+  function setEnabled(feature, on3) {
     try {
-      localStorage.setItem(SETTING_PREFIX + feature.key, on2 ? "1" : "0");
+      localStorage.setItem(SETTING_PREFIX + feature.key, on3 ? "1" : "0");
     } catch {
     }
   }
@@ -279,9 +287,9 @@
     const template = hashTemplate(widget);
     if (!template) return;
     const size = pageSize();
-    const start = Math.max(0, page - 1) * size;
+    const start2 = Math.max(0, page - 1) * size;
     generation += 1;
-    location.hash = `${template}start=${start}`;
+    location.hash = `${template}start=${start2}`;
   }
   function basePageCount(widget) {
     const stored = basePageCounts.get(widget);
@@ -428,11 +436,11 @@
       (best, element) => rowsOf(element).length > rowsOf(best).length ? element : best
     );
   }
-  async function fetchRows(start, live) {
+  async function fetchRows(start2, live) {
     if (!lastRequest) return [];
     const body = lastRequest.body.replace(
       START_IN_BODY,
-      (_match, lead) => `${lead}start=${start}`
+      (_match, lead) => `${lead}start=${start2}`
     );
     ownRequest = true;
     let html;
@@ -459,7 +467,7 @@
     const rows = container ? rowsOf(container) : [];
     log(
       "fetch: start",
-      start,
+      start2,
       "->",
       html.length,
       "chars,",
@@ -482,8 +490,8 @@
       return;
     }
     if (!container.isConnected) return;
-    const start = currentStart();
-    const key = `${start}:${size}`;
+    const start2 = currentStart();
+    const key = `${start2}:${size}`;
     if (filling && filling.key === key && filling.container === container) return;
     const mine = generation;
     filling = { key, container };
@@ -501,7 +509,7 @@
     try {
       for (let index = 1; index < requests; index += 1) {
         setStatus(`Loading ${index + 1}/${requests}`);
-        const rows = await fetchRows(start + index * PAGE_STEP, container);
+        const rows = await fetchRows(start2 + index * PAGE_STEP, container);
         if (mine !== generation) {
           log("fill: abandoned, the page moved on");
           return;
@@ -727,8 +735,8 @@
   }
   function headerCandidates(target) {
     const found = [];
-    for (const start of [target.container, target.container.parentElement]) {
-      let node = start?.previousElementSibling ?? null;
+    for (const start2 of [target.container, target.container.parentElement]) {
+      let node = start2?.previousElementSibling ?? null;
       while (node) {
         found.push(node);
         node = node.previousElementSibling;
@@ -922,6 +930,8 @@
   var BAR_CLASS = "aue-ticker-bar";
   var NAV_ID = "aue-ticker-nav";
   var OVERLAY_ID = "aue-ticker-overlay";
+  var ACTIVE_SLIDE = /enter-done|enter-active|swiper-slide-active/;
+  var MATCH_MIN_LENGTH = 8;
   var MANUAL_CLASS = "aue-ticker-manual";
   var OVERFLOW_SLACK = 4;
   var SCROLL_SPEED = 34;
@@ -989,8 +999,18 @@
   function headlines(bar) {
     return readHeadlines(bar) ?? seen;
   }
+  function liveHeadline(bar) {
+    const slides = Array.from(bar.querySelectorAll(SLIDE_SELECTOR)).reverse();
+    const slide = slides.find((item) => ACTIVE_SLIDE.test(item.className));
+    return (slide ?? slides[0])?.querySelector(HEADLINE_SELECTOR) ?? bar.querySelector(HEADLINE_SELECTOR);
+  }
+  function compareText(html) {
+    const box = document.createElement("div");
+    box.innerHTML = html;
+    return (box.textContent ?? "").replace(/[[d:s]+]s*$/, "").replace(/s+/g, " ").trim().toLowerCase();
+  }
   function remember(bar) {
-    const headline = bar.querySelector(HEADLINE_SELECTOR);
+    const headline = liveHeadline(bar);
     const html = headline?.innerHTML ?? "";
     if (!html) return;
     const id = headline?.textContent?.trim() ?? html;
@@ -999,10 +1019,13 @@
     seen.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
   }
   function liveIndex(bar, list) {
-    const showing = bar.querySelector(HEADLINE_SELECTOR)?.textContent?.trim().toLowerCase();
+    const showing = compareText(liveHeadline(bar)?.innerHTML ?? "");
     if (!showing) return 0;
-    const strip = (html) => html.replace(/<[^>]*>/g, "").trim().toLowerCase();
-    const at = list.findIndex((item) => strip(item.html) === showing);
+    const at = list.findIndex((item) => {
+      const text = compareText(item.html);
+      if (text.length < MATCH_MIN_LENGTH) return text === showing;
+      return showing.startsWith(text) || text.startsWith(showing);
+    });
     return at === -1 ? 0 : at;
   }
   var scroller = null;
@@ -1293,12 +1316,12 @@
     container-type: inline-size;
     margin: 10px 0 0;
     border-radius: 5px;
-    overflow: hidden;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
     font-family: Arial, Helvetica, sans-serif;
     color: #fff;
   }
   .aue-title {
+    border-radius: 5px 5px 0 0;
     height: 30px;
     line-height: 30px;
     padding: 0 0 0 10px;
@@ -1351,6 +1374,16 @@
   .aue-label {
     line-height: 22px;
   }
+  .aue-row-stack {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .aue-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
   .aue-note {
     display: block;
     margin-top: -4px;
@@ -1359,6 +1392,7 @@
     opacity: 0.7;
   }
   .aue-footnote {
+    border-radius: 0 0 5px 5px;
     padding: 6px 12px;
     background: linear-gradient(180deg, #3a3a3a 0%, #2e2e2e 100%);
     box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
@@ -1501,7 +1535,7 @@
     box-sizing: border-box;
     padding-right: 38px;
   }
-  .aue-ticker-manual .news-ticker-enter-done {
+  .aue-ticker-manual > *:not(#aue-ticker-overlay):not(#aue-ticker-nav) {
     visibility: hidden;
   }
 
@@ -1567,8 +1601,139 @@
   #aue-ticker-overlay .aue-ticker-text {
     white-space: nowrap;
   }
+  .aue-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .aue-input {
+    width: 166px;
+    padding: 2px 6px;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 4px;
+    background: #f2f2f2;
+    color: #000;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+  }
+  .aue-field-link {
+    color: #a9d1ff;
+    font-size: 11px;
+    text-decoration: none;
+  }
+  .aue-field-link:hover {
+    text-decoration: underline;
+  }
+
+  .aue-suggest {
+    position: absolute;
+    z-index: 60;
+    top: 100%;
+    left: 0;
+    width: 200px;
+    max-height: 190px;
+    overflow-y: auto;
+    border: 1px solid rgba(0, 0, 0, 0.6);
+    border-radius: 4px;
+    background: #2e2e2e;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6);
+  }
+  .aue-suggest-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 4px 8px;
+    border: 0;
+    background: none;
+    color: #a9d1ff;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .aue-suggest-option:hover,
+  .aue-suggest-option:focus-visible {
+    background: #414141;
+  }
+  .aue-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #777;
+    flex-shrink: 0;
+  }
+  .aue-dot-on {
+    background: #6ac46a;
+  }
+
+  .aue-send-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin: 0 0 0 10px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #64a4ff;
+    vertical-align: middle;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .aue-send-trigger svg {
+    width: 15px;
+    height: 15px;
+  }
+  .aue-send-trigger:hover,
+  .aue-send-trigger:focus-visible {
+    color: #fff;
+  }
+  .aue-send-trigger-loose {
+    display: block;
+    margin: 4px auto;
+  }
+  .aue-send {
+    display: block;
+    margin: 0 0 10px;
+    overflow: hidden;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    text-align: left;
+  }
+  .aue-send[hidden] {
+    display: none;
+  }
+  .aue-send-link {
+    color: #a9d1ff;
+    text-decoration: none;
+  }
+  .aue-send-link:hover {
+    text-decoration: underline;
+  }
+  .aue-send-status {
+    padding: 6px 8px;
+    background: #111;
+    color: #ccc;
+    font-size: 11px;
+  }
+  .aue-send-frame-waiting {
+    height: 0 !important;
+    visibility: hidden;
+  }
+  .aue-send-frame {
+    display: block;
+    width: 100%;
+    height: 220px;
+    border: 0;
+    background: transparent;
+  }
 `;
   function injectStyles() {
+    document.documentElement.setAttribute("data-aue", "0.16.3");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -1576,7 +1741,44 @@
     (document.head ?? document.documentElement).appendChild(style);
   }
 
+  // src/autumns-ui-enhancer/userSearch.ts
+  var SEARCH_URL = "https://www.torn.com/autocompleteUserAjaxAction.php";
+  var MAX_RESULTS = 8;
+  var MIN_QUERY = 2;
+  var pending = null;
+  function readUser(row) {
+    if (!row || typeof row !== "object") return null;
+    const entry = row;
+    const id = String(entry.id ?? "");
+    const name = String(entry.name ?? "");
+    if (!/^\d+$/.test(id) || !name) return null;
+    return { id, name, online: entry.online === "online" };
+  }
+  async function searchUsers(query) {
+    pending?.abort();
+    const controller = new AbortController();
+    pending = controller;
+    const url = `${SEARCH_URL}?q=${encodeURIComponent(query)}&option=ac-all`;
+    try {
+      const response = await fetch(url, {
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        log("search: Torn answered", response.status);
+        return [];
+      }
+      const body = await response.json();
+      if (!Array.isArray(body)) return [];
+      return body.slice(0, MAX_RESULTS).map(readUser).filter((user) => user !== null);
+    } catch {
+      return [];
+    }
+  }
+
   // src/autumns-ui-enhancer/panel.ts
+  var SEARCH_DELAY_MS = 250;
+  var BLUR_MS = 150;
   var PREFS_PANEL_SELECTORS = [
     ".preferences-container",
     ".preferences-wrap",
@@ -1588,6 +1790,90 @@
       if (element) return element;
     }
     return null;
+  }
+  function buildRecipientRow() {
+    const row = document.createElement("div");
+    row.className = "aue-row aue-row-stack";
+    const heading = document.createElement("span");
+    heading.className = "aue-heading";
+    row.appendChild(heading);
+    const label = document.createElement("span");
+    label.className = "aue-label";
+    label.textContent = "Item Recipient Default";
+    heading.appendChild(label);
+    const lookup = document.createElement("a");
+    lookup.className = "aue-field-link";
+    lookup.target = "_blank";
+    lookup.rel = "noopener";
+    heading.appendChild(lookup);
+    const field = document.createElement("span");
+    field.className = "aue-field";
+    row.appendChild(field);
+    const input = document.createElement("input");
+    input.className = "aue-input";
+    input.type = "text";
+    input.placeholder = "name or ID";
+    input.value = readSetting(RECIPIENT_LABEL, readSetting(RECIPIENT_SETTING, ""));
+    field.appendChild(input);
+    const list = document.createElement("div");
+    list.className = "aue-suggest";
+    list.hidden = true;
+    field.appendChild(list);
+    const refresh = () => {
+      const id = readSetting(RECIPIENT_SETTING, "");
+      lookup.href = `https://www.torn.com/profiles.php?XID=${id}`;
+      lookup.textContent = id ? `[${id}]` : "";
+      lookup.hidden = id === "";
+    };
+    const choose = (name, id) => {
+      input.value = `${name} [${id}]`;
+      writeSetting(RECIPIENT_SETTING, id);
+      writeSetting(RECIPIENT_LABEL, input.value);
+      list.hidden = true;
+      refresh();
+    };
+    const offer = (users) => {
+      list.replaceChildren();
+      for (const user of users) {
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = "aue-suggest-option";
+        const dot = document.createElement("span");
+        dot.className = user.online ? "aue-dot aue-dot-on" : "aue-dot";
+        option.appendChild(dot);
+        option.appendChild(document.createTextNode(`${user.name} [${user.id}]`));
+        option.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          choose(user.name, user.id);
+        });
+        list.appendChild(option);
+      }
+      list.hidden = users.length === 0;
+    };
+    let timer = 0;
+    input.addEventListener("input", () => {
+      const typed = input.value.trim();
+      const id = /^\d+$/.test(typed) ? typed : /\[(\d+)\]/.exec(typed)?.[1] ?? "";
+      writeSetting(RECIPIENT_SETTING, id);
+      writeSetting(RECIPIENT_LABEL, typed);
+      refresh();
+      clearTimeout(timer);
+      if (typed.length < MIN_QUERY || /^\d+$/.test(typed)) {
+        list.hidden = true;
+        return;
+      }
+      timer = window.setTimeout(() => {
+        void searchUsers(typed).then(offer);
+      }, SEARCH_DELAY_MS);
+    });
+    input.addEventListener("blur", () => {
+      window.setTimeout(() => list.hidden = true, BLUR_MS);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") list.hidden = true;
+    });
+    refresh();
+    return row;
   }
   function buildPanel() {
     const panel = document.createElement("div");
@@ -1625,6 +1911,7 @@
       row.appendChild(toggle);
       body.appendChild(row);
     }
+    body.appendChild(buildRecipientRow());
     const footnote = document.createElement("div");
     footnote.className = "aue-footnote";
     footnote.textContent = PANEL_FOOTNOTE;
@@ -1650,6 +1937,620 @@
       childList: true,
       subtree: true
     });
+  }
+
+  // src/autumns-ui-enhancer/recipient.ts
+  var SEND_PROMPT = /who would you like to send/i;
+  var TEXT_FIELD_SELECTOR = "input[type='text'], input[type='number'], input:not([type])";
+  var USER_FIELD_SELECTOR = "input[name*='user' i], input[placeholder*='user' i], input[id*='user' i]";
+  var AMOUNT_FIELD_SELECTOR = "input[name*='amount' i], input[placeholder*='amount' i], input[id*='amount' i], input[type='number']";
+  var FORM_MAX_LENGTH = 400;
+  var REFILL_DELAYS_MS = [150, 400, 900];
+  function defaultRecipient() {
+    return readSetting(RECIPIENT_SETTING, "").replace(/\D+/g, "");
+  }
+  function recipientText() {
+    const id = defaultRecipient();
+    if (!id) return "";
+    const label = readSetting(RECIPIENT_LABEL, "").trim();
+    return /\[(\d+)\]/.exec(label)?.[1] === id ? label : id;
+  }
+  async function nameTheRecipient(userBox) {
+    const id = defaultRecipient();
+    const found = (await searchUsers(id)).find((user) => user.id === id);
+    if (!found) return;
+    const label = `${found.name} [${found.id}]`;
+    writeSetting(RECIPIENT_LABEL, label);
+    if (userBox.isConnected && userBox.value === id) fillField(userBox, label);
+    log("send: recipient is", label);
+  }
+  function fillField(input, value) {
+    const view = input.ownerDocument.defaultView;
+    const setter = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(input),
+      "value"
+    )?.set;
+    if (setter) {
+      setter.call(input, value);
+    } else {
+      input.value = value;
+    }
+    const EventClass = view?.Event ?? Event;
+    input.dispatchEvent(new EventClass("input", { bubbles: true }));
+    input.dispatchEvent(new EventClass("change", { bubbles: true }));
+  }
+  function findSendForms(root) {
+    const forms = [];
+    const candidates = [root, ...root.querySelectorAll("*")];
+    for (const node of candidates) {
+      const text = node.textContent ?? "";
+      if (text.length > FORM_MAX_LENGTH || !SEND_PROMPT.test(text)) continue;
+      if (!node.querySelector(TEXT_FIELD_SELECTOR)) continue;
+      forms.push(node);
+    }
+    return forms.filter(
+      (form) => !forms.some((other) => other !== form && form.contains(other))
+    );
+  }
+  function fillRecipient(form) {
+    const recipient = recipientText();
+    if (!recipient) {
+      log("send: no recipient stored, nothing to fill in");
+      return false;
+    }
+    const boxes = Array.from(
+      form.querySelectorAll(TEXT_FIELD_SELECTOR)
+    ).filter((box) => !box.disabled && !box.readOnly);
+    const userBox = form.querySelector(USER_FIELD_SELECTOR) ?? boxes[0];
+    if (!userBox) {
+      log("send: no recipient box in", boxes.length, "boxes on this form");
+      return false;
+    }
+    if (userBox.value !== "") return false;
+    fillField(userBox, recipient);
+    log("send: recipient", recipient, "into", userBox);
+    if (recipient === defaultRecipient()) void nameTheRecipient(userBox);
+    for (const delay2 of REFILL_DELAYS_MS) {
+      setTimeout(() => {
+        if (userBox.isConnected && userBox.value === "") {
+          fillField(userBox, recipient);
+          log("send: recipient put back after Torn cleared it");
+        }
+      }, delay2);
+    }
+    return true;
+  }
+
+  // src/autumns-ui-enhancer/itemSend.ts
+  var ITEMS_PATH = "/item.php";
+  var SETTLE_MS3 = 120;
+  var filled = /* @__PURE__ */ new WeakSet();
+  function pass2() {
+    if (!isEnabled(SHOP_SEND)) return;
+    const forms = findSendForms(document.body);
+    if (forms.length) log("send: send forms on the items page:", forms.length);
+    for (const form of forms) {
+      if (filled.has(form)) continue;
+      filled.add(form);
+      fillRecipient(form);
+    }
+  }
+  function installItemSend() {
+    pass2();
+    let timer = 0;
+    new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = window.setTimeout(pass2, SETTLE_MS3);
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  // src/autumns-ui-enhancer/shopSend.ts
+  var SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
+  var ITEMS_URL = "https://www.torn.com/item.php";
+  var ITEM_ATTR = "data-aue-item";
+  var AMOUNT_ATTR = "data-aue-amount";
+  var NAME_ATTR = "data-aue-name";
+  var PANEL_ATTR = "data-aue-panel";
+  var MARKED_ATTR = "data-aue-send";
+  var BOUGHT_TEXT = /\byou (?:bought|purchased|have bought)\b/i;
+  var BOUGHT_ITEM = /\byou (?:bought|purchased|have bought)\s+(?:(?:a|an|the)\s+)?(?:([\d,]+)\s*x?\s+)?(.+?)\s+for\s/i;
+  var MESSAGE_MAX_LENGTH = 300;
+  var ITEM_IMAGE = /\/items\/(\d+)\//;
+  var ANCESTOR_LIMIT = 6;
+  var FRAME_READY_MS = 2e4;
+  var POLL_MS = 250;
+  var SETTLE_MS4 = 150;
+  var FORM_TRIES = 28;
+  var FORM_CLICK_EVERY = 3;
+  var BOX_LIMIT = 8;
+  var CONTENT_ROOT_SELECTOR2 = ".content-wrapper, #mainContainer";
+  var SEND_PANEL_MAX_LENGTH = 220;
+  var FORM_WATCH_MS = 500;
+  var CLOSE_LINK_ATTR = "data-aue-closes";
+  var CLOSE_LIMIT = 4;
+  var MESSAGE_CLOSE_SELECTOR = "button[aria-label='Close' i], .close-icon";
+  var OPTION_TEXT = /your items|equip|use item|read|open|start|abroad/i;
+  var ROW_SELECTOR = "li, tr";
+  var SEND_TEXT = /^\s*send\s*$/i;
+  var CLICKABLE_SELECTOR = "button, a, li, span, div, [role='button']";
+  var SEND_SELECTORS = [
+    "[aria-label='Send' i]",
+    "[title='Send' i]",
+    "a[href*='send' i]",
+    "[class*='send' i]"
+  ];
+  var SEARCH_SELECTOR = "input[type='search'], input[placeholder*='search' i], input[name*='search' i]";
+  var ROW_MAX_LENGTH = 300;
+  var PLANE_PATH = "M2 21l21-9L2 3v7l15 2-15 2v7z";
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var WAITING_CLASS = "aue-send-frame-waiting";
+  var ONLY_CLASS = "aue-send-only";
+  var HIDE_CLASS = "aue-send-hidden";
+  var KEEP_CLASS = "aue-send-kept";
+  var FRAME_CSS = `
+  .${ONLY_CLASS} .${HIDE_CLASS} {
+    display: none !important;
+  }
+  .${ONLY_CLASS} .${KEEP_CLASS} {
+    position: static !important;
+    transform: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: transparent !important;
+    display: block !important;
+  }
+  .${ONLY_CLASS} body {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  #sidebarroot,
+  #header-root,
+  .header-wrapper-top,
+  .header-wrapper-bottom,
+  #chatRoot,
+  #footer,
+  .footer,
+  .content-title,
+  .links-top-wrap,
+  .breadcrumbs,
+  .ad-wrapper {
+    display: none !important;
+  }
+  body { background: transparent !important; }
+`;
+  var panelCount = 0;
+  function on2() {
+    return isEnabled(SHOP_SEND);
+  }
+  function itemIdIn(scope) {
+    const tagged = scope.matches("[data-item], [data-itemid]") ? scope : scope.querySelector("[data-item], [data-itemid]");
+    const attribute = tagged?.getAttribute("data-item") ?? tagged?.getAttribute("data-itemid") ?? null;
+    if (attribute && /^\d+$/.test(attribute)) return attribute;
+    const image = scope.querySelector("img[src*='/items/']");
+    const match = ITEM_IMAGE.exec(image?.getAttribute("src") ?? "");
+    return match?.[1] ?? null;
+  }
+  function itemIdFor(message) {
+    let node = message;
+    for (let depth = 0; node && depth < ANCESTOR_LIMIT; depth += 1) {
+      const id = itemIdIn(node);
+      if (id) return id;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function findOptionRow(message) {
+    let node = message;
+    for (let depth = 0; node && depth < ANCESTOR_LIMIT; depth += 1) {
+      const links = Array.from(node.querySelectorAll("a"));
+      const option = links.find((link) => OPTION_TEXT.test(link.textContent ?? ""));
+      if (option?.parentElement) return option.parentElement;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function findRow(doc, itemId) {
+    const tagged = doc.querySelector(
+      `[data-item="${itemId}"], [data-itemid="${itemId}"]`
+    );
+    if (tagged) return tagged.closest(ROW_SELECTOR) ?? tagged;
+    const images = doc.querySelectorAll("img[src*='/items/']");
+    for (const image of images) {
+      const match = ITEM_IMAGE.exec(image.getAttribute("src") ?? "");
+      if (match && match[1] === itemId) {
+        return image.closest(ROW_SELECTOR) ?? image.parentElement;
+      }
+    }
+    return null;
+  }
+  function findSendControl(row) {
+    for (const scope of [row, row.nextElementSibling, row.parentElement]) {
+      if (!scope) continue;
+      let best = null;
+      const clickable = scope.querySelectorAll(CLICKABLE_SELECTOR);
+      for (const element of clickable) {
+        if (!SEND_TEXT.test(element.textContent ?? "")) continue;
+        if (!best || best.contains(element)) best = element;
+      }
+      if (best) return best;
+      for (const selector of SEND_SELECTORS) {
+        const control = scope.querySelector(selector);
+        if (control) return control;
+      }
+    }
+    return null;
+  }
+  function expandRow(row) {
+    const handle = row.querySelector("img[src*='/items/']") ?? row;
+    handle.click();
+  }
+  function amountBought(message) {
+    const match = BOUGHT_ITEM.exec(message.textContent ?? "");
+    const amount = match?.[1]?.replace(/,/g, "") ?? "";
+    return /^[1-9]\d*$/.test(amount) ? amount : null;
+  }
+  function nameBought(message) {
+    const match = BOUGHT_ITEM.exec(message.textContent ?? "");
+    return match?.[2]?.replace(/\s+/g, " ").trim() ?? "";
+  }
+  function findRowByName(doc, name) {
+    if (!name) return null;
+    const wanted = name.toLowerCase();
+    let best = null;
+    for (const row of doc.querySelectorAll(ROW_SELECTOR)) {
+      const text = (row.textContent ?? "").toLowerCase();
+      if (!text.includes(wanted) || text.length > ROW_MAX_LENGTH) continue;
+      if (!best || text.length < (best.textContent ?? "").length) best = row;
+    }
+    return best;
+  }
+  function searchFrame(doc, name) {
+    const box = doc.querySelector(SEARCH_SELECTOR);
+    if (!box || !name || box.value === name) return;
+    fillField(box, name);
+    log("send: searching the items page for", name);
+  }
+  function sendFormScope(row) {
+    if (row.querySelector(TEXT_FIELD_SELECTOR)) return row;
+    const next = row.nextElementSibling;
+    if (next?.querySelector(TEXT_FIELD_SELECTOR)) return next;
+    return row;
+  }
+  function fillSendForm(row, amount) {
+    const scope = sendFormScope(row);
+    const boxes = Array.from(
+      scope.querySelectorAll(TEXT_FIELD_SELECTOR)
+    ).filter((box) => !box.disabled && !box.readOnly);
+    if (boxes.length === 0) return;
+    const recipient = recipientText();
+    const userBox = scope.querySelector(USER_FIELD_SELECTOR) ?? boxes[0];
+    const amountBox = scope.querySelector(AMOUNT_FIELD_SELECTOR) ?? (boxes[1] === userBox ? boxes[0] : boxes[1]);
+    if (recipient && userBox && userBox.value === "") {
+      fillField(userBox, recipient);
+      log("send: recipient", recipient);
+    }
+    if (amount && amountBox && amountBox !== userBox) {
+      fillField(amountBox, amount);
+      log("send: amount", amount);
+    }
+  }
+  function isolateRow(doc, target) {
+    const keep = /* @__PURE__ */ new Set();
+    for (let node = target; node; node = node.parentElement) {
+      keep.add(node);
+    }
+    for (const node of keep) {
+      for (const sibling of Array.from(node.parentElement?.children ?? [])) {
+        if (!keep.has(sibling)) sibling.classList.add(HIDE_CLASS);
+      }
+      if (node !== target) node.classList.add(KEEP_CLASS);
+    }
+    doc.documentElement.classList.add(ONLY_CLASS);
+    doc.defaultView?.scrollTo(0, 0);
+  }
+  function findSendPanel(row) {
+    const scope = sendFormScope(row);
+    const user = scope.querySelector(USER_FIELD_SELECTOR) ?? scope.querySelector(TEXT_FIELD_SELECTOR);
+    if (!user) return null;
+    let best = user;
+    for (let node = user.parentElement; node && node !== row; ) {
+      if ((node.textContent ?? "").length > SEND_PANEL_MAX_LENGTH) break;
+      best = node;
+      node = node.parentElement;
+    }
+    return best;
+  }
+  function watchForm(frame, form) {
+    const panel = frame.closest(".aue-send");
+    if (!panel) return;
+    const timer = window.setInterval(() => {
+      if (!panel.isConnected || panel.hidden) {
+        clearInterval(timer);
+        return;
+      }
+      if (form.isConnected) return;
+      clearInterval(timer);
+      closePanel(panel);
+      log("send: the form closed, putting the panel away");
+    }, FORM_WATCH_MS);
+  }
+  function showFrame(frame, status) {
+    frame.classList.remove(WAITING_CLASS);
+    status.hidden = true;
+  }
+  function failPanel(status, reason) {
+    status.hidden = false;
+    status.textContent = `${reason} `;
+    const link = document.createElement("a");
+    link.className = "aue-send-link";
+    link.href = ITEMS_URL;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "Open items page";
+    status.appendChild(link);
+  }
+  function sendFormOpen(row) {
+    return sendFormScope(row).querySelector(TEXT_FIELD_SELECTOR) !== null;
+  }
+  function openSendForm(frame, doc, item, status) {
+    let polls = 0;
+    const step = () => {
+      const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
+      if (row && sendFormOpen(row)) {
+        fillSendForm(row, item.amount);
+        const form = findSendPanel(row) ?? row;
+        isolateRow(doc, form);
+        showFrame(frame, status);
+        watchForm(frame, form);
+        log("send: the form is open for", item.itemId);
+        return;
+      }
+      if (row && polls % FORM_CLICK_EVERY === 0) {
+        const control = findSendControl(row);
+        if (control) control.click();
+        else expandRow(row);
+      }
+      polls += 1;
+      if (polls < FORM_TRIES) {
+        setTimeout(step, POLL_MS);
+        return;
+      }
+      failPanel(status, `Couldn't open the send form for ${item.name}.`);
+      log("send: the form never opened for", item.itemId);
+    };
+    step();
+  }
+  function styleFrame(doc) {
+    if (doc.getElementById("aue-send-frame-styles")) return;
+    const style = doc.createElement("style");
+    style.id = "aue-send-frame-styles";
+    style.textContent = FRAME_CSS;
+    (doc.head ?? doc.documentElement).appendChild(style);
+  }
+  function openInFrame(frame, item, status) {
+    const started = Date.now();
+    const attempt = () => {
+      let doc = null;
+      try {
+        doc = frame.contentDocument;
+      } catch {
+        doc = null;
+      }
+      const expired = Date.now() - started >= FRAME_READY_MS;
+      if (!doc || !doc.body) {
+        if (!expired) {
+          setTimeout(attempt, POLL_MS);
+          return;
+        }
+        failPanel(status, "Torn would not show your items here.");
+        log("send: the items page never loaded in the frame");
+        return;
+      }
+      styleFrame(doc);
+      const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
+      if (!row) {
+        searchFrame(doc, item.name);
+        if (!expired) {
+          setTimeout(attempt, POLL_MS);
+          return;
+        }
+        failPanel(status, `Couldn't find ${item.name} in your items.`);
+        log("send: item", item.itemId, item.name, "not found on the items page");
+        return;
+      }
+      openSendForm(frame, doc, item, status);
+      log("send: found item", item.itemId, "in your items");
+    };
+    attempt();
+  }
+  function buildFrame(item, status) {
+    const frame = document.createElement("iframe");
+    frame.className = `aue-send-frame ${WAITING_CLASS}`;
+    frame.src = ITEMS_URL;
+    frame.addEventListener("load", () => openInFrame(frame, item, status));
+    return frame;
+  }
+  function buildTrigger(panelId) {
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "aue-send-trigger";
+    trigger.title = "Send item";
+    trigger.setAttribute("aria-label", "Send item");
+    trigger.setAttribute(PANEL_ATTR, panelId);
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", PLANE_PATH);
+    path.setAttribute("fill", "currentColor");
+    svg.appendChild(path);
+    trigger.appendChild(svg);
+    return trigger;
+  }
+  function buildPanel2(panelId, itemId, name, amount) {
+    const panel = document.createElement("div");
+    panel.className = "aue-send";
+    panel.id = panelId;
+    panel.hidden = true;
+    panel.setAttribute(ITEM_ATTR, itemId);
+    panel.setAttribute(NAME_ATTR, name);
+    if (amount) panel.setAttribute(AMOUNT_ATTR, amount);
+    const status = document.createElement("div");
+    status.className = "aue-send-status";
+    panel.appendChild(status);
+    return panel;
+  }
+  function openPanel(panel) {
+    const status = panel.querySelector(".aue-send-status");
+    const itemId = panel.getAttribute(ITEM_ATTR);
+    if (!status || !itemId) return;
+    const name = panel.getAttribute(NAME_ATTR) ?? "";
+    panel.hidden = false;
+    status.hidden = false;
+    status.textContent = name ? `Opening the send form for ${name}...` : "Opening the send form...";
+    if (!panel.querySelector("iframe")) {
+      const amount = panel.getAttribute(AMOUNT_ATTR);
+      panel.appendChild(buildFrame({ itemId, name, amount }, status));
+    }
+    log("send: opened item", itemId);
+  }
+  function closePanel(panel) {
+    panel.hidden = true;
+    panel.querySelector("iframe")?.remove();
+  }
+  function dropPanel(panelId) {
+    document.getElementById(panelId)?.remove();
+    document.querySelector(`[${PANEL_ATTR}="${panelId}"]`)?.remove();
+    document.querySelector(`[${MARKED_ATTR}="${panelId}"]`)?.removeAttribute(
+      MARKED_ATTR
+    );
+    log("send: purchase message dismissed, panel taken away");
+  }
+  function linkClose(message, panelId) {
+    let node = message;
+    for (let depth = 0; node && depth < CLOSE_LIMIT; depth += 1) {
+      const buttons = node.querySelectorAll(MESSAGE_CLOSE_SELECTOR);
+      if (buttons.length > 1) return;
+      if (buttons.length === 1) {
+        buttons[0]?.setAttribute(CLOSE_LINK_ATTR, panelId);
+        return;
+      }
+      node = node.parentElement;
+    }
+  }
+  function installClicks() {
+    document.addEventListener(
+      "click",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const trigger = target.closest(`[${PANEL_ATTR}]`);
+        if (trigger) {
+          event.preventDefault();
+          event.stopPropagation();
+          const panel = document.getElementById(
+            trigger.getAttribute(PANEL_ATTR) ?? ""
+          );
+          if (!panel) return;
+          if (panel.hidden) openPanel(panel);
+          else closePanel(panel);
+          return;
+        }
+        const dismissing = target.closest(`[${CLOSE_LINK_ATTR}]`);
+        if (dismissing) dropPanel(dismissing.getAttribute(CLOSE_LINK_ATTR) ?? "");
+      },
+      true
+    );
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      for (const panel of document.querySelectorAll(".aue-send")) {
+        if (!panel.hidden) closePanel(panel);
+      }
+    });
+  }
+  function isPurchaseMessage(element) {
+    if (element.closest(".aue-send")) return false;
+    const text = element.textContent ?? "";
+    return text.length <= MESSAGE_MAX_LENGTH && BOUGHT_TEXT.test(text);
+  }
+  function ensureTrigger(message, panelId) {
+    linkClose(message, panelId);
+    if (document.querySelector(`[${PANEL_ATTR}="${panelId}"]`)) return;
+    const trigger = buildTrigger(panelId);
+    const row = findOptionRow(message);
+    if (row) {
+      row.appendChild(trigger);
+    } else {
+      trigger.classList.add("aue-send-trigger-loose");
+      message.insertAdjacentElement("afterend", trigger);
+    }
+    linkClose(message, panelId);
+    log("send: aeroplane placed", row ? "in Torn's row" : "on its own");
+  }
+  function purchaseBox(message) {
+    let box = message;
+    for (let depth = 0; depth < BOX_LIMIT; depth += 1) {
+      const parent = box.parentElement;
+      if (!parent || parent === document.body) break;
+      if (parent.matches(CONTENT_ROOT_SELECTOR2)) break;
+      box = parent;
+    }
+    return box;
+  }
+  function offerSend(message) {
+    const itemId = itemIdFor(message);
+    if (!itemId) {
+      message.setAttribute(MARKED_ATTR, "none");
+      log("send: no item id near", message);
+      return;
+    }
+    panelCount += 1;
+    const panelId = `aue-send-${panelCount}`;
+    message.setAttribute(MARKED_ATTR, panelId);
+    const panel = buildPanel2(
+      panelId,
+      itemId,
+      nameBought(message),
+      amountBought(message)
+    );
+    const box = purchaseBox(message);
+    box.insertAdjacentElement("afterend", panel);
+    ensureTrigger(message, panelId);
+    log("send: offering item", itemId);
+  }
+  function scan(root) {
+    const found = [];
+    if (isPurchaseMessage(root)) found.push(root);
+    for (const element of root.querySelectorAll("*")) {
+      if (isPurchaseMessage(element)) found.push(element);
+    }
+    for (const message of found) {
+      if (found.some((other) => other !== message && message.contains(other))) {
+        continue;
+      }
+      const marked = message.getAttribute(MARKED_ATTR);
+      if (!marked) offerSend(message);
+      else if (marked !== "none") ensureTrigger(message, marked);
+    }
+  }
+  function installShopSend() {
+    if (!on2()) return;
+    installClicks();
+    scan(document.body);
+    let timer = 0;
+    new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (on2()) scan(document.body);
+      }, SETTLE_MS4);
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   // src/autumns-ui-enhancer/wikiTheme.ts
@@ -1849,25 +2750,36 @@
   var PREFERENCES_PATH = "/preferences.php";
   var GAME_HOST = "www.torn.com";
   var onGame = location.hostname === GAME_HOST;
+  function start(name, install) {
+    try {
+      install();
+    } catch (error) {
+      log("failed to start", name, error);
+    }
+  }
   if (onGame) {
-    installPageJumpBlock();
-    installRequestCapture();
+    start("page jump block", installPageJumpBlock);
+    start("request capture", installRequestCapture);
   } else {
-    installWikiTheme();
+    start("wiki theme", installWikiTheme);
   }
   function onReady() {
-    injectStyles();
+    start("styles", injectStyles);
     if (!onGame) {
-      installListSort();
+      start("list sort", installListSort);
       return;
     }
-    installNewsTicker();
+    start("news ticker", installNewsTicker);
     if (location.pathname === PREFERENCES_PATH) {
-      installPreferencesPanel();
+      start("preferences panel", installPreferencesPanel);
       return;
     }
-    installListDisplay();
-    installListSort();
+    if (SHOP_PATHS.includes(location.pathname)) {
+      start("shop send", installShopSend);
+    }
+    if (location.pathname === ITEMS_PATH) start("item send", installItemSend);
+    start("list display", installListDisplay);
+    start("list sort", installListSort);
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", onReady, { once: true });

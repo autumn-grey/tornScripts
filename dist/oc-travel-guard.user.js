@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OC Travel Guard
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.0.4
 // @description  Blocks travel to any destination you could not fly back from before your Organised Crime starts.
 // @author       AutumnGrey
 // @license      MIT
@@ -111,10 +111,10 @@
     if (remaining !== null) {
       return { kind: OC_TIMER, startMs: Date.now() + remaining };
     }
-    if (/\b\d+\s*of\s*\d+\s*slots?\s*filled\b/i.test(text)) {
+    if (/slots?\s*filled/i.test(text)) {
       return { kind: OC_RECRUITING };
     }
-    if (/waiting\s*to\s*initiate/i.test(text)) return { kind: OC_IMMINENT };
+    if (/initiate/i.test(text)) return { kind: OC_IMMINENT };
     return null;
   }
   var ocCapturedText = "";
@@ -124,6 +124,16 @@
     }
   }
   function scanForOcState() {
+    for (const icon of document.querySelectorAll(SELECTORS.ocIcon)) {
+      const label = (icon.getAttribute("aria-label") ?? "").trim();
+      if (label === "") continue;
+      rememberTooltipText(label);
+      const state = classifyOcText(label);
+      if (state !== null) {
+        log("OC icon:", state.kind, "|", label);
+        return state;
+      }
+    }
     for (const node of document.querySelectorAll(
       SELECTORS.tooltip
     )) {
@@ -149,7 +159,8 @@
     return null;
   }
   function hasOcIcon() {
-    return document.querySelector(SELECTORS.ocIconLabelled) !== null;
+    if (document.querySelector(SELECTORS.ocIconLabelled) !== null) return true;
+    return /organi[sz]ed\s*crime/i.test(ocCapturedText);
   }
   function triggerOcTooltip(element, entering) {
     const key = Object.keys(element).find((k) => k.startsWith("__reactFiber"));
@@ -199,7 +210,7 @@
   var ocState = OC_UNKNOWN;
   var ocLookupRunning = false;
   var ocAttempts = 0;
-  var OC_MAX_ATTEMPTS = 1;
+  var OC_MAX_ATTEMPTS = 4;
   async function resolveOcState() {
     if (ocState !== OC_UNKNOWN || ocLookupRunning) return;
     ocLookupRunning = true;
@@ -210,11 +221,12 @@
         ocState = found.kind;
         ocStartMs = found.kind === OC_TIMER ? found.startMs : found.kind === OC_IMMINENT ? Date.now() : null;
         ocAttempts = 0;
+      } else if (hasOcIcon()) {
+        ocState = OC_UNREADABLE;
+        ocAttempts = 0;
       } else {
         ocAttempts += 1;
-        if (ocAttempts >= OC_MAX_ATTEMPTS) {
-          ocState = hasOcIcon() ? OC_UNREADABLE : OC_NONE;
-        }
+        if (ocAttempts >= OC_MAX_ATTEMPTS) ocState = OC_NONE;
       }
       log(
         "OC state:",
@@ -997,6 +1009,8 @@
       pending = window.setTimeout(() => {
         if (ocState === OC_UNKNOWN) {
           void resolveOcState().then(evaluate);
+        } else if (ocState === OC_NONE && hasOcIcon()) {
+          retryOcNow();
         } else {
           evaluate();
         }

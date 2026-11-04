@@ -37,6 +37,18 @@ export const NEWS_TICKER: Feature = {
   defaultOn: true,
 };
 
+export const SHOP_SEND: Feature = {
+  key: "SHOP_SEND",
+  label: "Buy Features",
+  defaultOn: true,
+};
+
+/** Where the default recipient is kept. */
+export const RECIPIENT_SETTING = "SEND_RECIPIENT";
+
+/** Where the text shown in the recipient box is kept. */
+export const RECIPIENT_LABEL = "SEND_RECIPIENT_LABEL";
+
 /** The line printed under the switches. */
 export const PANEL_FOOTNOTE =
   "Dark/Light Mode switch and table sorting in Torn Wiki enabled by default.";
@@ -47,6 +59,7 @@ export const FEATURES: Feature[] = [
   LIST_DISPLAY_EXTENSION,
   LIST_SORTING,
   NEWS_TICKER,
+  SHOP_SEND,
 ];
 
 /** Whether a feature is switched on. */
