@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Spreadsheet Trade Filter
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.2
+// @version      1.0.3
 // @description  Adds a max button beside every quantity box on the trade item list, and outlines the items that appear on your source spreadsheet.
 // @author       AutumnGrey
 // @license      MIT
@@ -240,7 +240,7 @@
     outline: 1px solid #3fbf5f !important;
     outline-offset: -1px !important;
     border-radius: 5px;
-    background-color: rgba(63, 191, 95, 0.7);
+    background-color: rgba(63, 191, 95, 0.7) !important;
     box-shadow: 0 0 4px rgba(63, 191, 95, 0.3);
   }
 `;
