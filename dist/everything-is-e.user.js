@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Everything is E
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.1.0
 // @description  Capitalises every letter E in a Torn chat message at the moment you send it, randomly doubles or triples some of them, turns the odd W into WICKAWICKAWOO, and links the word Faith.
 // @author       AutumnGrey
 // @license      MIT
