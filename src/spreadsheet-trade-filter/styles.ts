@@ -145,13 +145,17 @@ const CSS = `
     text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
   }
 
-  /* ---------------------------------------------------- on-sheet outline */
+  /* -------------------------------------------------- on-sheet highlight */
 
+  /* The fill is the outline's own green at 70%, so a match reads from across
+     the list rather than only at its edge. !important because Torn paints
+     these rows itself, the alternating stripe included, and a single class
+     does not outweigh that. */
   .${ON_SHEET_CLASS} {
     outline: 1px solid #3fbf5f !important;
     outline-offset: -1px !important;
     border-radius: 5px;
-    background-color: rgba(40, 150, 70, 0.13);
+    background-color: rgba(63, 191, 95, 0.7) !important;
     box-shadow: 0 0 4px rgba(63, 191, 95, 0.3);
   }
 `;

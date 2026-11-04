@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Spreadsheet Trade Filter
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.1
-// @description  Adds a max button beside every quantity box on the trade item list, and outlines the items that appear on your source spreadsheet.
+// @version      1.1.0
+// @description  Adds a max button beside every quantity box on the trade item list, and highlights the items that appear on your source spreadsheet.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/trade.php*
@@ -234,13 +234,17 @@
     text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
   }
 
-  /* ---------------------------------------------------- on-sheet outline */
+  /* -------------------------------------------------- on-sheet highlight */
 
+  /* The fill is the outline's own green at 70%, so a match reads from across
+     the list rather than only at its edge. !important because Torn paints
+     these rows itself, the alternating stripe included, and a single class
+     does not outweigh that. */
   .${ON_SHEET_CLASS} {
     outline: 1px solid #3fbf5f !important;
     outline-offset: -1px !important;
     border-radius: 5px;
-    background-color: rgba(40, 150, 70, 0.13);
+    background-color: rgba(63, 191, 95, 0.7) !important;
     box-shadow: 0 0 4px rgba(63, 191, 95, 0.3);
   }
 `;
