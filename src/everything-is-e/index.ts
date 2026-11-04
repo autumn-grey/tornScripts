@@ -3,8 +3,10 @@
 // Capitalises every letter E in a Torn chat message at the moment you send
 // it, and lets some of them run on, so what goes out reads likE thiEEs. Each
 // E has a 20% chance of doubling and a 5% chance of tripling, and each W a
-// 1% chance of becoming WICKAWICKAWOO. The word Faith goes out as a link to
-// a dancing gif. The box stays as you typed it until you send.
+// 5% chance of becoming WICKAWICKAWOO. A few words are swapped on the way
+// out - opa and oaf trade places, ag becomes Real Blaffle, and the, you and
+// are go olde - and the word Faith goes out as a link to a dancing gif. The
+// box stays as you typed it until you send.
 //
 // Display layer only: the rewrite rides along with your own Enter or your
 // own click on send — nothing is submitted for you.
@@ -84,8 +86,8 @@ function setValue(field: HTMLTextAreaElement, value: string): void {
 const DOUBLE_CHANCE = 0.2;
 const TRIPLE_CHANCE = 0.05;
 
-// How often a W gets carried away instead.
-const WICKA_CHANCE = 0.01;
+// How often a W gets carried away instead. Rolled per letter, like the E.
+const WICKA_CHANCE = 0.05;
 const WICKA = "WICKAWICKAWOO";
 
 /** How many E's this one letter turns into: 3, 2, or 1. */
@@ -117,13 +119,90 @@ function faithLink(): string {
   return `<a href="${FAITH_URL}">Faith</a>`;
 }
 
+/**
+ * Whole words that come out as something else.
+ *
+ * Matched in order, case-insensitively, and only at the start of a word, so
+ * "again" keeps its ag and "there" keeps its the. A swapped word is not
+ * looked at again, which is what lets opa and oaf trade places in one pass
+ * instead of chasing each other. `follow` keeps the case the writer used on
+ * the first letter; without it the replacement goes in as written here.
+ */
+const WORD_RULES: ReadonlyArray<{
+  match: RegExp;
+  to: string;
+  follow?: boolean;
+}> = [
+  { match: /^opa\b/i, to: "Oaf" },
+  { match: /^oaf\b/i, to: "Opa" },
+  // One way only: Real Blaffle never goes back to ag.
+  { match: /^ag\b/i, to: "Real Blaffle" },
+  { match: /^the\b/i, to: "ye", follow: true },
+  { match: /^you\b/i, to: "thou", follow: true },
+  { match: /^are\b/i, to: "art", follow: true },
+];
+
 // Anything already a link is left exactly as typed: capitalising the E's in
 // a URL breaks it.
 const URL_RUN = /^https?:\/\/\S+/i;
 
+const WORD_CHAR = /[A-Za-z0-9_]/;
+
+/** Whether offset i in text begins a word, rather than sitting inside one. */
+function atWordStart(text: string, i: number): boolean {
+  if (i === 0) return true;
+  return !WORD_CHAR.test(text[i - 1] as string);
+}
+
+/** The replacement, carrying the case the writer used on the first letter. */
+function cased(matched: string, to: string, follow: boolean): string {
+  if (!follow) return to;
+  const upper = (matched[0] as string) !== (matched[0] as string).toLowerCase();
+  if (!upper) return to;
+  return (to[0] as string).toUpperCase() + to.slice(1);
+}
+
 /**
- * Capitalises every E in the text, doubling or tripling some of them, turns
- * the odd W into WICKAWICKAWOO, and makes the word Faith a link.
+ * Applies the per-letter rolls to a run of text: every E capitalised, some
+ * doubled or tripled, the odd W carried away.
+ *
+ * `allowance` is how many characters this run may grow by in total, so a
+ * message cannot be pushed past the length the box accepts.
+ */
+function rolls(piece: string, allowance: number): string {
+  const out: string[] = [];
+  let extra = Math.max(0, allowance);
+
+  for (const char of piece) {
+    if (char === "w" || char === "W") {
+      // All or nothing: a clipped WICKAWICK reads like a bug, not a joke.
+      const growth = WICKA.length - 1;
+      if (Math.random() < WICKA_CHANCE && extra >= growth) {
+        out.push(WICKA);
+        extra -= growth;
+      } else {
+        out.push(char);
+      }
+      continue;
+    }
+
+    if (char !== "e" && char !== "E") {
+      out.push(char);
+      continue;
+    }
+
+    // One E always goes in; the extras only if there is room for them.
+    const count = Math.min(copies(), 1 + extra);
+    out.push("E".repeat(count));
+    extra -= count - 1;
+  }
+
+  return out.join("");
+}
+
+/**
+ * Rewrites a message: words swapped, every E capitalised and some doubled or
+ * tripled, the odd W carried away, and the word Faith turned into a link.
  *
  * Returns the new text and where a caret sitting at each of the given
  * offsets ends up, since the text no longer keeps its length. Nothing is
@@ -142,10 +221,10 @@ function rewrite(
   let i = 0;
   while (i < text.length) {
     const rest = text.slice(i);
-    // What is left to place after this character, one slot each. Anything
-    // this position grows by has to fit in the room beyond that.
+    // Every character after this position needs a place of its own, so what
+    // is left over is all this position has to spend.
     const remaining = text.length - i - 1;
-    const room = Math.max(1, limit - length - remaining);
+    const space = limit - length - remaining;
 
     /** Takes `consumed` characters of input and writes `piece` instead. */
     const emit = (piece: string, consumed: number): void => {
@@ -164,30 +243,32 @@ function rewrite(
       continue;
     }
 
-    // Faith, on a word boundary, becomes the link - if the link fits.
-    if (FAITH_WORD.test(rest)) {
-      const link = faithLink();
-      const fits = limit - length - remaining >= link.length;
-      emit(fits ? link : rest.slice(0, 5), 5);
-      continue;
+    if (atWordStart(text, i)) {
+      // Faith becomes the link, as long as the link fits. The link goes in
+      // untouched: rolling the E's in its href would break it.
+      if (FAITH_WORD.test(rest)) {
+        const link = faithLink();
+        if (space >= link.length) {
+          emit(link, 5);
+          continue;
+        }
+        emit(rolls(rest.slice(0, 5), space - 5), 5);
+        continue;
+      }
+
+      const rule = WORD_RULES.find((candidate) => candidate.match.test(rest));
+      if (rule) {
+        const matched = (rule.match.exec(rest) as RegExpExecArray)[0];
+        const word = cased(matched, rule.to, rule.follow ?? false);
+        // The swap has to fit before anything in it can be rolled.
+        const fits = space >= word.length;
+        const piece = fits ? word : matched;
+        emit(rolls(piece, space - piece.length), matched.length);
+        continue;
+      }
     }
 
-    const char = rest[0] as string;
-
-    if (char === "w" || char === "W") {
-      // All or nothing: a clipped WICKAWICK reads like a bug, not a joke.
-      const wicka = Math.random() < WICKA_CHANCE && room >= WICKA.length;
-      emit(wicka ? WICKA : char, 1);
-      continue;
-    }
-
-    if (char !== "e" && char !== "E") {
-      emit(char, 1);
-      continue;
-    }
-
-    // One E always goes in; the extras only if there is room for them.
-    emit("E".repeat(Math.min(copies(), room)), 1);
+    emit(rolls(rest[0] as string, space - 1), 1);
   }
 
   offsets.forEach((offset, n) => {

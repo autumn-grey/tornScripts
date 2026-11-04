@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Everything is E
 // @namespace    https://github.com/autumn-grey
-// @version      1.1.0
-// @description  Capitalises every letter E in a Torn chat message at the moment you send it, randomly doubles or triples some of them, turns the odd W into WICKAWICKAWOO, and links the word Faith.
+// @version      1.2.0
+// @description  Rewrites a Torn chat message as you send it: every letter E capitalised and some doubled or tripled, the odd W carried away as WICKAWICKAWOO, a few words swapped, and the word Faith turned into a link.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/*
@@ -59,7 +59,7 @@
   }
   var DOUBLE_CHANCE = 0.2;
   var TRIPLE_CHANCE = 0.05;
-  var WICKA_CHANCE = 0.01;
+  var WICKA_CHANCE = 0.05;
   var WICKA = "WICKAWICKAWOO";
   function copies() {
     const roll = Math.random();
@@ -76,7 +76,51 @@
     if (FAITH_FORM === "bbcode") return `[url=${FAITH_URL}]Faith[/url]`;
     return `<a href="${FAITH_URL}">Faith</a>`;
   }
+  var WORD_RULES = [
+    { match: /^opa\b/i, to: "Oaf" },
+    { match: /^oaf\b/i, to: "Opa" },
+    // One way only: Real Blaffle never goes back to ag.
+    { match: /^ag\b/i, to: "Real Blaffle" },
+    { match: /^the\b/i, to: "ye", follow: true },
+    { match: /^you\b/i, to: "thou", follow: true },
+    { match: /^are\b/i, to: "art", follow: true }
+  ];
   var URL_RUN = /^https?:\/\/\S+/i;
+  var WORD_CHAR = /[A-Za-z0-9_]/;
+  function atWordStart(text, i) {
+    if (i === 0) return true;
+    return !WORD_CHAR.test(text[i - 1]);
+  }
+  function cased(matched, to, follow) {
+    if (!follow) return to;
+    const upper = matched[0] !== matched[0].toLowerCase();
+    if (!upper) return to;
+    return to[0].toUpperCase() + to.slice(1);
+  }
+  function rolls(piece, allowance) {
+    const out = [];
+    let extra = Math.max(0, allowance);
+    for (const char of piece) {
+      if (char === "w" || char === "W") {
+        const growth = WICKA.length - 1;
+        if (Math.random() < WICKA_CHANCE && extra >= growth) {
+          out.push(WICKA);
+          extra -= growth;
+        } else {
+          out.push(char);
+        }
+        continue;
+      }
+      if (char !== "e" && char !== "E") {
+        out.push(char);
+        continue;
+      }
+      const count = Math.min(copies(), 1 + extra);
+      out.push("E".repeat(count));
+      extra -= count - 1;
+    }
+    return out.join("");
+  }
   function rewrite(text, offsets, limit) {
     const out = [];
     let length = 0;
@@ -85,7 +129,7 @@
     while (i < text.length) {
       const rest = text.slice(i);
       const remaining = text.length - i - 1;
-      const room = Math.max(1, limit - length - remaining);
+      const space = limit - length - remaining;
       const emit = (piece, consumed) => {
         offsets.forEach((offset, n) => {
           if (offset >= i && offset < i + consumed) moved[n] = length;
@@ -99,23 +143,27 @@
         emit(url[0], url[0].length);
         continue;
       }
-      if (FAITH_WORD.test(rest)) {
-        const link = faithLink();
-        const fits = limit - length - remaining >= link.length;
-        emit(fits ? link : rest.slice(0, 5), 5);
-        continue;
+      if (atWordStart(text, i)) {
+        if (FAITH_WORD.test(rest)) {
+          const link = faithLink();
+          if (space >= link.length) {
+            emit(link, 5);
+            continue;
+          }
+          emit(rolls(rest.slice(0, 5), space - 5), 5);
+          continue;
+        }
+        const rule = WORD_RULES.find((candidate) => candidate.match.test(rest));
+        if (rule) {
+          const matched = rule.match.exec(rest)[0];
+          const word = cased(matched, rule.to, rule.follow ?? false);
+          const fits = space >= word.length;
+          const piece = fits ? word : matched;
+          emit(rolls(piece, space - piece.length), matched.length);
+          continue;
+        }
       }
-      const char = rest[0];
-      if (char === "w" || char === "W") {
-        const wicka = Math.random() < WICKA_CHANCE && room >= WICKA.length;
-        emit(wicka ? WICKA : char, 1);
-        continue;
-      }
-      if (char !== "e" && char !== "E") {
-        emit(char, 1);
-        continue;
-      }
-      emit("E".repeat(Math.min(copies(), room)), 1);
+      emit(rolls(rest[0], space - 1), 1);
     }
     offsets.forEach((offset, n) => {
       if (offset >= text.length) moved[n] = length;
