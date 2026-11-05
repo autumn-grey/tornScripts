@@ -53,6 +53,16 @@ const INSTANT_CLASS = "aue-chat-instant";
  */
 const HIDDEN_KEY = "AUE_CHAT_HIDDEN";
 const KNOWN_KEY = "AUE_CHAT_KNOWN";
+/**
+ * The same thing again, kept where every tab can see it.
+ *
+ * Torn is never told about a window hidden here, so as far as it is
+ * concerned every chat is always open - and a tab opened later is handed
+ * the lot. This is what the last tab to change anything had hidden, and a
+ * new tab starts from it. Only the start: once a tab is running it keeps
+ * its own copy and the two go their own ways, which is the whole point.
+ */
+const LAST_HIDDEN_KEY = "AUE_CHAT_HIDDEN_LAST";
 const SIDE_KEY = "AUE_CHAT_SIDE";
 
 /** The strip at the top of a chat window that can be taken hold of. */
@@ -133,6 +143,25 @@ function readSet(key: string): Set<string> {
 function writeSet(key: string, ids: Set<string>): void {
   try {
     sessionStorage.setItem(key, JSON.stringify([...ids]));
+    // Hidden windows are also recorded where a later tab can find them.
+    if (key === HIDDEN_KEY) {
+      localStorage.setItem(LAST_HIDDEN_KEY, JSON.stringify([...ids]));
+    }
+  } catch {}
+}
+
+/**
+ * Gives a tab opening for the first time the last state anything was in.
+ *
+ * Without it every new tab shows every chat, because Torn believes they are
+ * all open and only this tab's own memory says otherwise - and a new tab
+ * has no memory yet.
+ */
+function seedHidden(): void {
+  try {
+    if (sessionStorage.getItem(HIDDEN_KEY) !== null) return;
+    const last = localStorage.getItem(LAST_HIDDEN_KEY);
+    if (last) sessionStorage.setItem(HIDDEN_KEY, last);
   } catch {}
 }
 
@@ -198,22 +227,24 @@ function allowSmoothOffset(wrapper: HTMLElement): void {
  * Writing nothing when nothing has changed matters: these writes are watched,
  * so a write that changes no value would wake the watcher that caused it.
  */
-function setOffset(wrapper: HTMLElement, x: number): void {
+function setOffset(wrapper: HTMLElement, x: number, instant = false): void {
   const wanted = Math.abs(x) < 0.5 ? "" : `${Math.round(x * 10) / 10}px 0`;
   if (wrapper.style.translate === wanted) return;
 
   // A window being placed for the first time has nowhere to travel from,
-  // so it must not travel: it is put where it belongs with the movement
-  // switched off for that one write. Only a window already in place and
-  // going somewhere else should be seen to move.
-  const firstPlacing = wrapper.style.translate === "";
-  if (firstPlacing) wrapper.classList.add(INSTANT_CLASS);
+  // so it must not travel. Nor should the rest when one joins or leaves
+  // the row: everything behind it shifts along by a window's width, and
+  // watching that shift happen, once per window as a page loads, is the
+  // stuttering. Moving them in the same instant the newcomer appears
+  // leaves the row looking as though it was always that way.
+  const placeAtOnce = instant || wrapper.style.translate === "";
+  if (placeAtOnce) wrapper.classList.add(INSTANT_CLASS);
 
   allowSmoothOffset(wrapper);
   if (wanted === "") wrapper.style.removeProperty("translate");
   else wrapper.style.setProperty("translate", wanted, "important");
 
-  if (firstPlacing) {
+  if (placeAtOnce) {
     // Reading a size here makes the browser take the new position as the
     // starting point, so removing the class cannot set off a movement.
     void wrapper.offsetWidth;
@@ -336,13 +367,16 @@ function rowItems(): HTMLElement[] {
  * nothing else in the row has.
  */
 function isPositionedByTorn(element: HTMLElement): boolean {
-  if (element.style.transform.includes("translateX(")) return true;
-
-  // A window only just added has not been given a position yet, and
-  // skipping it until Torn gets round to that is what left it sitting at
-  // the far end of the row for a moment and then jumping. Holding a window
-  // is enough to make it ours to place, position or no position.
-  return element.querySelector(":scope > div > div[id]") !== null;
+  // Said the other way round, because a menu opening for the first time is
+  // built there and then: for a moment it is in the row with no position,
+  // no size and nothing inside it, and anything that asks what it holds
+  // will say it is not a window yet. It would then be left wherever it
+  // landed - the far end of the row - until something looked again, which
+  // is the menu seen to open on the right and come back. The row has only
+  // two other kinds of child, and both say what they are.
+  if (element.style.display === "none") return false;
+  if (element.style.position === "fixed") return false;
+  return true;
 }
 
 /** What each window measured last time anything was measured. */
@@ -415,11 +449,38 @@ function barOrder(): string[] {
  */
 function slotOf(item: HTMLElement, bar: string[]): number {
   const id = windowIdOf(item);
+
   const panel = PANEL_ORDER.indexOf(id);
   if (panel >= 0) return panel;
+
   const chat = bar.indexOf(id);
-  return PANEL_ORDER.length + (chat >= 0 ? chat : bar.length);
+  if (chat >= 0) {
+    const place = PANEL_ORDER.length + chat;
+    lastSlots.set(item, place);
+    return place;
+  }
+
+  // A chat window can be on the page before its button reaches the bar.
+  // Sending it to the end for those few moments and bringing it back is a
+  // move nobody asked to see, so it keeps the place it had, and only a
+  // window that has never had one goes to the end.
+  return lastSlots.get(item) ?? PANEL_ORDER.length + bar.length;
 }
+
+/** The last arrangement written, so the log only says what changed. */
+let lastLayout = "";
+/** Which windows were in the row last time, to tell a join from a hide. */
+let lastMembership = "";
+
+/** Says something in the log, but not again until it changes. */
+function sayOnce(what: string): void {
+  if (what === lastLayout) return;
+  lastLayout = what;
+  log("layout:", what);
+}
+
+/** Where each window sat last time the bar was in a position to say. */
+const lastSlots = new WeakMap<Element, number>();
 
 /**
  * Returns the space Torn leaves between one item in the row and the next.
@@ -459,7 +520,15 @@ function relayout(): void {
   const items = rowItems();
   if (row) watchRow(row, items);
 
-  // Any width already known stands in for one not yet measured.
+  // Sizes are taken again whenever the row gains or loses a window, since
+  // a newcomer has none and a departure can change what is left.
+  const membership = items.map(windowIdOf).join(",");
+  if (membership !== lastMembership) {
+    lastMembership = membership;
+    measureRow();
+  }
+
+  // Any width already known stands in for one still unmeasured.
   let standIn = 0;
   for (const item of items) {
     const known = itemWidths.get(item);
@@ -474,7 +543,18 @@ function relayout(): void {
       width: widthOf(item, standIn),
     }))
     // Torn keeps empty placeholders in the row; they are not windows.
-    .filter((item) => item.width > 0);
+    .filter((item) => item.width > 0)
+    // From the right, a window Torn has not positioned yet must be left
+    // alone. Its place is worked out from where Torn has put it, so
+    // placing it first and letting Torn place it second adds the two
+    // together and lands it in the middle of the screen until the next
+    // pass. From the left, Torn's placement is switched off, so there is
+    // nothing to add and a new window can be put straight where it goes.
+    .filter(
+      (item) =>
+        side === "left" ||
+        item.wrapper.style.transform.includes("translateX("),
+    );
 
   for (const item of items) {
     if (item.classList.contains(HIDDEN_CLASS)) setOffset(item, 0);
@@ -489,6 +569,7 @@ function relayout(): void {
   );
   if (!anyHidden && side === "right") {
     for (const item of items) setOffset(item, 0);
+    sayOnce("on the right with nothing hidden - left alone");
     return;
   }
   // From the left the order is ours and fixed. From the right the row is
@@ -496,23 +577,41 @@ function relayout(): void {
   // its offsets run 0, -303, -606 away from the edge, and sorting by them
   // descending puts the windows back in the order it drew them.
   if (side === "left") {
-    const bar = barOrder();
+    // The bar is shown reversed on this side, so the chat nearest the edge
+    // is the last one the bar lists. Following the listed order instead
+    // would read back to front against the buttons underneath it.
+    const bar = barOrder().reverse();
     visible.sort((a, b) => slotOf(a.wrapper, bar) - slotOf(b.wrapper, bar));
   } else {
     visible.sort((a, b) => b.torn - a.torn);
   }
 
   const first = visible[0];
-  if (!first) return;
+  if (!first) {
+    sayOnce(`nothing to lay out - ${items.length} in the row`);
+    return;
+  }
   if (rowWidth === 0) measureRow();
   const containerWidth = rowWidth;
-  if (containerWidth === 0) return;
+
+  // A row measured while the page is still being built can come back
+  // narrower than a single window, and every position worked out from that
+  // is wrong - which is a window landing in the middle of the screen and
+  // correcting itself a moment later. Rather than place anything from a
+  // figure that cannot be right, measure again and leave it for the next
+  // pass, by which time the page has settled.
+  if (containerWidth < first.width) {
+    sayOnce(`row measured ${Math.round(containerWidth)} for a ${Math.round(first.width)} window - waiting`);
+    measureRow();
+    return;
+  }
   const gap = spacingGap(items, first.width);
 
   // Walk the row, giving each window the next place along. The distance
   // moved is each window's own width, never the distance between what is
   // left: hide the middle of three and the two survivors sit twice a
   // window apart, which says nothing about how wide a window is.
+  const placed: string[] = [];
   let used = 0;
   for (const chat of visible) {
     // From the left, Torn's own offset is switched off in the stylesheet,
@@ -525,8 +624,18 @@ function relayout(): void {
         : containerWidth - chat.width + chat.torn;
     const target =
       side === "left" ? used : containerWidth - used - chat.width;
+    // Only a window that has just arrived goes straight to its place.
+    // The ones already there slide along to make room, which is the
+    // movement worth seeing - putting them all at once made the row snap.
     setOffset(chat.wrapper, target - natural);
+    placed.push(`${windowIdOf(chat.wrapper) || "?"}@${Math.round(target)}`);
     used += chat.width + gap;
+  }
+
+  const summary = `${side}: ${placed.join(" ")}`;
+  if (summary !== lastLayout) {
+    lastLayout = summary;
+    log("layout", summary);
   }
 }
 
@@ -709,6 +818,11 @@ function onPointerDown(event: PointerEvent): void {
   const box = boxOf(target);
   if (!box) return;
 
+  // Any click on the page has some element with an id above it, so a box
+  // is no proof of a chat. One in the row is.
+  const wrapper = wrapperOf(box);
+  if (!wrapper || wrapper.parentElement !== windowRow()) return;
+
   const depth = event.clientY - box.getBoundingClientRect().top;
   if (depth > HEADER_DEPTH) {
     log("chat: grab", Math.round(depth), "px down, below the top strip");
@@ -750,6 +864,8 @@ function onPointerUp(): void {
 /** Windows already being watched, and rows already being watched. */
 const watchedItems = new WeakSet<Element>();
 const watchedRows = new WeakSet<Element>();
+/** Whether a row has been found and put under watch yet. */
+let rowIsWatched = false;
 
 /**
  * Watches a row, and each window in it, for Torn moving things about.
@@ -761,6 +877,7 @@ const watchedRows = new WeakSet<Element>();
 function watchRow(row: Element, items: Element[]): void {
   if (!watchedRows.has(row)) {
     watchedRows.add(row);
+    rowIsWatched = true;
     new MutationObserver(queueRelayout).observe(row, { childList: true });
   }
   for (const item of items) {
@@ -769,6 +886,7 @@ function watchRow(row: Element, items: Element[]): void {
     new MutationObserver(queueRelayout).observe(item, {
       attributes: true,
       attributeFilter: ["style"],
+      childList: true,
     });
   }
 }
@@ -831,6 +949,7 @@ function schedulePass(): void {
  */
 export function hideChatsEarly(): void {
   if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
+  seedHidden();
   const hidden = [...readSet(HIDDEN_KEY)].filter((id) => SAFE_ID.test(id));
   if (hidden.length === 0) return;
 
@@ -847,6 +966,7 @@ export function hideChatsEarly(): void {
 
 /** Keeps chat windows open and minimised per tab rather than per account. */
 export function installLocalChat(): void {
+  seedHidden();
   addEventListener("click", onClick, true);
   addEventListener("pointerdown", onPointerDown, true);
   addEventListener("pointermove", onPointerMove, true);
@@ -861,6 +981,10 @@ export function installLocalChat(): void {
   // so a burst is allowed to settle first.
   new MutationObserver(() => {
     focusedOnArrival = isTheActiveTab();
+    // Until the row has been found there is nothing watching it, and the
+    // settled pass is too far off: the first windows would be drawn where
+    // Torn puts them and move afterwards. So until then, answer at once.
+    if (!rowIsWatched) queueRelayout();
     schedulePass();
   }).observe(document.body, { childList: true, subtree: true });
 

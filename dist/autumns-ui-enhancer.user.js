@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.18.19
+// @version      0.18.27
 // @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, keeps chat windows minimised in one tab without minimising them in the rest and lets the chat bar be dragged to either side of the screen, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and fills your usual recipient into the send forms on the items page. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
@@ -1479,6 +1479,7 @@
   var INSTANT_CLASS = "aue-chat-instant";
   var HIDDEN_KEY = "AUE_CHAT_HIDDEN";
   var KNOWN_KEY = "AUE_CHAT_KNOWN";
+  var LAST_HIDDEN_KEY = "AUE_CHAT_HIDDEN_LAST";
   var SIDE_KEY = "AUE_CHAT_SIDE";
   var HEADER_DEPTH = 34;
   var DRAG_THRESHOLD = 24;
@@ -1516,6 +1517,17 @@
   function writeSet(key, ids) {
     try {
       sessionStorage.setItem(key, JSON.stringify([...ids]));
+      if (key === HIDDEN_KEY) {
+        localStorage.setItem(LAST_HIDDEN_KEY, JSON.stringify([...ids]));
+      }
+    } catch {
+    }
+  }
+  function seedHidden() {
+    try {
+      if (sessionStorage.getItem(HIDDEN_KEY) !== null) return;
+      const last = localStorage.getItem(LAST_HIDDEN_KEY);
+      if (last) sessionStorage.setItem(HIDDEN_KEY, last);
     } catch {
     }
   }
@@ -1552,15 +1564,15 @@
     const widened = already === "none" ? "translate" : `${already}, translate`;
     wrapper.style.setProperty("transition-property", widened, "important");
   }
-  function setOffset(wrapper, x) {
+  function setOffset(wrapper, x, instant = false) {
     const wanted = Math.abs(x) < 0.5 ? "" : `${Math.round(x * 10) / 10}px 0`;
     if (wrapper.style.translate === wanted) return;
-    const firstPlacing = wrapper.style.translate === "";
-    if (firstPlacing) wrapper.classList.add(INSTANT_CLASS);
+    const placeAtOnce = instant || wrapper.style.translate === "";
+    if (placeAtOnce) wrapper.classList.add(INSTANT_CLASS);
     allowSmoothOffset(wrapper);
     if (wanted === "") wrapper.style.removeProperty("translate");
     else wrapper.style.setProperty("translate", wanted, "important");
-    if (firstPlacing) {
+    if (placeAtOnce) {
       void wrapper.offsetWidth;
       wrapper.classList.remove(INSTANT_CLASS);
     }
@@ -1620,8 +1632,9 @@
     );
   }
   function isPositionedByTorn(element) {
-    if (element.style.transform.includes("translateX(")) return true;
-    return element.querySelector(":scope > div > div[id]") !== null;
+    if (element.style.display === "none") return false;
+    if (element.style.position === "fixed") return false;
+    return true;
   }
   var itemWidths = /* @__PURE__ */ new WeakMap();
   var rowWidth = 0;
@@ -1655,8 +1668,21 @@
     const panel = PANEL_ORDER.indexOf(id);
     if (panel >= 0) return panel;
     const chat = bar.indexOf(id);
-    return PANEL_ORDER.length + (chat >= 0 ? chat : bar.length);
+    if (chat >= 0) {
+      const place = PANEL_ORDER.length + chat;
+      lastSlots.set(item, place);
+      return place;
+    }
+    return lastSlots.get(item) ?? PANEL_ORDER.length + bar.length;
   }
+  var lastLayout = "";
+  var lastMembership = "";
+  function sayOnce(what) {
+    if (what === lastLayout) return;
+    lastLayout = what;
+    log("layout:", what);
+  }
+  var lastSlots = /* @__PURE__ */ new WeakMap();
   function spacingGap(items, width) {
     const offsets = items.map(tornOffset).sort((a, b) => b - a);
     for (let index = 1; index < offsets.length; index += 1) {
@@ -1672,6 +1698,11 @@
     const row = windowRow();
     const items = rowItems();
     if (row) watchRow(row, items);
+    const membership = items.map(windowIdOf).join(",");
+    if (membership !== lastMembership) {
+      lastMembership = membership;
+      measureRow();
+    }
     let standIn = 0;
     for (const item of items) {
       const known = itemWidths.get(item);
@@ -1681,7 +1712,9 @@
       wrapper: item,
       torn: tornOffset(item),
       width: widthOf(item, standIn)
-    })).filter((item) => item.width > 0);
+    })).filter((item) => item.width > 0).filter(
+      (item) => side === "left" || item.wrapper.style.transform.includes("translateX(")
+    );
     for (const item of items) {
       if (item.classList.contains(HIDDEN_CLASS)) setOffset(item, 0);
     }
@@ -1690,26 +1723,41 @@
     );
     if (!anyHidden && side === "right") {
       for (const item of items) setOffset(item, 0);
+      sayOnce("on the right with nothing hidden - left alone");
       return;
     }
     if (side === "left") {
-      const bar = barOrder();
+      const bar = barOrder().reverse();
       visible.sort((a, b) => slotOf(a.wrapper, bar) - slotOf(b.wrapper, bar));
     } else {
       visible.sort((a, b) => b.torn - a.torn);
     }
     const first = visible[0];
-    if (!first) return;
+    if (!first) {
+      sayOnce(`nothing to lay out - ${items.length} in the row`);
+      return;
+    }
     if (rowWidth === 0) measureRow();
     const containerWidth = rowWidth;
-    if (containerWidth === 0) return;
+    if (containerWidth < first.width) {
+      sayOnce(`row measured ${Math.round(containerWidth)} for a ${Math.round(first.width)} window - waiting`);
+      measureRow();
+      return;
+    }
     const gap = spacingGap(items, first.width);
+    const placed = [];
     let used = 0;
     for (const chat of visible) {
       const natural = side === "left" ? containerWidth - chat.width : containerWidth - chat.width + chat.torn;
       const target = side === "left" ? used : containerWidth - used - chat.width;
       setOffset(chat.wrapper, target - natural);
+      placed.push(`${windowIdOf(chat.wrapper) || "?"}@${Math.round(target)}`);
       used += chat.width + gap;
+    }
+    const summary = `${side}: ${placed.join(" ")}`;
+    if (summary !== lastLayout) {
+      lastLayout = summary;
+      log("layout", summary);
     }
   }
   function hide(id) {
@@ -1829,6 +1877,8 @@
     if (target.closest(NOT_A_HANDLE)) return;
     const box = boxOf(target);
     if (!box) return;
+    const wrapper = wrapperOf(box);
+    if (!wrapper || wrapper.parentElement !== windowRow()) return;
     const depth = event.clientY - box.getBoundingClientRect().top;
     if (depth > HEADER_DEPTH) {
       log("chat: grab", Math.round(depth), "px down, below the top strip");
@@ -1852,9 +1902,11 @@
   }
   var watchedItems = /* @__PURE__ */ new WeakSet();
   var watchedRows = /* @__PURE__ */ new WeakSet();
+  var rowIsWatched = false;
   function watchRow(row, items) {
     if (!watchedRows.has(row)) {
       watchedRows.add(row);
+      rowIsWatched = true;
       new MutationObserver(queueRelayout).observe(row, { childList: true });
     }
     for (const item of items) {
@@ -1862,7 +1914,8 @@
       watchedItems.add(item);
       new MutationObserver(queueRelayout).observe(item, {
         attributes: true,
-        attributeFilter: ["style"]
+        attributeFilter: ["style"],
+        childList: true
       });
     }
   }
@@ -1891,6 +1944,7 @@
   }
   function hideChatsEarly() {
     if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
+    seedHidden();
     const hidden = [...readSet(HIDDEN_KEY)].filter((id) => SAFE_ID.test(id));
     if (hidden.length === 0) return;
     const style = document.createElement("style");
@@ -1901,6 +1955,7 @@
     setTimeout(liftEarlyHide, FAILSAFE_MS);
   }
   function installLocalChat() {
+    seedHidden();
     addEventListener("click", onClick, true);
     addEventListener("pointerdown", onPointerDown, true);
     addEventListener("pointermove", onPointerMove, true);
@@ -1909,6 +1964,7 @@
     addEventListener("resize", schedulePass);
     new MutationObserver(() => {
       focusedOnArrival = isTheActiveTab();
+      if (!rowIsWatched) queueRelayout();
       schedulePass();
     }).observe(document.body, { childList: true, subtree: true });
     apply2();
@@ -2762,7 +2818,7 @@
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.18.19");
+    document.documentElement.setAttribute("data-aue", "0.18.27");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;

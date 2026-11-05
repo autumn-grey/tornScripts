@@ -1,6 +1,6 @@
 {
   "name": "Autumn's UI Enhancer",
-  "version": "0.18.19",
+  "version": "0.18.27",
   "description": "Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, keeps chat windows minimised in one tab without minimising them in the rest and lets the chat bar be dragged to either side of the screen, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and fills your usual recipient into the send forms on the items page. Switched on and off from a panel on the preferences page.",
   "match": [
     "https://www.torn.com/*",
