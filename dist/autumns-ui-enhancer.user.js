@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.16.3
+// @version      0.16.12
 // @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and offers a send form for anything bought in a shop, prefilled with your usual recipient and the amount you bought. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
@@ -28,6 +28,185 @@
   function log(...parts) {
     if (!debugging()) return;
     console.log("[AUE]", ...parts);
+  }
+
+  // src/autumns-ui-enhancer/jsonRows.ts
+  var AUCTION_PARTS = {
+    plate: ".item-plate",
+    image: ".item-plate img",
+    hover: ".item-hover",
+    info: ".view-info",
+    name: ".item-name",
+    rarity: ".title p",
+    bonuses: ".item-bonuses",
+    seller: ".seller-wrap .name",
+    bidder: ".seller-wrap .namehight",
+    bids: ".bids-wrap",
+    topBid: ".c-bid-wrap",
+    bidIcon: ".bid-wrap .bid-icon",
+    time: ".time-wrap",
+    mobSeller: ".seller-mob-wrap",
+    mobBidder: ".top-seller-mob-wrap",
+    mobBid: ".top-bid-mob-wrap",
+    mobTime: ".time-mob-wrap",
+    panels: ".confirm, .show-item-info"
+  };
+  var SYNC_ATTR = "data-w3b-sync";
+  var SYNC_MARK = "aue";
+  var URGENT_CLASS = "t-red";
+  var GLOW_PREFIX = "glow-";
+  function asText(value) {
+    return value === null || value === void 0 ? "" : String(value);
+  }
+  function asNumber(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  function countdownText(timer) {
+    const days = asNumber(timer.d);
+    const hours = asNumber(timer.h);
+    const minutes = asNumber(timer.m);
+    const seconds = asNumber(timer.s);
+    switch (timer.max) {
+      case "d":
+        return `${days}d ${hours}h `;
+      case "h":
+        return `${hours}h ${minutes}m `;
+      case "m":
+        return `${minutes}m ${seconds}s `;
+      default:
+        return `${seconds}s `;
+    }
+  }
+  function setPerson(cell, person) {
+    const link = cell?.querySelector("a");
+    const who = person;
+    if (!link || !who) return;
+    link.setAttribute("href", asText(who.link));
+    link.textContent = asText(who.name);
+  }
+  function setCountdown(cell, timer, endsAt) {
+    if (!cell) return;
+    const titled = cell.querySelector("span[title]");
+    if (titled) titled.title = `Ends on ${endsAt}`;
+    const time = cell.querySelector(".time");
+    if (time) time.setAttribute("timer", String(asNumber(timer.value)));
+    const urgent = timer.max === "m" || timer.max === "s";
+    const shown = countdownText(timer);
+    for (const slot of cell.querySelectorAll(".dh-time, .max-time")) {
+      slot.textContent = shown;
+      slot.classList.toggle(URGENT_CLASS, urgent);
+    }
+  }
+  function collapse(panel) {
+    const preloader = panel.querySelector(".ajax-preloader");
+    panel.replaceChildren();
+    if (preloader) panel.appendChild(preloader.cloneNode(true));
+  }
+  function itemSrcset(base, extension) {
+    return [1, 2, 3, 4].map((scale) => {
+      const suffix = scale === 1 ? "" : `@${scale}x`;
+      return `${base}${suffix}${extension} ${scale}x`;
+    }).join(", ");
+  }
+  var AUCTION_MARKET = {
+    path: "/amarket.php",
+    fill(row, listing) {
+      const parts = AUCTION_PARTS;
+      row.id = asText(listing.ID);
+      const plate = row.querySelector(parts.plate);
+      if (plate) {
+        for (const name2 of [...plate.classList]) {
+          if (name2.startsWith(GLOW_PREFIX)) plate.classList.remove(name2);
+        }
+        const glow = asText(listing.glowClass);
+        if (glow) plate.classList.add(glow);
+      }
+      const image = row.querySelector(parts.image);
+      if (image) {
+        image.setAttribute("src", asText(listing.itemSrc));
+        image.setAttribute(
+          "srcset",
+          itemSrcset(
+            asText(listing.itemSrcSetName),
+            asText(listing.itemSrcSetExt)
+          )
+        );
+      }
+      const hover = row.querySelector(parts.hover);
+      if (hover) {
+        hover.setAttribute("item", asText(listing.itemID));
+        hover.setAttribute("armoury", asText(listing.armouryID));
+        hover.setAttribute("loaded", "0");
+      }
+      const label = asText(listing.arialabel);
+      const info = row.querySelector(parts.info);
+      if (info) info.setAttribute("aria-label", label);
+      const name = row.querySelector(parts.name);
+      if (name) {
+        name.textContent = asText(listing.itemName);
+        name.setAttribute("href", asText(listing.itemLink));
+      }
+      const rarity = row.querySelector(parts.rarity);
+      if (rarity) rarity.textContent = `(${asText(listing.rare)})`;
+      const bonuses = row.querySelector(parts.bonuses);
+      if (bonuses) bonuses.innerHTML = asText(listing.item_image_icons);
+      setPerson(row.querySelector(parts.seller), listing.seller);
+      setPerson(row.querySelector(parts.bidder), listing.hightbidder);
+      const bids = row.querySelector(parts.bids);
+      if (bids) bids.textContent = `${asNumber(listing.bids)} bids`;
+      const topBid = asText(listing.topbid);
+      const price = row.querySelector(parts.topBid);
+      if (price) price.textContent = topBid;
+      const bidIcon = row.querySelector(parts.bidIcon);
+      if (bidIcon) {
+        bidIcon.setAttribute(
+          "aria-label",
+          `BID: ${asText(listing.itemName)} (${asText(listing.rare)})`
+        );
+      }
+      const timer = listing.timer ?? {};
+      const endsAt = asText(listing.enddate);
+      setCountdown(row.querySelector(parts.time), timer, endsAt);
+      setCountdown(row.querySelector(parts.mobTime), timer, endsAt);
+      setPerson(row.querySelector(parts.mobSeller), listing.seller);
+      setPerson(row.querySelector(parts.mobBidder), listing.hightbidder);
+      const mobBid = row.querySelector(parts.mobBid);
+      if (mobBid) mobBid.textContent = `Bid: ${topBid}`;
+      for (const panel of row.querySelectorAll(parts.panels)) collapse(panel);
+    }
+  };
+  var BUILDERS = [AUCTION_MARKET];
+  function rowsFromJson(body, template) {
+    if (body.trimStart()[0] !== "{") return null;
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      return null;
+    }
+    const list = data.list;
+    if (!Array.isArray(list)) return null;
+    const builder = BUILDERS.find((one) => one.path === location.pathname);
+    if (!builder) {
+      log("build: this page answers with data, and nothing here can draw it");
+      return null;
+    }
+    const rows = [];
+    for (const listing of list) {
+      if (typeof listing !== "object" || listing === null) continue;
+      const row = template.cloneNode(true);
+      if (row.hasAttribute(SYNC_ATTR)) row.setAttribute(SYNC_ATTR, SYNC_MARK);
+      try {
+        builder.fill(row, listing);
+      } catch (problem) {
+        log("build: a row would not fill -", problem);
+        return null;
+      }
+      rows.push(row);
+    }
+    log("build:", rows.length, "rows drawn from data");
+    return rows;
   }
 
   // src/autumns-ui-enhancer/settings.ts
@@ -108,8 +287,7 @@
   var ROW_CONTAINER_SELECTOR = "ul, ol, tbody";
   var NOT_A_LIST = "#sidebarroot, #header-root, .header-wrapper-top, .header-wrapper-bottom, #chatRoot, .content-title, .breadcrumbs";
   var CONTENT_ROOT_SELECTOR = ".content-wrapper, #mainContainer";
-  var PAGE_STEP = 20;
-  var PAGE_SIZES = [20, 40, 60, 80, 100];
+  var MAX_REQUESTS = 5;
   var THROTTLE_MS = 150;
   var SETTLE_MS = 150;
   var MAX_SETTLE_MS = 1e3;
@@ -120,45 +298,152 @@
   var EXTRA_ROW_ATTR = "data-aue-extra";
   var PAGER_STATE_ATTR = "data-aue-pager";
   var START_IN_BODY = /(^|&)start=\d+/;
+  var START_IN_URL = /([?&])start=\d+/;
   var START_IN_HASH = /[?&]start=(\d+)/;
   var lastRequest = null;
   var ownRequest = false;
   var generation = 0;
   var writing = false;
   var filling = null;
+  var failedFills = /* @__PURE__ */ new Set();
+  var FETCH_BUDGET = 12;
+  var fetchBudget = FETCH_BUDGET;
+  var saidNoRequest = false;
   var primed = false;
   var onRequestCaptured = null;
   var originalPagers = /* @__PURE__ */ new WeakMap();
   var basePageCounts = /* @__PURE__ */ new WeakMap();
-  function pageSize() {
-    const stored = Number(readSetting(SIZE_SETTING, String(PAGE_STEP)));
-    return PAGE_SIZES.includes(stored) ? stored : PAGE_STEP;
+  var pageSteps = /* @__PURE__ */ new WeakMap();
+  var START_IN_LINK = /(?:^|[?&#])start=(\d+)/;
+  function newGeneration() {
+    generation += 1;
+    failedFills.clear();
+    fetchBudget = FETCH_BUDGET;
+    saidNoRequest = false;
   }
-  function rememberRequest(url, body) {
-    if (!START_IN_BODY.test(body)) return false;
-    let path;
+  function isPlausibleStep(step) {
+    return Number.isInteger(step) && step >= 1 && step <= 100;
+  }
+  function stepFromLinks(widget) {
+    const points = [];
+    for (const link of widget.querySelectorAll(PAGE_LINK_SELECTOR)) {
+      const page = Number(link.getAttribute("page"));
+      const match = START_IN_LINK.exec(link.getAttribute("href") ?? "");
+      if (!Number.isInteger(page) || page < 1 || !match) continue;
+      points.push({ page, start: Number(match[1]) });
+    }
+    for (const a of points) {
+      for (const b of points) {
+        if (a.page === b.page) continue;
+        const step = (a.start - b.start) / (a.page - b.page);
+        if (isPlausibleStep(step)) return step;
+      }
+    }
+    const beyondFirst = points.find((point) => point.page > 1);
+    if (beyondFirst) {
+      const step = beyondFirst.start / (beyondFirst.page - 1);
+      if (isPlausibleStep(step)) return step;
+    }
+    return null;
+  }
+  function hasLaterPages(widget) {
+    let active = 1;
+    let last = 1;
+    for (const link of widget.querySelectorAll(PAGE_LINK_SELECTOR)) {
+      const page = Number(link.getAttribute("page"));
+      if (!Number.isInteger(page) || page < 1) continue;
+      if (link.classList.contains("active")) active = page;
+      if (page > last) last = page;
+    }
+    return last > active;
+  }
+  function pageStepFor(widget, container) {
+    const cached = pageSteps.get(widget);
+    if (cached !== void 0) return cached;
+    let step = stepFromLinks(widget);
+    let how = "its page links";
+    if (step === null && container && hasLaterPages(widget)) {
+      const own = rowsOf(container).filter(
+        (row) => !row.hasAttribute(EXTRA_ROW_ATTR)
+      ).length;
+      if (isPlausibleStep(own) && own > 1) {
+        step = own;
+        how = "the rows on a full page";
+      }
+    }
+    const hrefs = [...widget.querySelectorAll(PAGE_LINK_SELECTOR)].slice(0, 3).map((link) => link.getAttribute("href") ?? "(no href)");
+    if (step === null) {
+      log("step: cannot read one. Page links point at:", hrefs.join(" "));
+      return null;
+    }
+    pageSteps.set(widget, step);
+    log("step:", step, "rows per request, read from", how, "-", hrefs.join(" "));
+    return step;
+  }
+  function adoptStep(widget, step) {
+    if (pageSteps.has(widget)) return;
+    pageSteps.set(widget, step);
+  }
+  function sizeChoices(step) {
+    return Array.from({ length: MAX_REQUESTS }, (_, index) => step * (index + 1));
+  }
+  function sizeSetting() {
+    return `${SIZE_SETTING}:${location.pathname}`;
+  }
+  function pageSize(step) {
+    const shared = readSetting(SIZE_SETTING, String(step));
+    const stored = Number(readSetting(sizeSetting(), shared));
+    const wanted = Number.isFinite(stored) && stored > 0 ? stored : step;
+    const requests = Math.min(
+      MAX_REQUESTS,
+      Math.max(1, Math.round(wanted / step))
+    );
+    return step * requests;
+  }
+  function redact(text) {
+    return text.replace(/=[^&]*/g, "=*");
+  }
+  function rememberRequest(method, url, body) {
+    let address;
     try {
-      path = new URL(url, location.href).pathname;
+      address = new URL(url, location.href);
     } catch {
       return false;
     }
-    if (path !== location.pathname) return false;
-    lastRequest = { url, body };
-    log("capture: list request for", path, body.replace(/=[^&]*/g, "=*"));
-    return true;
+    if (address.origin !== location.origin) return false;
+    if (body !== null && START_IN_BODY.test(body)) {
+      if (address.pathname !== location.pathname) return false;
+      lastRequest = { method: method || "POST", url, body, offsetIn: "body" };
+      log("capture: list request to", address.pathname, redact(body));
+      return true;
+    }
+    if (START_IN_URL.test(address.search)) {
+      if (address.pathname !== location.pathname) return false;
+      if (lastRequest?.offsetIn === "body") return false;
+      lastRequest = { method: method || "GET", url, body, offsetIn: "url" };
+      log(
+        "capture: list request to",
+        address.pathname + redact(address.search),
+        body === null ? "(no body)" : redact(body)
+      );
+      return true;
+    }
+    return false;
   }
   function installRequestCapture() {
     const openOriginal = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(...args) {
+      this.__aueMethod = String(args[0]);
       this.__aueUrl = String(args[1]);
       openOriginal.apply(this, args);
     };
     const sendOriginal = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function(body) {
-      if (!ownRequest && typeof body === "string") {
+      if (!ownRequest) {
         const captured = rememberRequest(
+          this.__aueMethod ?? "GET",
           this.__aueUrl ?? location.pathname,
-          body
+          typeof body === "string" ? body : null
         );
         if (captured) {
           this.addEventListener("loadend", () => onRequestCaptured?.(), {
@@ -174,9 +459,14 @@
       const init = args[1];
       const body = init?.body;
       let captured = false;
-      if (!ownRequest && typeof body === "string") {
-        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        captured = rememberRequest(url, body);
+      if (!ownRequest) {
+        const request = input instanceof Request ? input : null;
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : request?.url ?? "";
+        captured = rememberRequest(
+          init?.method ?? request?.method ?? "GET",
+          url,
+          typeof body === "string" ? body : null
+        );
       }
       const sent = fetchOriginal.apply(this, args);
       if (captured) void sent.then(() => onRequestCaptured?.()).catch(() => {
@@ -192,7 +482,7 @@
   function rowsOf(container) {
     return [...container.children].filter(isRow);
   }
-  function findRowContainer(root) {
+  function findRowContainer(root, step) {
     if (root.id === CONTROL_ID) return null;
     if (root.closest(NOT_A_LIST)) return null;
     const candidates = [];
@@ -204,7 +494,7 @@
       if (rowsOf(element).length >= 2) candidates.push(element);
     }
     if (candidates.length === 0) return null;
-    const full = candidates.filter((c) => rowsOf(c).length >= PAGE_STEP);
+    const full = step === null ? [] : candidates.filter((c) => rowsOf(c).length >= step);
     const pool = full.length > 0 ? full : candidates;
     return pool.reduce(
       (best, c) => rowsOf(c).length > rowsOf(best).length ? c : best
@@ -235,18 +525,24 @@
     }
     return found;
   }
-  function findList(widget) {
+  function findList(widget, step) {
     let node = widget;
     for (let level = 0; node && node !== document.body && level <= MAX_CLIMB; ) {
       if (node.matches(CONTENT_ROOT_SELECTOR)) break;
       for (const sibling of siblingsOf(node)) {
-        const container = findRowContainer(sibling);
+        const container = findRowContainer(sibling, step);
         if (container) {
           return {
             widget,
             pagerBlock: node,
             block: sibling,
-            container
+            container,
+            // A pager with no offsets in its links may still be measurable
+            // from the rows it has in front of it.
+            step: step ?? pageStepFor(widget, container),
+            pagerIsAbove: Boolean(
+              node.compareDocumentPosition(sibling) & Node.DOCUMENT_POSITION_FOLLOWING
+            )
           };
         }
       }
@@ -261,7 +557,7 @@
       PAGINATION_SELECTOR
     )) {
       if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
-      const target = findList(widget);
+      const target = findList(widget, pageStepFor(widget));
       if (!target) continue;
       const listIsAfterPager = target.pagerBlock.compareDocumentPosition(target.block) & Node.DOCUMENT_POSITION_FOLLOWING;
       if (listIsAfterPager) return target;
@@ -283,12 +579,16 @@
     const match = START_IN_HASH.exec(location.hash);
     return match ? Number(match[1]) : 0;
   }
-  function goToPage(widget, page) {
+  function goToPage(widget, page, size) {
     const template = hashTemplate(widget);
-    if (!template) return;
-    const size = pageSize();
+    if (!template) {
+      log("page: no hash to build on, so this list cannot be paged by us");
+      return;
+    }
     const start2 = Math.max(0, page - 1) * size;
-    generation += 1;
+    log("page: going to page", page, "- start", start2);
+    removeAllExtraRows();
+    newGeneration();
     location.hash = `${template}start=${start2}`;
   }
   function basePageCount(widget) {
@@ -305,18 +605,17 @@
     log(
       "pager: Torn reports",
       pages,
-      "pages of",
-      PAGE_STEP,
+      "pages",
       last ? "" : "(pager unfinished, not cached)"
     );
     return pages;
   }
-  function pagerModel(widget, size) {
-    const pages20 = basePageCount(widget);
-    if (pages20 === null) return null;
-    const total = Math.max(1, Math.ceil(pages20 * PAGE_STEP / size));
+  function pagerModel(widget, size, step) {
+    const basePages = basePageCount(widget);
+    if (basePages === null) return null;
+    const total = Math.max(1, Math.ceil(basePages * step / size));
     const current = Math.min(total, Math.floor(currentStart() / size) + 1);
-    return { base: pages20, current, total };
+    return { base: basePages, current, total };
   }
   function pagesToShow(model) {
     const wanted = /* @__PURE__ */ new Set([1, model.total]);
@@ -328,12 +627,21 @@
   function unhide(element) {
     element.style.removeProperty("display");
   }
-  function rewritePager(widget, size) {
-    const model = pagerModel(widget, size);
+  function rewritePager(widget, size, step) {
+    const model = pagerModel(widget, size, step);
     if (!model) return;
     const state = `${size}:${model.current}:${model.total}`;
     if (widget.getAttribute(PAGER_STATE_ATTR) === state) return;
-    log("pager: page", model.current, "of", model.total, "at", size, "per page");
+    log(
+      "pager: page",
+      model.current,
+      "of",
+      model.total,
+      "at",
+      size,
+      "per page, in steps of",
+      step
+    );
     if (!originalPagers.has(widget)) {
       originalPagers.set(widget, widget.innerHTML);
       basePageCounts.set(widget, model.base);
@@ -391,14 +699,17 @@
       "click",
       (event) => {
         if (!isEnabled(LIST_DISPLAY_EXTENSION)) return;
-        const size = pageSize();
-        if (size <= PAGE_STEP) return;
         const target = event.target;
         if (!(target instanceof Element)) return;
         const link = target.closest("a");
         const widget = link?.closest(PAGINATION_SELECTOR);
         if (!link || !widget) return;
-        const model = pagerModel(widget, size);
+        const state = widget.getAttribute(PAGER_STATE_ATTR);
+        const step = pageStepFor(widget);
+        if (state === null || step === null) return;
+        const size = Number(state.split(":")[0]);
+        if (!Number.isInteger(size) || size <= step) return;
+        const model = pagerModel(widget, size, step);
         if (!model) return;
         let page = null;
         const pageAttribute = link.getAttribute("page");
@@ -414,7 +725,7 @@
         event.stopPropagation();
         event.stopImmediatePropagation();
         if (page < 1 || page > model.total || page === model.current) return;
-        goToPage(widget, page);
+        goToPage(widget, page, size);
       },
       true
     );
@@ -436,33 +747,92 @@
       (best, element) => rowsOf(element).length > rowsOf(best).length ? element : best
     );
   }
+  function looseRows(parsed, live) {
+    const rowTag = live.firstElementChild?.tagName;
+    const body = parsed.body;
+    if (!rowTag || !body) return null;
+    const matching = [...body.children].filter(
+      (child) => child.tagName === rowTag
+    );
+    return matching.length > 0 ? body : null;
+  }
+  function markupIn(text) {
+    const head = text.trimStart()[0];
+    if (head !== "{" && head !== "[") return text;
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return text;
+    }
+    let best = "";
+    const looksLikeRows = /<\s*(li|tr|div|ul|ol|table|tbody)\b/i;
+    const walk = (value, depth) => {
+      if (depth > 6) return;
+      if (typeof value === "string") {
+        if (looksLikeRows.test(value) && value.length > best.length) best = value;
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item, depth + 1);
+        return;
+      }
+      if (value !== null && typeof value === "object") {
+        for (const item of Object.values(value)) walk(item, depth + 1);
+      }
+    };
+    walk(data, 0);
+    return best === "" ? text : best;
+  }
   async function fetchRows(start2, live) {
     if (!lastRequest) return [];
-    const body = lastRequest.body.replace(
-      START_IN_BODY,
-      (_match, lead) => `${lead}start=${start2}`
-    );
+    if (fetchBudget <= 0) {
+      log("fetch: this page has had its allowance, so nothing more is asked for");
+      return [];
+    }
+    fetchBudget -= 1;
+    const { offsetIn } = lastRequest;
+    const method = lastRequest.method.toUpperCase();
+    const at = (_match, lead) => `${lead}start=${start2}`;
+    const url = offsetIn === "url" ? lastRequest.url.replace(START_IN_URL, at) : lastRequest.url;
+    const body = offsetIn === "body" && lastRequest.body !== null ? lastRequest.body.replace(START_IN_BODY, at) : lastRequest.body;
+    const headers = {
+      "X-Requested-With": "XMLHttpRequest"
+    };
+    const sendsBody = method !== "GET" && method !== "HEAD" && body !== null;
+    if (sendsBody) headers["Content-Type"] = "application/x-www-form-urlencoded";
     ownRequest = true;
     let html;
     try {
-      const response = await fetch(lastRequest.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest"
-        },
-        body,
-        credentials: "same-origin"
-      });
-      if (!response.ok) return [];
+      const init = { method, headers, credentials: "same-origin" };
+      if (sendsBody) init.body = body;
+      const response = await fetch(url, init);
+      if (!response.ok) {
+        log("fetch: start", start2, "->", response.status, response.statusText);
+        return [];
+      }
       html = await response.text();
     } catch {
       return [];
     } finally {
       ownRequest = false;
     }
-    const parsed = new DOMParser().parseFromString(html, "text/html");
-    const container = matchingContainer(parsed, live);
+    const template = rowsOf(live)[0];
+    const built = template ? rowsFromJson(html, template) : null;
+    if (built) {
+      log(
+        "fetch: start",
+        start2,
+        "->",
+        html.length,
+        "chars,",
+        built.length,
+        "rows built from data"
+      );
+      return built;
+    }
+    const parsed = new DOMParser().parseFromString(markupIn(html), "text/html");
+    const container = matchingContainer(parsed, live) ?? looseRows(parsed, live);
     if (!container) lastRequest = null;
     const rows = container ? rowsOf(container) : [];
     log(
@@ -474,28 +844,61 @@
       container ? `matched ${container.tagName}.${container.className}` : "NO LIST FOUND",
       `${rows.length} rows`
     );
+    if (!container) log("fetch: the response began:", html.slice(0, 300));
     return rows;
+  }
+  function disarm(row) {
+    for (const script of row.querySelectorAll("script, iframe, object, embed")) {
+      script.remove();
+    }
+    for (const element of [row, ...row.querySelectorAll("*")]) {
+      for (const attribute of [...element.attributes]) {
+        if (attribute.name.toLowerCase().startsWith("on")) {
+          element.removeAttribute(attribute.name);
+        }
+      }
+    }
+    return row;
+  }
+  function removeAllExtraRows() {
+    const extra = document.querySelectorAll(`[${EXTRA_ROW_ATTR}]`);
+    if (extra.length === 0) return;
+    writing = true;
+    for (const row of extra) row.remove();
+    writing = false;
+    log("page: took back", extra.length, "added rows before moving");
   }
   function removeExtraRows(container) {
     for (const row of container.querySelectorAll(`[${EXTRA_ROW_ATTR}]`)) {
       row.remove();
     }
   }
-  async function fillList(target, size) {
+  async function fillList(target, size, step) {
     const { container } = target;
     const have = rowsOf(container).length;
     if (have >= size) return;
-    if (have < PAGE_STEP) {
-      log("fill: skipped -", have, "rows is a short page, so this is the end");
-      return;
-    }
     if (!container.isConnected) return;
     const start2 = currentStart();
-    const key = `${start2}:${size}`;
+    const key = `${generation}:${start2}:${size}`;
     if (filling && filling.key === key && filling.container === container) return;
+    if (failedFills.has(key)) return;
+    if (have < step) {
+      const ended = !hasLaterPages(target.widget);
+      if (ended) failedFills.add(key);
+      log(
+        "fill: skipped -",
+        have,
+        "rows is short of",
+        step,
+        ended ? "- this is the end" : "- the list is still filling in"
+      );
+      return;
+    }
     const mine = generation;
     filling = { key, container };
-    const requests = Math.ceil(size / PAGE_STEP);
+    let added = 0;
+    let abandoned = false;
+    const requests = Math.ceil(size / step);
     log(
       "fill:",
       have,
@@ -509,13 +912,15 @@
     try {
       for (let index = 1; index < requests; index += 1) {
         setStatus(`Loading ${index + 1}/${requests}`);
-        const rows = await fetchRows(start2 + index * PAGE_STEP, container);
+        const rows = await fetchRows(start2 + index * step, container);
         if (mine !== generation) {
           log("fill: abandoned, the page moved on");
+          abandoned = true;
           return;
         }
         if (!container.isConnected) {
           log("fill: abandoned, Torn replaced the list");
+          abandoned = true;
           return;
         }
         if (rows.length === 0) {
@@ -523,19 +928,33 @@
           break;
         }
         writing = true;
-        for (const row of rows) {
-          row.setAttribute(EXTRA_ROW_ATTR, "");
-          if (spacer) container.insertBefore(row, spacer);
-          else container.appendChild(row);
+        try {
+          for (const row of rows) {
+            disarm(row).setAttribute(EXTRA_ROW_ATTR, "");
+            if (spacer) container.insertBefore(row, spacer);
+            else container.appendChild(row);
+            added += 1;
+          }
+        } catch (problem) {
+          log("fill: stopped, that row would not go in -", problem);
+          break;
+        } finally {
+          writing = false;
         }
-        writing = false;
-        if (rows.length < PAGE_STEP) break;
+        if (rows.length < step) break;
         if (index + 1 < requests) await delay(THROTTLE_MS);
-        if (mine !== generation) return;
+        if (mine !== generation) {
+          abandoned = true;
+          return;
+        }
       }
       log("fill: done,", rowsOf(container).length, "rows now showing");
     } finally {
       writing = false;
+      if (added === 0 && !abandoned) {
+        failedFills.add(key);
+        log("fill: nothing came back, so this page is left as Torn sent it");
+      }
       if (filling && filling.container === container && filling.key === key) {
         filling = null;
       }
@@ -546,10 +965,11 @@
     const status = document.querySelector(`.${STATUS_CLASS}`);
     if (status) status.textContent = text;
   }
-  function buildControl() {
+  function buildControl(step) {
     const bar = document.createElement("div");
     bar.id = CONTROL_ID;
     bar.className = "aue-per-page";
+    bar.dataset.aueStep = String(step);
     const status = document.createElement("span");
     status.className = STATUS_CLASS;
     bar.appendChild(status);
@@ -561,23 +981,24 @@
     const select = document.createElement("select");
     select.id = SELECT_ID;
     select.className = "aue-per-page-select";
-    for (const size of PAGE_SIZES) {
+    for (const size of sizeChoices(step)) {
       const option = document.createElement("option");
       option.value = String(size);
       option.textContent = String(size);
       select.appendChild(option);
     }
-    select.value = String(pageSize());
+    select.value = String(pageSize(step));
     select.addEventListener("change", () => onSizeChange(Number(select.value)));
     bar.appendChild(select);
     return bar;
   }
-  function onSizeChange(size) {
-    writeSetting(SIZE_SETTING, String(size));
-    generation += 1;
+  function onSizeChange(chosen) {
+    writeSetting(sizeSetting(), String(chosen));
+    newGeneration();
     setStatus("");
     const target = findTarget();
-    if (!target) return;
+    if (!target || target.step === null) return;
+    const size = pageSize(target.step);
     writing = true;
     removeExtraRows(target.container);
     for (const widget of document.querySelectorAll(
@@ -588,48 +1009,102 @@
     writing = false;
     const page = Math.floor(currentStart() / size) + 1;
     const before = location.hash;
-    goToPage(target.widget, page);
+    goToPage(target.widget, page, size);
     if (location.hash === before) setTimeout(() => void apply(), 0);
   }
-  function ensureControl(target) {
+  var TOP_PAGER_ATTR = "data-aue-top-pager";
+  function tornsOwnPager() {
+    for (const widget of document.querySelectorAll(
+      PAGINATION_SELECTOR
+    )) {
+      if (widget.hasAttribute(TOP_PAGER_ATTR)) continue;
+      if (widget.querySelector(PAGE_LINK_SELECTOR)) return widget;
+    }
+    return null;
+  }
+  function ensureTopPager(target, step) {
+    const existing = document.querySelector(`[${TOP_PAGER_ATTR}]`);
+    if (!existing && target.pagerIsAbove) return null;
+    const source = tornsOwnPager();
+    if (!source) return existing;
+    const stamp = String(generation);
+    if (existing && existing.getAttribute(TOP_PAGER_ATTR) === stamp) {
+      return existing;
+    }
+    const markup = originalPagers.get(source) ?? source.innerHTML;
+    const copy = existing ?? source.cloneNode(false);
+    writing = true;
+    copy.innerHTML = markup;
+    copy.setAttribute(TOP_PAGER_ATTR, stamp);
+    copy.removeAttribute(PAGER_STATE_ATTR);
+    originalPagers.delete(copy);
+    basePageCounts.delete(copy);
+    if (!copy.isConnected) target.block.insertAdjacentElement("beforebegin", copy);
+    writing = false;
+    adoptStep(copy, step);
+    return copy;
+  }
+  function removeTopPager() {
+    const copy = document.querySelector(`[${TOP_PAGER_ATTR}]`);
+    if (!copy) return;
+    writing = true;
+    copy.remove();
+    writing = false;
+  }
+  function ensureControl(anchor, step) {
+    const stale = document.getElementById(CONTROL_ID);
+    if (stale instanceof HTMLElement && stale.dataset.aueStep !== String(step)) {
+      writing = true;
+      stale.remove();
+      writing = false;
+    }
     const existing = document.getElementById(CONTROL_ID);
     if (existing) {
       const select = existing.querySelector(`#${SELECT_ID}`);
-      if (select && select.value !== String(pageSize())) {
-        select.value = String(pageSize());
-      }
-      if (existing.nextElementSibling === target.pagerBlock) return;
+      const wanted = String(pageSize(step));
+      if (select && select.value !== wanted) select.value = wanted;
+      if (existing.nextElementSibling === anchor) return;
       writing = true;
-      target.pagerBlock.insertAdjacentElement("beforebegin", existing);
+      anchor.insertAdjacentElement("beforebegin", existing);
       writing = false;
       return;
     }
     writing = true;
-    target.pagerBlock.insertAdjacentElement("beforebegin", buildControl());
+    anchor.insertAdjacentElement("beforebegin", buildControl(step));
     writing = false;
   }
   function removeControl() {
     document.getElementById(CONTROL_ID)?.remove();
   }
-  function primeRequest(target) {
+  function primeRequest(target, size) {
     if (primed || START_IN_HASH.test(location.hash)) return;
     primed = true;
     log("prime: asking Torn for this list so its request can be replayed");
-    goToPage(target.widget, Math.floor(currentStart() / pageSize()) + 1);
+    goToPage(target.widget, Math.floor(currentStart() / size) + 1, size);
   }
   async function apply() {
     if (!isEnabled(LIST_DISPLAY_EXTENSION)) {
       removeControl();
+      removeTopPager();
       return;
     }
     const target = findTarget();
     if (!target) {
       removeControl();
+      removeTopPager();
       return;
     }
-    ensureControl(target);
-    const size = pageSize();
-    if (size <= PAGE_STEP) {
+    const step = target.step;
+    if (step === null) {
+      log("apply: cannot tell how many rows this list sends, so leaving it be");
+      removeControl();
+      removeTopPager();
+      return;
+    }
+    const topPager = ensureTopPager(target, step);
+    ensureControl(topPager ?? target.pagerBlock, step);
+    const size = pageSize(step);
+    if (size <= step) {
       writing = true;
       removeExtraRows(target.container);
       for (const widget of document.querySelectorAll(
@@ -641,7 +1116,10 @@
       return;
     }
     if (!lastRequest) {
-      log("apply: no list request to replay yet, leaving the page alone");
+      if (!saidNoRequest) {
+        saidNoRequest = true;
+        log("apply: no list request to replay yet, leaving the page alone");
+      }
       writing = true;
       removeExtraRows(target.container);
       for (const widget of document.querySelectorAll(
@@ -650,17 +1128,26 @@
         restorePager(widget);
       }
       writing = false;
-      primeRequest(target);
+      primeRequest(target, size);
       return;
+    }
+    await fillList(target, size, step);
+    if (filling && filling.container === target.container) return;
+    const filled2 = rowsOf(target.container).length;
+    if (filled2 <= step) {
+      log("fill: still", filled2, "rows, so Torn's own pager stands");
     }
     writing = true;
     for (const widget of document.querySelectorAll(
       PAGINATION_SELECTOR
     )) {
-      if (widget.querySelector(PAGE_LINK_SELECTOR)) rewritePager(widget, size);
+      if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
+      const own = pageStepFor(widget) ?? step;
+      adoptStep(widget, own);
+      if (filled2 > own) rewritePager(widget, pageSize(own), own);
+      else restorePager(widget);
     }
     writing = false;
-    await fillList(target, size);
   }
   function installListDisplay() {
     installPagerClicks();
@@ -684,7 +1171,8 @@
       schedule();
     }).observe(document.body, { childList: true, subtree: true });
     addEventListener("hashchange", () => {
-      generation += 1;
+      removeAllExtraRows();
+      newGeneration();
       schedule();
     });
     schedule();
@@ -1122,7 +1610,7 @@
     writing3 = false;
     watchScroller(bar.querySelector(SCROLLER_SELECTOR));
   }
-  function countdownText(endTime) {
+  function countdownText2(endTime) {
     const left = Math.max(0, endTime - Math.floor(Date.now() / 1e3));
     const pad = (value) => String(value).padStart(2, "0");
     const days = Math.floor(left / 86400);
@@ -1154,7 +1642,7 @@
     if (item.endTime > 0) {
       const countdown = document.createElement("span");
       countdown.className = "aue-ticker-countdown";
-      countdown.textContent = countdownText(item.endTime);
+      countdown.textContent = countdownText2(item.endTime);
       text.appendChild(countdown);
     }
     overlay.replaceChildren(
@@ -1225,7 +1713,7 @@
       const item = list[Math.min(manualIndex, list.length - 1)];
       const countdown = bar.querySelector(`#${OVERLAY_ID} .aue-ticker-countdown`);
       if (item && item.endTime > 0 && countdown) {
-        countdown.textContent = countdownText(item.endTime);
+        countdown.textContent = countdownText2(item.endTime);
       }
     }, 1e3);
     apply2();
@@ -1287,6 +1775,27 @@
       original.apply(this, args);
     };
   }
+  function isPageScroller(element) {
+    return element === document.documentElement || element === document.body;
+  }
+  function patchScrollTop() {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "scrollTop"
+    );
+    const read = descriptor?.get;
+    const write = descriptor?.set;
+    if (!read || !write || descriptor.configurable === false) return;
+    Object.defineProperty(Element.prototype, "scrollTop", {
+      configurable: true,
+      enumerable: descriptor.enumerable ?? false,
+      get: read,
+      set(value) {
+        if (isPageScroller(this) && suppressingNavigation()) return;
+        write.call(this, value);
+      }
+    });
+  }
   function patchWindowScrolling() {
     for (const name of ["scrollTo", "scroll", "scrollBy"]) {
       const original = window[name];
@@ -1305,6 +1814,7 @@
     patchHistory("replaceState");
     patchScrollIntoView();
     patchWindowScrolling();
+    patchScrollTop();
   }
 
   // src/autumns-ui-enhancer/styles.ts
@@ -1733,7 +2243,7 @@
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.16.3");
+    document.documentElement.setAttribute("data-aue", "0.16.12");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;

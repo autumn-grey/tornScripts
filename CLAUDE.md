@@ -31,6 +31,14 @@ npm run typecheck  # tsc --noEmit, no output written
 
 Output is **not minified**, deliberately — GreasyFork rejects minified or obfuscated source.
 
+## Versioning
+
+`version` in a script's `meta.json` becomes its `@version`. Tampermonkey only pulls a new copy when that number goes up, so any change reaching `dist/` needs a bump — but **bump the patch number**. Fixes, reworked internals and behaviour changes to an existing feature are all patch bumps: `0.16.3` → `0.16.4`.
+
+Minor bumps are for a **new feature** — a new entry in `settings.ts` that can be switched on and off, or a new script. Nothing else earns one. Do not reach for a minor bump because a change feels large or alters what the user sees; fixing a feature so it finally works is still a fix.
+
+Bump only the script that changed. The versions across `src/*/meta.json` are independent and are not kept in step.
+
 ## Constraints
 
 **GreasyFork:** no minified/obfuscated source. `@require` only from allowlisted CDNs (jsdelivr, cdnjs, unpkg, ajax.googleapis.com, code.jquery.com), always version-pinned, never from our own domain.

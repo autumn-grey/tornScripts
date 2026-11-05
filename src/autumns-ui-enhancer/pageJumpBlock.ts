@@ -83,6 +83,45 @@ function patchScrollIntoView(): void {
   } as typeof Element.prototype.scrollIntoView;
 }
 
+/** Whether an element is the page's own scroller, not a box inside it. */
+function isPageScroller(element: Element): boolean {
+  return element === document.documentElement || element === document.body;
+}
+
+/**
+ * Makes writes to the page's own scroll position do nothing while a jump is
+ * expected.
+ *
+ * The scroll methods are not the only way up the page: setting `scrollTop`
+ * moves it just as well, and that is what jQuery does when it animates a
+ * scroll - a frame at a time, straight onto the property, past every method
+ * patched above. Torn runs jQuery, so without this a jump on the forums goes
+ * through untouched.
+ *
+ * Only the page's own scrollers are held back. A box with its own scrollbar -
+ * a chat panel, a long dropdown - keeps working, because stopping those would
+ * break scrolling that nobody asked to have blocked.
+ */
+function patchScrollTop(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "scrollTop",
+  );
+  const read = descriptor?.get;
+  const write = descriptor?.set;
+  if (!read || !write || descriptor.configurable === false) return;
+
+  Object.defineProperty(Element.prototype, "scrollTop", {
+    configurable: true,
+    enumerable: descriptor.enumerable ?? false,
+    get: read,
+    set(this: Element, value: number) {
+      if (isPageScroller(this) && suppressingNavigation()) return;
+      write.call(this, value);
+    },
+  });
+}
+
 /** Makes the window scroll methods do nothing while a jump is expected. */
 function patchWindowScrolling(): void {
   for (const name of ["scrollTo", "scroll", "scrollBy"] as const) {
@@ -104,4 +143,5 @@ export function installPageJumpBlock(): void {
   patchHistory("replaceState");
   patchScrollIntoView();
   patchWindowScrolling();
+  patchScrollTop();
 }
