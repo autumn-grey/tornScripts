@@ -3,11 +3,11 @@
 import { log } from "./debug";
 import { installListDisplay, installRequestCapture } from "./listDisplay";
 import { installListSort } from "./listSort";
+import { hideChatsEarly, installLocalChat } from "./localChat";
 import { installNewsTicker } from "./newsTicker";
 import { installPageJumpBlock } from "./pageJumpBlock";
 import { installPreferencesPanel } from "./panel";
 import { ITEMS_PATH, installItemSend } from "./itemSend";
-import { SHOP_PATHS, installShopSend } from "./shopSend";
 import { injectStyles } from "./styles";
 import { installWikiTheme } from "./wikiTheme";
 
@@ -31,6 +31,8 @@ function start(name: string, install: () => void): void {
 if (onGame) {
   start("page jump block", installPageJumpBlock);
   start("request capture", installRequestCapture);
+  // Before Torn paints, or a chat this tab hid is shown and then taken away.
+  start("chat pre-hide", hideChatsEarly);
 } else {
   start("wiki theme", installWikiTheme);
 }
@@ -44,14 +46,14 @@ function onReady(): void {
     return;
   }
 
+  start("per-tab chat", installLocalChat);
   start("news ticker", installNewsTicker);
   if (location.pathname === PREFERENCES_PATH) {
     start("preferences panel", installPreferencesPanel);
     return;
   }
-  if (SHOP_PATHS.includes(location.pathname)) {
-    start("shop send", installShopSend);
-  }
+  // The shop purchase send button is not started: it stopped appearing and
+  // has not been diagnosed. See the note at the top of shopSend.ts.
   if (location.pathname === ITEMS_PATH) start("item send", installItemSend);
   start("list display", installListDisplay);
   start("list sort", installListSort);

@@ -39,6 +39,22 @@ Minor bumps are for a **new feature** — a new entry in `settings.ts` that can 
 
 Bump only the script that changed. The versions across `src/*/meta.json` are independent and are not kept in step.
 
+## Comments
+
+Standard professional practice, which is also the style already in `src/`:
+
+- Say **why**, not what. The code states what it does; a comment earns its
+  place by giving the reason, the constraint, or the thing that caught us out.
+- Every file opens with a line saying what it is for. Every exported function,
+  and every internal one that is not obvious, gets a `/** ... */`. One line
+  where one line does, a paragraph where the reasoning needs it.
+- Write down the facts a reader cannot see from here: a Torn quirk, the shape
+  of a response, a browser behaviour being relied on. Those are the comments
+  worth having.
+- No commented-out code, no bare `TODO`, no restating the signature in prose.
+- Keep them true. A stale comment is worse than none, so changing the code
+  means changing the comment above it.
+
 ## Constraints
 
 **GreasyFork:** no minified/obfuscated source. `@require` only from allowlisted CDNs (jsdelivr, cdnjs, unpkg, ajax.googleapis.com, code.jquery.com), always version-pinned, never from our own domain.

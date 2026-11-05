@@ -18,6 +18,13 @@ export const PAGE_JUMP_BLOCK: Feature = {
   defaultOn: true,
 };
 
+export const INDEPENDENT_CHAT_TABS: Feature = {
+  key: "INDEPENDENT_CHAT_TABS",
+  label: "Independent Chat Tabs",
+  note: "Also lets chat align left when dragged",
+  defaultOn: true,
+};
+
 export const LIST_DISPLAY_EXTENSION: Feature = {
   key: "LIST_DISPLAY_EXTENSION",
   label: "List Display Extension",
@@ -37,9 +44,11 @@ export const NEWS_TICKER: Feature = {
   defaultOn: true,
 };
 
-export const SHOP_SEND: Feature = {
+export const PREFERRED_RECIPIENT: Feature = {
+  // The key stays as it was so nobody's existing choice is forgotten; only
+  // what it covers, and what it is called, have changed.
   key: "SHOP_SEND",
-  label: "Buy Features",
+  label: "Preferred Recipient",
   defaultOn: true,
 };
 
@@ -56,10 +65,11 @@ export const PANEL_FOOTNOTE =
 /** Every switch the preferences panel offers, in the order it shows them. */
 export const FEATURES: Feature[] = [
   PAGE_JUMP_BLOCK,
+  INDEPENDENT_CHAT_TABS,
   LIST_DISPLAY_EXTENSION,
   LIST_SORTING,
   NEWS_TICKER,
-  SHOP_SEND,
+  PREFERRED_RECIPIENT,
 ];
 
 /** Whether a feature is switched on. */

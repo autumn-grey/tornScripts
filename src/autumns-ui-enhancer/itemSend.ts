@@ -1,7 +1,7 @@
 // The stored recipient, filled into send forms on the items page.
 
 import { log } from "./debug";
-import { SHOP_SEND, isEnabled } from "./settings";
+import { PREFERRED_RECIPIENT, isEnabled } from "./settings";
 import { fillRecipient, findSendForms } from "./recipient";
 
 /** The page this feature runs on. */
@@ -14,7 +14,7 @@ const filled = new WeakSet<Element>();
 
 /** Fills the recipient into any send form now on the page. */
 function pass(): void {
-  if (!isEnabled(SHOP_SEND)) return;
+  if (!isEnabled(PREFERRED_RECIPIENT)) return;
   const forms = findSendForms(document.body);
   if (forms.length) log("send: send forms on the items page:", forms.length);
   for (const form of forms) {

@@ -417,6 +417,21 @@ const CSS = `
     height: 0 !important;
     visibility: hidden;
   }
+  .aue-chat-hidden {
+    display: none !important;
+  }
+  /*
+   * Laid out from the left, Torn's own placement is switched off and every
+   * window is put where this script says. Leaving Torn to place them and
+   * correcting it afterwards meant each window travelled to Torn's idea of
+   * its place before being moved to ours.
+   */
+  .aue-chat-left > * {
+    transform: none !important;
+  }
+  .aue-chat-instant {
+    transition-duration: 0s !important;
+  }
   .aue-send-frame {
     display: block;
     width: 100%;

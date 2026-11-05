@@ -1,4 +1,9 @@
 // A send option after a shop purchase, hosting Torn's own item page send form.
+//
+// PARKED, and not part of any script. The button stopped appearing and the
+// cause was never found; what it does once it is up was never the problem.
+// It sits outside src/ so that nothing builds or type-checks it. See
+// parked/README.md for why it is here and how to put it back.
 
 import { log } from "./debug";
 import {
@@ -8,7 +13,7 @@ import {
   fillField,
   recipientText,
 } from "./recipient";
-import { SHOP_SEND, isEnabled } from "./settings";
+import { PREFERRED_RECIPIENT, isEnabled } from "./settings";
 
 /** The shop pages this feature runs on. */
 export const SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
@@ -133,7 +138,7 @@ let panelCount = 0;
 
 /** Whether the feature is switched on. */
 function on(): boolean {
-  return isEnabled(SHOP_SEND);
+  return isEnabled(PREFERRED_RECIPIENT);
 }
 
 /** Returns the item id carried by an element or its contents. */

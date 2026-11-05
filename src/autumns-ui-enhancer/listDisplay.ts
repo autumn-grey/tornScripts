@@ -1105,6 +1105,79 @@ function onSizeChange(chosen: number): void {
   if (location.hash === before) setTimeout(() => void apply(), 0);
 }
 
+/** Words Torn puts beside a page size control of its own. */
+const OWN_SIZE_LABEL = "per page";
+
+/** Whether every choice in a dropdown is a plain number. */
+function offersOnlyNumbers(select: HTMLSelectElement): boolean {
+  if (select.options.length === 0) return false;
+  return [...select.options].every((option) =>
+    /^\d+$/.test((option.textContent ?? "").trim()),
+  );
+}
+
+/**
+ * Whether a dropdown is labelled as setting a page size.
+ *
+ * Only what sits beside the dropdown counts: its own siblings, its parent's
+ * siblings, and a label pointing at it by id. Reading whole ancestors was
+ * too blunt in two ways - any mention of the words further up the page
+ * matched, and so did this script's own "Items per page", which would have
+ * had the control switch itself off wherever it had placed itself near
+ * another dropdown of numbers.
+ */
+function labelledPerPage(select: HTMLSelectElement): boolean {
+  const nearby: string[] = [];
+
+  const collectSiblings = (of: Element | null): void => {
+    for (const sibling of of?.parentElement?.childNodes ?? []) {
+      if (sibling === of) continue;
+      // Never read this script's own control: its label says the very words
+      // being looked for, which would make the test answer itself.
+      if (sibling instanceof Element && sibling.closest(`#${CONTROL_ID}`)) {
+        continue;
+      }
+      nearby.push(sibling.textContent ?? "");
+    }
+  };
+
+  collectSiblings(select);
+  collectSiblings(select.parentElement);
+
+  if (select.id) {
+    const label = document.querySelector(
+      `label[for="${CSS.escape(select.id)}"]`,
+    );
+    if (label && !label.closest(`#${CONTROL_ID}`)) {
+      nearby.push(label.textContent ?? "");
+    }
+  }
+
+  return nearby.join(" ").toLowerCase().includes(OWN_SIZE_LABEL);
+}
+
+/**
+ * Whether Torn already lets the reader set this list's page size.
+ *
+ * Some lists come with the thing this feature adds - the faction armoury has
+ * its own "Items per page" - and on those there is nothing to improve and a
+ * second set of controls to trip over. A dropdown of nothing but numbers,
+ * labelled as being per page, is Torn's own, and this list is left to it.
+ */
+function tornSetsTheSizeHere(target: ListTarget): boolean {
+  let scope: HTMLElement | null = target.block.parentElement;
+  while (scope && !scope.contains(target.pagerBlock)) {
+    scope = scope.parentElement;
+  }
+  if (!scope) return false;
+
+  for (const select of scope.querySelectorAll<HTMLSelectElement>("select")) {
+    if (select.closest(`#${CONTROL_ID}`)) continue;
+    if (offersOnlyNumbers(select) && labelledPerPage(select)) return true;
+  }
+  return false;
+}
+
 /** Marks the pager this script put above a list, and the page it was cut for. */
 const TOP_PAGER_ATTR = "data-aue-top-pager";
 
@@ -1229,6 +1302,13 @@ async function apply(): Promise<void> {
   const step = target.step;
   if (step === null) {
     log("apply: cannot tell how many rows this list sends, so leaving it be");
+    removeControl();
+    removeTopPager();
+    return;
+  }
+
+  if (tornSetsTheSizeHere(target)) {
+    log("apply: Torn sets the page size on this list, so leaving it to it");
     removeControl();
     removeTopPager();
     return;
