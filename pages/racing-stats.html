@@ -1,0 +1,583 @@
+<!doctype html>
+<!--
+  Racing stats chart: a standalone page, not a userscript. Open it straight from disk.
+  Keeps the player list, API key and last fetched stats in this browser's localStorage,
+  pulls each player's public racing stats from the Torn API, and draws them onto a canvas
+  that can be copied or saved as a PNG for Discord.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Racing Stats Chart</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f4f2;
+    --panel: #fcfcfb;
+    --border: #dddcd6;
+    --text: #0b0b0b;
+    --text-2: #52514e;
+    --muted: #8a8984;
+    --accent: #2a78d6;
+    --danger: #c53b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #111110;
+      --panel: #1a1a19;
+      --border: #33332f;
+      --text: #ffffff;
+      --text-2: #c3c2b7;
+      --muted: #8a897f;
+      --accent: #3987e5;
+      --danger: #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111110;
+    --panel: #1a1a19;
+    --border: #33332f;
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --muted: #8a897f;
+    --accent: #3987e5;
+    --danger: #e66767;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 1240px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .grid { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+  label { display: block; color: var(--text-2); font-size: 12px; margin: 8px 0 4px; }
+  input, select, button {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 9px;
+  }
+  input { width: 100%; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > input { flex: 1; }
+  .players { list-style: none; margin: 10px 0 0; padding: 0; max-height: 420px; overflow-y: auto; }
+  .players li {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 0; border-top: 1px solid var(--border);
+  }
+  .players .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .players .id { color: var(--muted); font-size: 12px; }
+  .players .err { color: var(--danger); font-size: 12px; }
+  .players button { padding: 1px 8px; }
+  .status { color: var(--text-2); font-size: 12px; margin-top: 8px; min-height: 1.4em; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 12px; }
+  .toolbar .field { display: flex; flex-direction: column; }
+  .toolbar .field.grow { flex: 1; min-width: 180px; }
+  .toolbar label { margin: 0 0 4px; }
+  .canvas-wrap { overflow-x: auto; }
+  canvas { display: block; max-width: 100%; height: auto; border-radius: 6px; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Racing Stats Chart</h1>
+  <div class="grid">
+    <div>
+      <section class="panel">
+        <h2>API key</h2>
+        <div class="row">
+          <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Public key is enough">
+          <button id="keyToggle" type="button">Show</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Players</h2>
+        <div class="row">
+          <input id="addInput" placeholder="IDs or profile links" spellcheck="false">
+          <button id="addBtn" type="button">Add</button>
+        </div>
+        <ul id="players" class="players"></ul>
+        <div class="row" style="margin-top:10px">
+          <button id="fetchBtn" class="primary" type="button">Fetch stats</button>
+          <button id="copyIds" type="button">Copy ID list</button>
+        </div>
+        <div id="status" class="status"></div>
+      </section>
+    </div>
+
+    <section class="panel">
+      <div class="toolbar">
+        <div class="field grow">
+          <label for="title">Title</label>
+          <input id="title" placeholder="Tournament name">
+        </div>
+        <div class="field">
+          <label for="sort">Sort by</label>
+          <select id="sort"></select>
+        </div>
+        <div class="field">
+          <label for="imgTheme">Image</label>
+          <select id="imgTheme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </div>
+        <button id="copyImg" type="button">Copy image</button>
+        <button id="saveImg" type="button">Save PNG</button>
+      </div>
+      <div class="canvas-wrap"><canvas id="chart"></canvas></div>
+      <div id="empty" class="empty">Add players and fetch their stats to draw the chart.</div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+const STORE = {
+  key: "racingStats.apiKey",
+  players: "racingStats.players",
+  stats: "racingStats.stats",
+  title: "racingStats.title",
+  sort: "racingStats.sort",
+  theme: "racingStats.imgTheme",
+};
+
+// Torn allows 100 calls a minute per key; this pace stays well under it even for long lists.
+const FETCH_GAP_MS = 700;
+
+/** Image colours, per image theme. */
+const IMG_THEMES = {
+  dark: {
+    bg: "#1a1a19", rowAlt: "#212120", grid: "#33332f",
+    text: "#ffffff", text2: "#c3c2b7", muted: "#8a897f",
+    bar: "#3987e5", track: "#2a2a28",
+  },
+  light: {
+    bg: "#fcfcfb", rowAlt: "#f3f3f0", grid: "#dddcd6",
+    text: "#0b0b0b", text2: "#52514e", muted: "#8a8984",
+    bar: "#2a78d6", track: "#e8e8e4",
+  },
+};
+
+/** Stat columns: how to read each from a player's stats and how to show it. */
+const COLUMNS = [
+  { id: "skill", label: "Racing skill", bar: true, get: s => s.skill, fmt: v => fmtNum(v, 2) },
+  { id: "entered", label: "Races", get: s => s.entered, fmt: v => fmtNum(v, 0) },
+  { id: "won", label: "Wins", get: s => s.won, fmt: v => fmtNum(v, 0) },
+  { id: "winrate", label: "Win rate", bar: true, max: 100,
+    get: s => (s.entered > 0 ? (s.won / s.entered) * 100 : null), fmt: v => (v == null ? "–" : fmtNum(v, 1) + "%") },
+  { id: "points", label: "Points", get: s => s.points, fmt: v => fmtNum(v, 0) },
+];
+
+const $ = id => document.getElementById(id);
+
+/** Reads a JSON value from localStorage, or the fallback when missing or unreadable. */
+function load(name, fallback) {
+  try {
+    const raw = localStorage.getItem(name);
+    return raw == null ? fallback : JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+/** Writes a JSON value to localStorage, ignoring storage failures. */
+function save(name, value) {
+  try { localStorage.setItem(name, JSON.stringify(value)); } catch {}
+}
+
+/** Formats a number with up to the given decimals and thousands separators. */
+function fmtNum(v, decimals) {
+  if (v == null || Number.isNaN(v)) return "–";
+  return v.toLocaleString("en-US", { maximumFractionDigits: decimals });
+}
+
+let players = load(STORE.players, []);
+let stats = load(STORE.stats, {});
+
+/** Pulls every player ID out of free text: bare numbers or profile links. */
+function parseIds(text) {
+  const found = text.match(/\d+/g) || [];
+  return found.map(Number).filter(n => n > 0);
+}
+
+/** Adds the IDs typed in the add box to the player list. */
+function addPlayers() {
+  const ids = parseIds($("addInput").value);
+  let added = 0;
+  for (const id of ids) {
+    if (!players.includes(id)) { players.push(id); added++; }
+  }
+  save(STORE.players, players);
+  $("addInput").value = "";
+  setStatus(added ? `Added ${added} player${added > 1 ? "s" : ""}. Fetch to load their stats.` : "No new IDs found.");
+  renderList();
+  draw();
+}
+
+/** Removes one player from the list and drops their cached stats. */
+function removePlayer(id) {
+  players = players.filter(p => p !== id);
+  delete stats[id];
+  save(STORE.players, players);
+  save(STORE.stats, stats);
+  renderList();
+  draw();
+}
+
+/** Redraws the player list in the side panel. */
+function renderList() {
+  const ul = $("players");
+  ul.textContent = "";
+  for (const id of players) {
+    const s = stats[id];
+    const li = document.createElement("li");
+    const who = document.createElement("div");
+    who.className = "who";
+    if (s && s.name) {
+      who.append(s.name + " ");
+      const tag = document.createElement("span");
+      tag.className = "id";
+      tag.textContent = `[${id}]`;
+      who.append(tag);
+    } else {
+      who.textContent = `[${id}]`;
+    }
+    if (s && s.error) {
+      const err = document.createElement("div");
+      err.className = "err";
+      err.textContent = s.error;
+      who.append(err);
+    }
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.title = "Remove";
+    rm.addEventListener("click", () => removePlayer(id));
+    li.append(who, rm);
+    ul.append(li);
+  }
+}
+
+function setStatus(text) { $("status").textContent = text; }
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/** Fetches one player's name, level and racing stats from the Torn API. */
+async function fetchPlayer(id, key) {
+  const url = `https://api.torn.com/v2/user/?selections=basic,personalstats&cat=racing&id=${id}&key=${encodeURIComponent(key)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.error || `API error ${data.error.code}`);
+  const racing = data.personalstats && data.personalstats.racing;
+  if (!racing) throw new Error("No racing stats in response");
+  return {
+    name: data.profile ? data.profile.name : null,
+    level: data.profile ? data.profile.level : null,
+    skill: racing.skill,
+    points: racing.points,
+    entered: racing.races ? racing.races.entered : 0,
+    won: racing.races ? racing.races.won : 0,
+    fetchedAt: Date.now(),
+  };
+}
+
+/** Fetches every listed player in turn, keeping old stats for anyone who fails. */
+async function fetchAll() {
+  const key = $("key").value.trim();
+  if (!key) { setStatus("Enter your API key first."); return; }
+  if (!players.length) { setStatus("Add some players first."); return; }
+  $("fetchBtn").disabled = true;
+  let failed = 0;
+  for (let i = 0; i < players.length; i++) {
+    const id = players[i];
+    setStatus(`Fetching ${i + 1} of ${players.length}…`);
+    try {
+      stats[id] = await fetchPlayer(id, key);
+    } catch (e) {
+      failed++;
+      stats[id] = Object.assign({}, stats[id], { error: e.message });
+      // A bad key fails every call the same way, so stop instead of burning through the list.
+      if (/key/i.test(e.message)) { setStatus(e.message); break; }
+    }
+    save(STORE.stats, stats);
+    renderList();
+    draw();
+    if (i < players.length - 1) await sleep(FETCH_GAP_MS);
+  }
+  $("fetchBtn").disabled = false;
+  if (!/key/i.test($("status").textContent)) {
+    setStatus(failed ? `Done, ${failed} failed (see list).` : "Done.");
+  }
+}
+
+// Chart geometry, in CSS pixels before the 2x export scale.
+const W = 1200;
+const PAD = 32;
+const HEADER_H = 96;
+const COL_HEAD_H = 34;
+const ROW_H = 40;
+const FOOT_H = 40;
+const SCALE = 2;
+const FONT = '"Segoe UI", system-ui, sans-serif';
+
+/** Returns the players that have stats, sorted by the chosen column, highest first. */
+function rankedRows() {
+  const col = COLUMNS.find(c => c.id === $("sort").value) || COLUMNS[0];
+  const rows = players
+    .map(id => ({ id, s: stats[id] }))
+    .filter(r => r.s && r.s.skill != null);
+  rows.sort((a, b) => (col.get(b.s) ?? -1) - (col.get(a.s) ?? -1));
+  return rows;
+}
+
+/** Draws text cut to fit a width, adding an ellipsis when it overflows. */
+function fitText(ctx, text, x, y, maxW) {
+  if (ctx.measureText(text).width <= maxW) { ctx.fillText(text, x, y); return; }
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+  ctx.fillText(t + "…", x, y);
+}
+
+/** Draws a bar with a rounded data end and a square baseline end. */
+function bar(ctx, x, y, w, h, r) {
+  r = Math.min(r, w, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x, y + h);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** Renders the ranked stats table onto the canvas. */
+function draw() {
+  const rows = rankedRows();
+  const canvas = $("chart");
+  $("empty").style.display = rows.length ? "none" : "";
+  canvas.style.display = rows.length ? "" : "none";
+  if (!rows.length) return;
+
+  const t = IMG_THEMES[$("imgTheme").value] || IMG_THEMES.dark;
+  const sortId = $("sort").value;
+  const H = HEADER_H + COL_HEAD_H + rows.length * ROW_H + FOOT_H;
+  canvas.width = W * SCALE;
+  canvas.height = H * SCALE;
+  canvas.style.width = W + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+  ctx.textBaseline = "middle";
+
+  ctx.fillStyle = t.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Title block.
+  ctx.fillStyle = t.text;
+  ctx.font = `700 28px ${FONT}`;
+  ctx.textAlign = "left";
+  fitText(ctx, $("title").value.trim() || "Racing Tournament", PAD, 42, W - PAD * 2);
+  const newest = Math.max(...rows.map(r => r.s.fetchedAt || 0));
+  ctx.fillStyle = t.text2;
+  ctx.font = `400 15px ${FONT}`;
+  ctx.fillText(`Driver stats · ${rows.length} drivers` +
+    (newest ? ` · as of ${new Date(newest).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}` : ""),
+    PAD, 74);
+
+  // Column layout: rank, driver, then the stat columns. Bar columns get the extra width.
+  const rankW = 44;
+  const driverW = 300;
+  const statX0 = PAD + rankW + driverW;
+  const statTotal = W - PAD - statX0;
+  const barW = 240;
+  const numW = (statTotal - barW * 2) / (COLUMNS.length - 2);
+  let x = statX0;
+  const layout = COLUMNS.map(c => {
+    const w = c.bar ? barW : numW;
+    const box = { c, x, w };
+    x += w;
+    return box;
+  });
+  const maxOf = {};
+  for (const c of COLUMNS) {
+    maxOf[c.id] = c.max || Math.max(1, ...rows.map(r => c.get(r.s) ?? 0));
+  }
+
+  // Column headings.
+  let y = HEADER_H;
+  ctx.font = `600 13px ${FONT}`;
+  ctx.fillStyle = t.muted;
+  ctx.textAlign = "left";
+  ctx.fillText("#", PAD, y + COL_HEAD_H / 2);
+  ctx.fillText("Driver", PAD + rankW, y + COL_HEAD_H / 2);
+  for (const { c, x, w } of layout) {
+    const label = c.label + (c.id === sortId ? " ▼" : "");
+    ctx.fillStyle = c.id === sortId ? t.text : t.muted;
+    if (c.bar) { ctx.textAlign = "left"; ctx.fillText(label, x + 12, y + COL_HEAD_H / 2); }
+    else { ctx.textAlign = "right"; ctx.fillText(label, x + w - 8, y + COL_HEAD_H / 2); }
+  }
+  ctx.fillStyle = t.grid;
+  ctx.fillRect(PAD, y + COL_HEAD_H - 1, W - PAD * 2, 1);
+
+  // Rows.
+  y += COL_HEAD_H;
+  rows.forEach((r, i) => {
+    const cy = y + ROW_H / 2;
+    if (i % 2 === 1) {
+      ctx.fillStyle = t.rowAlt;
+      ctx.fillRect(PAD, y, W - PAD * 2, ROW_H);
+    }
+    ctx.textAlign = "left";
+    ctx.fillStyle = t.muted;
+    ctx.font = `600 15px ${FONT}`;
+    ctx.fillText(String(i + 1), PAD + 6, cy);
+
+    ctx.fillStyle = t.text;
+    ctx.font = `600 16px ${FONT}`;
+    const name = r.s.name || `Player ${r.id}`;
+    const tag = `[${r.id}]`;
+    ctx.font = `400 13px ${FONT}`;
+    const tagW = ctx.measureText(tag).width;
+    ctx.font = `600 16px ${FONT}`;
+    const nameMax = driverW - tagW - 24;
+    fitText(ctx, name, PAD + rankW, cy, nameMax);
+    const nameW = Math.min(ctx.measureText(name).width, nameMax);
+    ctx.font = `400 13px ${FONT}`;
+    ctx.fillStyle = t.muted;
+    ctx.fillText(tag, PAD + rankW + nameW + 8, cy + 1);
+
+    for (const { c, x, w } of layout) {
+      const v = c.get(r.s);
+      ctx.font = `${c.id === sortId ? 700 : 400} 15px ${FONT}`;
+      ctx.fillStyle = t.text;
+      if (c.bar) {
+        const valW = 62;
+        const trackX = x + 12;
+        const trackW = w - 12 - valW - 10;
+        ctx.fillStyle = t.track;
+        ctx.fillRect(trackX, cy - 7, trackW, 14);
+        if (v != null && v > 0) {
+          ctx.fillStyle = t.bar;
+          bar(ctx, trackX, cy - 7, Math.max(4, (v / maxOf[c.id]) * trackW), 14, 4);
+        }
+        ctx.fillStyle = v == null ? t.muted : t.text;
+        ctx.textAlign = "right";
+        ctx.fillText(c.fmt(v), x + w - 8, cy);
+      } else {
+        ctx.fillStyle = v == null ? t.muted : t.text;
+        ctx.textAlign = "right";
+        ctx.fillText(c.fmt(v), x + w - 8, cy);
+      }
+    }
+    y += ROW_H;
+  });
+
+  ctx.fillStyle = t.grid;
+  ctx.fillRect(PAD, y, W - PAD * 2, 1);
+  ctx.textAlign = "left";
+  ctx.fillStyle = t.muted;
+  ctx.font = `400 12px ${FONT}`;
+  ctx.fillText("Source: Torn API public personal stats", PAD, y + FOOT_H / 2 + 2);
+}
+
+/** Returns the chart as a PNG blob. */
+function chartBlob() {
+  return new Promise(resolve => $("chart").toBlob(resolve, "image/png"));
+}
+
+/** Copies the chart image to the clipboard for pasting into Discord. */
+async function copyImage() {
+  if (!rankedRows().length) { setStatus("Nothing to copy yet."); return; }
+  try {
+    const blob = await chartBlob();
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    setStatus("Image copied. Paste it into Discord.");
+  } catch (e) {
+    setStatus("Copy failed here, use Save PNG instead.");
+  }
+}
+
+/** Downloads the chart as a PNG file. */
+async function saveImage() {
+  if (!rankedRows().length) { setStatus("Nothing to save yet."); return; }
+  const blob = await chartBlob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const slug = ($("title").value.trim() || "racing-stats").replace(/[^\w-]+/g, "-").toLowerCase();
+  a.download = `${slug}.png`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+/** Copies the player ID list as text, so it can be backed up or moved to another browser. */
+async function copyIds() {
+  try {
+    await navigator.clipboard.writeText(players.join(", "));
+    setStatus(`Copied ${players.length} IDs. Paste them into the add box to restore.`);
+  } catch {
+    setStatus(players.join(", "));
+  }
+}
+
+function init() {
+  for (const c of COLUMNS) {
+    const o = document.createElement("option");
+    o.value = c.id;
+    o.textContent = c.label;
+    $("sort").append(o);
+  }
+  $("key").value = load(STORE.key, "");
+  $("title").value = load(STORE.title, "");
+  $("sort").value = load(STORE.sort, "skill");
+  $("imgTheme").value = load(STORE.theme, "dark");
+
+  $("key").addEventListener("change", () => save(STORE.key, $("key").value.trim()));
+  $("keyToggle").addEventListener("click", () => {
+    const shown = $("key").type === "text";
+    $("key").type = shown ? "password" : "text";
+    $("keyToggle").textContent = shown ? "Show" : "Hide";
+  });
+  $("addBtn").addEventListener("click", addPlayers);
+  $("addInput").addEventListener("keydown", e => { if (e.key === "Enter") addPlayers(); });
+  $("fetchBtn").addEventListener("click", fetchAll);
+  $("copyIds").addEventListener("click", copyIds);
+  $("title").addEventListener("input", () => { save(STORE.title, $("title").value); draw(); });
+  $("sort").addEventListener("change", () => { save(STORE.sort, $("sort").value); draw(); });
+  $("imgTheme").addEventListener("change", () => { save(STORE.theme, $("imgTheme").value); draw(); });
+  $("copyImg").addEventListener("click", copyImage);
+  $("saveImg").addEventListener("click", saveImage);
+
+  renderList();
+  draw();
+}
+
+init();
+</script>
+</body>
+</html>

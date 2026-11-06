@@ -11,6 +11,7 @@ src/
     meta.json       # userscript metadata block
     index.ts        # entry point
 dist/               # BUILD OUTPUT — committed, never hand-edited
+pages/              # standalone HTML tools, opened straight from disk, not built
 ```
 
 A directory under `src/` is treated as a script if it contains `meta.json`. Anything else (like `shared/`) is ignored by the build.
