@@ -61,7 +61,7 @@ Standard professional practice, which is also the style already in `src/`:
 
 **Torn:** display-layer changes only. Greying out controls, warnings, overlays and injected info are fine — TornTools and similar do this throughout the game. Do not automate gameplay: no clicking, submitting, or navigating on the user's behalf.
 
-**API keys:** stored via `GM_setValue` in Tampermonkey's storage. Never written to a file in this repo. `.gitignore` blocks the usual accidents, but the rule is that keys never touch disk here at all.
+**API keys:** never written to a file in this repo. `.gitignore` blocks the usual accidents, but the rule is that keys never touch disk here at all. In the browser, a script keeps its key in `GM_setValue` when it already has GM grants, or in `localStorage` when it runs with `@grant none` (Autumn's UI Enhancer: adding a grant would sandbox it and cut its fetch, XHR and scroll patches off from Torn's own code).
 
 ## Torn specifics
 

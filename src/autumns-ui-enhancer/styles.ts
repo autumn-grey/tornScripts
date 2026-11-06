@@ -14,6 +14,12 @@ const CSS = `
     color: #fff;
   }
   .aue-title {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    border: 0;
+    text-align: left;
+    cursor: pointer;
     border-radius: 5px 5px 0 0;
     height: 30px;
     line-height: 30px;
@@ -57,7 +63,6 @@ const CSS = `
       0 1px 0 rgba(0, 0, 0, 0.4);
     transition: background 0.15s;
     -webkit-tap-highlight-color: transparent;
-    user-select: none;
   }
   .aue-row:hover,
   .aue-row:active,
@@ -85,7 +90,6 @@ const CSS = `
     opacity: 0.7;
   }
   .aue-footnote {
-    border-radius: 0 0 5px 5px;
     padding: 6px 12px;
     background: linear-gradient(180deg, #3a3a3a 0%, #2e2e2e 100%);
     box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
@@ -100,6 +104,9 @@ const CSS = `
     width: 42px;
     height: 22px;
     flex-shrink: 0;
+    /* Only the switch: clicking it quickly should not highlight it, but the
+       panel's words must stay selectable. */
+    user-select: none;
   }
   .aue-switch input {
     opacity: 0;
@@ -438,6 +445,199 @@ const CSS = `
     height: 220px;
     border: 0;
     background: transparent;
+  }
+  .aue-key-box {
+    position: relative;
+    display: inline-flex;
+  }
+  .aue-input.aue-key-input {
+    width: 150px;
+    padding-right: 36px;
+  }
+  .aue-key-reveal {
+    position: absolute;
+    top: 50%;
+    right: 3px;
+    transform: translateY(-50%);
+    padding: 0 3px;
+    border: 0;
+    background: none;
+    color: #555;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .aue-key-reveal:hover {
+    color: #000;
+  }
+  .torn-btn.aue-key-check {
+    height: 22px;
+    padding: 0 8px;
+    line-height: 20px;
+    font-size: 12px;
+  }
+  .aue-key-check:not(.torn-btn) {
+    padding: 2px 8px;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 4px;
+    background: linear-gradient(180deg, #8a8a8a 0%, #555 100%);
+    color: #fff;
+    font-size: 12px;
+  }
+  .aue-title::after,
+  .aue-section-toggle::after {
+    content: "▾";
+    float: right;
+    margin-right: 10px;
+    transition: transform 0.15s;
+  }
+  .aue-title[aria-expanded="false"]::after,
+  .aue-section-toggle[aria-expanded="false"]::after {
+    transform: rotate(-90deg);
+  }
+  #${PANEL_ID}.aue-collapsed .aue-title {
+    border-radius: 5px;
+  }
+  .aue-body-api {
+    border-radius: 0 0 5px 5px;
+  }
+  .aue-row-wide {
+    grid-column: 1 / -1;
+  }
+  .aue-note.aue-key-note {
+    margin-top: 0;
+  }
+  .aue-section-toggle {
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #fff;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    line-height: 22px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .aue-section-toggle::after {
+    margin-right: 0;
+  }
+  /* A long list under the pointer should not light up as one big row. */
+  .aue-row.aue-stock-row:hover,
+  .aue-row.aue-stock-row:active,
+  .aue-row.aue-stock-row:focus-within {
+    background: none;
+  }
+  .aue-stock-list {
+    width: 100%;
+  }
+  .aue-stock-shop {
+    margin-top: 8px;
+  }
+  .aue-stock-shop-name {
+    margin-bottom: 4px;
+    font-size: 12px;
+    font-weight: bold;
+  }
+  .aue-stock-items {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 2px 12px;
+  }
+  .aue-stock-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .aue-key-field {
+    flex-wrap: wrap;
+    flex-shrink: 1;
+  }
+  /* A long error from Torn takes its own line instead of a narrow column. */
+  .aue-key-result {
+    flex-basis: 100%;
+    font-size: 11px;
+  }
+  .aue-key-result:empty {
+    display: none;
+  }
+  .aue-key-good {
+    color: #9fdf6f;
+  }
+  .aue-key-bad {
+    color: #ff8f8f;
+  }
+  #aue-city-shop-icon {
+    list-style: none;
+    /* Torn's own rule for these items paints a default sprite (a green dot). */
+    background: none !important;
+  }
+  #aue-city-shop-icon a {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: center / contain no-repeat;
+  }
+  /* Matches Torn's own status icon tooltips: grey, above the icon, arrow down. */
+  #aue-city-shop-tip {
+    position: absolute;
+    z-index: 999999;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #4a4a4a;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    line-height: 17px;
+    color: #fff;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  #aue-city-shop-tip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: var(--aue-arrow-left, 50%);
+    margin-left: -6px;
+    border: 6px solid transparent;
+    border-top-color: #4a4a4a;
+  }
+  #aue-city-shop-stock {
+    position: absolute;
+    z-index: 999999;
+    padding: 6px 9px;
+    border-radius: 5px;
+    background: #2e2e2e;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    color: #fff;
+    white-space: nowrap;
+  }
+  #aue-city-shop-stock[hidden] {
+    display: none;
+  }
+  .aue-tip-shop + .aue-tip-shop {
+    margin-top: 6px;
+  }
+  .aue-tip-shop a {
+    color: #a9d1ff;
+    font-weight: bold;
+    text-decoration: none;
+  }
+  .aue-tip-shop a:hover {
+    text-decoration: underline;
+  }
+  .aue-tip-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  #aue-city-shop-tip[hidden] {
+    display: none;
   }
 `;
 

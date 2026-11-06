@@ -28,35 +28,37 @@ and a second tap follows the link.
 
 All of it only shows while fewer than 100 have been bought.
 
-## The open question: where the number comes from
+## Where the number comes from
 
-Torn has no "bought today" counter in its API as far as we know. The plan is
-the cumulative items-bought personal stat, minus its value at the last
-midnight TCT.
+The count is today's **Item shop buy** log entries (log type 4200, in the
+Shops category 86), summed by quantity:
 
-**To settle before building**, with a public key:
-
-```js
-(async()=>{var k='PASTE_KEY_HERE';var mid=Math.floor(new Date().setUTCHours(0,0,0,0)/1000);var a=await(await fetch('https://api.torn.com/v2/user/personalstats?cat=items&key='+k)).json();console.log('items stats now:',a);var b=await(await fetch('https://api.torn.com/v2/user/personalstats?stat=itemsbought&timestamp='+mid+'&key='+k)).json();console.log('at midnight TCT:',b)})()
+```
+GET /v2/user/log?log=4200&from=<midnight TCT>&limit=100&key=<key>
 ```
 
-Two things to learn from it:
+100 entries is enough: each purchase is at least one item, so 100 entries
+already reach the limit. Abroad purchases are a different type (4201) and are
+not counted. The key is a custom key with only `user` -> `log`, limited to the
+Shops category; the Generate key link in the panel fills that in:
+`preferences.php#tab=api?step=addNewKey&title=AutumnsUIEv1&user=log&logIds=86&logtypes=4200`.
 
-- Which field counts **city shop** purchases. `itemsbought` is the likely one;
-  `itemsboughtabroad` is travel shopping and must not be counted.
-- Whether asking for an earlier `timestamp` works. If it does, today's figure
-  is exact. If it does not, record the count at the first page load after
-  midnight and count up from there — which misses anything bought before the
-  day's first page load.
+Log type ids come from `/v2/torn/logtypes` (any public key).
+
+**What did not work** (6 Nov 2026): the `cityitemsbought` personal stat. With
+or without a `timestamp` it returns a daily snapshot (it still answered with
+5 Nov's on 6 Nov), and `cat=trading` showed one purchase once, then fell back
+and stayed there through two more. `/torn/cityshops` is shop stock, the same
+for every player.
 
 ## Implementation notes
 
-**The key.** First feature in this script to need one. Follow
-`faction-elimination-team-checker`: `GM_getValue`/`GM_setValue` for the key, a
-plain `fetch` with `credentials: "omit"` against `api.torn.com` — no
-`GM_xmlhttpRequest` and no `@connect` needed. The UI enhancer's `meta.json`
-currently has `"grant": "none"` and will need the two GM grants. Per
-`CLAUDE.md` the key never touches a file in this repo.
+**The key.** First feature in this script to need one. It is kept in
+`localStorage` (as FF Scouter V2 does), not `GM_setValue`: the script stays on
+`"grant": "none"`, because any grant sandboxes it and would cut List Display's
+request capture and Page Jump Block off from Torn's own code. Calls are a plain
+`fetch` with `credentials: "omit"` against `api.torn.com`, so no
+`GM_xmlhttpRequest` and no `@connect`.
 
 A field for it goes in the preferences panel beside the existing recipient
 box (`panel.ts`).
@@ -72,3 +74,16 @@ says.
 
 **Versioning.** A new switch in `settings.ts` makes this a minor bump — the
 first since 0.18.x.
+
+## City Shop Stock Check
+
+A second switch beside City Shop Purchase Check. The panel's "City Shop Items
+to check" list (collapsible) offers every city shop item, grouped by shop;
+the bag's popup then lists the stock of the ticked ones under each shop's
+name, which links to that shop.
+
+Stock comes from `GET /v2/torn/cityshops`, so the key also needs
+`torn` -> `cityshops`; the Generate key link adds `&torn=cityshops`. It is
+fetched with the count (every two minutes, and again after a purchase) and
+only while the switch is on and at least one item is ticked. The reply is `{ cityshops: [{ id, name, items: [{ id, name, price, stock: { current, default } }] }] }`;
+the shop page links in `cityStock.ts` are unconfirmed apart from Bits 'n' Bobs.

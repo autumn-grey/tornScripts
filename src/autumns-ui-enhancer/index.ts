@@ -1,5 +1,6 @@
 // Autumn's UI Enhancer - starts each feature on the pages it applies to.
 
+import { installCityShopAlert } from "./cityShop";
 import { log } from "./debug";
 import { installListDisplay, installRequestCapture } from "./listDisplay";
 import { installListSort } from "./listSort";
@@ -48,6 +49,7 @@ function onReady(): void {
 
   start("per-tab chat", installLocalChat);
   start("news ticker", installNewsTicker);
+  start("city shop alert", installCityShopAlert);
   if (location.pathname === PREFERENCES_PATH) {
     start("preferences panel", installPreferencesPanel);
     return;

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.18.27
-// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, keeps chat windows minimised in one tab without minimising them in the rest and lets the chat bar be dragged to either side of the screen, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, and fills your usual recipient into the send forms on the items page. Switched on and off from a panel on the preferences page.
+// @version      0.20.4
+// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, keeps chat windows minimised in one tab without minimising them in the rest and lets the chat bar be dragged to either side of the screen, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, fills your usual recipient into the send forms on the items page, lights up the City while you have city shop buys left today, and shows the stock of the city shop items you pick. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/*
@@ -28,6 +28,621 @@
   function log(...parts) {
     if (!debugging()) return;
     console.log("[AUE]", ...parts);
+  }
+
+  // src/autumns-ui-enhancer/settings.ts
+  var SETTING_PREFIX = "AUE_";
+  var PAGE_JUMP_BLOCK = {
+    key: "PAGE_JUMP_BLOCK",
+    label: "Page Jump Block",
+    defaultOn: true
+  };
+  var INDEPENDENT_CHAT_TABS = {
+    key: "INDEPENDENT_CHAT_TABS",
+    label: "Independent Chat Tabs",
+    note: "Also lets chat align left when dragged",
+    defaultOn: true
+  };
+  var LIST_DISPLAY_EXTENSION = {
+    key: "LIST_DISPLAY_EXTENSION",
+    label: "List Display Extension",
+    defaultOn: true
+  };
+  var LIST_SORTING = {
+    key: "LIST_SORTING",
+    label: "Table Sorting",
+    note: "applies to displayed results only",
+    defaultOn: true
+  };
+  var NEWS_TICKER = {
+    key: "NEWS_TICKER",
+    label: "News Ticker Controls",
+    defaultOn: true
+  };
+  var PREFERRED_RECIPIENT = {
+    // The key stays as it was so nobody's existing choice is forgotten; only
+    // what it covers, and what it is called, have changed.
+    key: "SHOP_SEND",
+    label: "Preferred Recipient",
+    defaultOn: true
+  };
+  var CITY_SHOP_ALERT = {
+    // The key keeps the feature's first name so nobody's choice is forgotten.
+    key: "CITY_SHOP_ALERT",
+    label: "City Shop Purchase Check",
+    defaultOn: true
+  };
+  var CITY_SHOP_STOCK = {
+    key: "CITY_SHOP_STOCK",
+    label: "City Shop Stock Check",
+    defaultOn: true
+  };
+  var API_KEY_SETTING = "API_KEY";
+  var STOCK_ITEMS_SETTING = "CITY_SHOP_STOCK_ITEMS";
+  var PANEL_OPEN_SETTING = "PANEL_OPEN";
+  var STOCK_LIST_OPEN_SETTING = "CITY_SHOP_STOCK_LIST_OPEN";
+  var RECIPIENT_SETTING = "SEND_RECIPIENT";
+  var RECIPIENT_LABEL = "SEND_RECIPIENT_LABEL";
+  var PANEL_FOOTNOTE = "Dark/Light Mode switch and table sorting in Torn Wiki enabled by default.";
+  var FEATURES = [
+    PAGE_JUMP_BLOCK,
+    INDEPENDENT_CHAT_TABS,
+    LIST_DISPLAY_EXTENSION,
+    LIST_SORTING,
+    NEWS_TICKER,
+    PREFERRED_RECIPIENT
+  ];
+  var API_FEATURES = [CITY_SHOP_ALERT, CITY_SHOP_STOCK];
+  function isEnabled(feature) {
+    try {
+      const stored = localStorage.getItem(SETTING_PREFIX + feature.key);
+      if (stored === null) return feature.defaultOn;
+      return stored === "1";
+    } catch {
+      return feature.defaultOn;
+    }
+  }
+  function setEnabled(feature, on2) {
+    try {
+      localStorage.setItem(SETTING_PREFIX + feature.key, on2 ? "1" : "0");
+    } catch {
+    }
+  }
+  function readSetting(key, fallback) {
+    try {
+      return localStorage.getItem(SETTING_PREFIX + key) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  function writeSetting(key, value) {
+    try {
+      localStorage.setItem(SETTING_PREFIX + key, value);
+    } catch {
+    }
+  }
+
+  // src/autumns-ui-enhancer/cityStock.ts
+  var STOCK_URL = "https://api.torn.com/v2/torn/cityshops";
+  var STOCK_STATE_SETTING = "CITY_SHOP_STOCK_STATE";
+  var CITY_URL = "https://www.torn.com/city.php";
+  var SHOP_PAGES = {
+    bitsnbobs: "https://www.torn.com/shops.php?step=bitsnbobs",
+    cyberforce: "https://www.torn.com/shops.php?step=cyberforce",
+    docks: "https://www.torn.com/shops.php?step=docks",
+    jewelrystore: "https://www.torn.com/shops.php?step=jewelry",
+    nikehperformance: "https://www.torn.com/shops.php?step=nikeh",
+    pharmacy: "https://www.torn.com/shops.php?step=pharmacy",
+    postoffice: "https://www.torn.com/shops.php?step=postoffice",
+    superstore: "https://www.torn.com/shops.php?step=super",
+    sallyssweetshop: "https://www.torn.com/shops.php?step=candy",
+    tcclothing: "https://www.torn.com/shops.php?step=clothes",
+    bigalsgunshop: "https://www.torn.com/bigalgunshop.php"
+  };
+  function shopUrl(name) {
+    return SHOP_PAGES[name.toLowerCase().replace(/[^a-z]/g, "")] ?? CITY_URL;
+  }
+  function listOf(raw) {
+    if (Array.isArray(raw)) return raw;
+    if (raw && typeof raw === "object") {
+      return Object.entries(raw).map(([id, value]) => ({ id, ...value }));
+    }
+    return [];
+  }
+  function stockOf(item) {
+    const stock = item.stock;
+    const value = stock && typeof stock === "object" ? stock.current : stock ?? item.in_stock;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  function parseShops(body) {
+    return listOf(body.cityshops ?? body.shops).map((shop) => {
+      const name = typeof shop.name === "string" ? shop.name : "";
+      const items = listOf(shop.inventory ?? shop.items ?? shop.stock).map((item) => ({
+        id: Number(item.id),
+        name: typeof item.name === "string" ? item.name : "",
+        stock: stockOf(item)
+      })).filter((item) => Number.isFinite(item.id) && item.name !== "");
+      return { name, url: shopUrl(name), items };
+    }).filter((shop) => shop.name !== "" && shop.items.length > 0);
+  }
+  async function fetchCityShops(key) {
+    const params = new URLSearchParams({ key });
+    const response = await fetch(`${STOCK_URL}?${params}`, { credentials: "omit" });
+    const body = await response.json();
+    if (body.error) throw new Error(body.error.error ?? "API error");
+    const shops = parseShops(body);
+    log("city shop: stock", shops);
+    return shops;
+  }
+  function readStock() {
+    try {
+      const parsed = JSON.parse(readSetting(STOCK_STATE_SETTING, ""));
+      if (typeof parsed.fetchedAt !== "number" || !Array.isArray(parsed.shops)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  async function loadStock(key, maxAgeMs) {
+    const stored = readStock();
+    if (stored && Date.now() - stored.fetchedAt < maxAgeMs) return stored.shops;
+    try {
+      const shops = await fetchCityShops(key);
+      writeSetting(STOCK_STATE_SETTING, JSON.stringify({ fetchedAt: Date.now(), shops }));
+      return shops;
+    } catch (error) {
+      log("city shop: could not read the stock", error);
+      return stored?.shops ?? null;
+    }
+  }
+  function forgetStock() {
+    writeSetting(STOCK_STATE_SETTING, "");
+  }
+  function readCheckedItems() {
+    try {
+      const parsed = JSON.parse(readSetting(STOCK_ITEMS_SETTING, "[]"));
+      return new Set(Array.isArray(parsed) ? parsed.filter((id) => typeof id === "number") : []);
+    } catch {
+      return /* @__PURE__ */ new Set();
+    }
+  }
+  function writeCheckedItems(ids) {
+    writeSetting(STOCK_ITEMS_SETTING, JSON.stringify([...ids]));
+  }
+
+  // src/autumns-ui-enhancer/cityShop.ts
+  var SELECTORS = {
+    // The City item in the side menu, which carries the attention class:
+    // <div class="area-desktop___yee1a notList___jrp60" id="nav-city">.
+    cityItem: "#nav-city",
+    // The same item found from its link, should the id ever go.
+    cityLink: '#sidebarroot a[href="/city.php"]',
+    cityItemFromLink: '[class*="area-desktop___"], [class*="area-mobile___"]',
+    // A side menu item's icon, which carries the blue class.
+    navIcon: '[class*="defaultIcon___"]',
+    // The status icon list: <ul class="statusIcons___ks48M big___O1UVc">.
+    statusList: 'ul[class*="statusIcons___"]',
+    // The faction icon (grey fist), which ours goes after.
+    factionIcon: 'a[href*="factions.php"]:not([href*="crimes"])',
+    // The Bank Investment icon, which ours goes before.
+    bankIcon: 'a[href*="bank.php"]'
+  };
+  var ATTENTION_CLASS_PREFIX = "attention___";
+  var BLUE_CLASS_PREFIX = "blue___";
+  function bagIcon(top, bottom, handle) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 1.6 16 21.4">
+<defs><linearGradient id="b" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="${top}"/><stop offset="1" stop-color="${bottom}"/>
+</linearGradient></defs>
+<path d="M8.3 9V6.2a3.7 3.7 0 0 1 7.4 0V9" fill="none" stroke="${handle}" stroke-width="1.7" stroke-linecap="round"/>
+<rect x="4.5" y="8" width="15" height="14.5" rx="0.6" fill="url(#b)"/>
+<rect x="6.2" y="10.2" width="11.6" height="2.6" fill="#3d3d3d"/>
+</svg>`;
+    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  }
+  var BAG_OPEN = bagIcon("#f2cd92", "#c38d55", "#e9c48c");
+  var BAG_DONE = bagIcon("#a8e67a", "#4f9a2e", "#93d665");
+  var CITY_URL2 = "https://www.torn.com/city.php";
+  var LOG_URL = "https://api.torn.com/v2/user/log";
+  var SHOP_BUY_LOG_ID = 4200;
+  var DAILY_LIMIT = 100;
+  var DAY_S = 86400;
+  var REFRESH_MS = 2 * 6e4;
+  var AFTER_BUY_MS = 1500;
+  var MIN_GAP_MS = 5e3;
+  var PURCHASE_TEXT = /\bbought\s+(\d+)\s*x\b/i;
+  var STATE_SETTING = "CITY_SHOP_STATE";
+  var SHOPS_PATH = "/shops.php";
+  var ICON_ID = "aue-city-shop-icon";
+  var TIP_ID = "aue-city-shop-tip";
+  var STOCK_ID = "aue-city-shop-stock";
+  var LIT_ATTR = "data-aue-city-lit";
+  var BLUE_ATTR = "data-aue-city-blue";
+  var bought = null;
+  var lastFetch = 0;
+  var deferred = 0;
+  var update = () => {
+  };
+  function tctMidnight() {
+    return Math.floor(Date.now() / 1e3 / DAY_S) * DAY_S;
+  }
+  function readState() {
+    try {
+      const parsed = JSON.parse(readSetting(STATE_SETTING, ""));
+      if (typeof parsed.day !== "number" || typeof parsed.bought !== "number" || typeof parsed.fetchedAt !== "number" || parsed.day !== tctMidnight()) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  function forgetCityShopCount() {
+    writeSetting(STATE_SETTING, "");
+    forgetStock();
+  }
+  async function fetchShopBuys(key, from, limit) {
+    const params = new URLSearchParams({
+      log: String(SHOP_BUY_LOG_ID),
+      from: String(from),
+      limit: String(limit),
+      key
+    });
+    const response = await fetch(`${LOG_URL}?${params}`, { credentials: "omit" });
+    const body = await response.json();
+    if (body.error) throw new Error(body.error.error ?? "API error");
+    const entries = Array.isArray(body.log) ? body.log : [];
+    log("city shop: log entries", entries);
+    return entries;
+  }
+  function quantityOf(entry) {
+    const data = entry.data ?? {};
+    for (const field of ["quantity", "qty", "amount"]) {
+      const value = data[field];
+      if (typeof value === "number") return value;
+    }
+    const items = data.items;
+    if (Array.isArray(items)) {
+      return items.reduce((sum, item) => {
+        const row = item ?? {};
+        const qty = row.qty ?? row.quantity ?? 1;
+        return sum + (typeof qty === "number" ? qty : 1);
+      }, 0);
+    }
+    return 1;
+  }
+  async function checkApiKey(key) {
+    const reason = (error) => error instanceof Error ? error.message : "API error";
+    try {
+      await fetchShopBuys(key, tctMidnight(), 1);
+    } catch (error) {
+      return `Purchase log: ${reason(error)}`;
+    }
+    if (!isEnabled(CITY_SHOP_STOCK)) return null;
+    try {
+      await fetchCityShops(key);
+    } catch (error) {
+      return `Shop stock: ${reason(error)}`;
+    }
+    return null;
+  }
+  async function refreshStock(force) {
+    const key = readSetting(API_KEY_SETTING, "").trim();
+    if (!key || !isEnabled(CITY_SHOP_STOCK) || readCheckedItems().size === 0) return;
+    if (document.hidden) return;
+    await loadStock(key, force ? 0 : REFRESH_MS);
+  }
+  async function refresh(force = false) {
+    const key = readSetting(API_KEY_SETTING, "").trim();
+    if (!key || !isEnabled(CITY_SHOP_ALERT)) {
+      bought = null;
+      return;
+    }
+    const stored = readState();
+    if (stored && !force && Date.now() - stored.fetchedAt < REFRESH_MS) {
+      bought = stored.bought;
+      return;
+    }
+    bought = stored ? stored.bought : null;
+    if (document.hidden) return;
+    const wait = lastFetch + MIN_GAP_MS - Date.now();
+    if (wait > 0) {
+      if (force && !deferred) {
+        deferred = window.setTimeout(() => {
+          deferred = 0;
+          update(true);
+        }, wait);
+      }
+      return;
+    }
+    lastFetch = Date.now();
+    try {
+      const day = tctMidnight();
+      const entries = await fetchShopBuys(key, day, DAILY_LIMIT);
+      const total = entries.reduce((sum, entry) => sum + quantityOf(entry), 0);
+      writeSetting(STATE_SETTING, JSON.stringify({ day, bought: total, fetchedAt: Date.now() }));
+      bought = total;
+      log("city shop:", bought, "bought today");
+    } catch (error) {
+      log("city shop: could not read the count", error);
+    }
+  }
+  function onPurchase(quantity) {
+    const stored = readState();
+    if (stored) {
+      bought = stored.bought + quantity;
+      writeSetting(STATE_SETTING, JSON.stringify({ ...stored, bought }));
+      apply();
+    }
+    window.setTimeout(() => update(true), AFTER_BUY_MS);
+  }
+  function purchaseIn(node) {
+    if (node instanceof Element && node.closest(`#${TIP_ID}, #${ICON_ID}`)) return 0;
+    const match = PURCHASE_TEXT.exec(node.textContent ?? "");
+    return match ? Number(match[1]) : 0;
+  }
+  function tornClass(prefix, scope, ruleContext) {
+    const pattern = new RegExp(String.raw`(?:^|\s)(${prefix}\w+)`);
+    for (const element of document.querySelectorAll(`${scope}[class*="${prefix}"]`)) {
+      const match = pattern.exec(element.getAttribute("class") ?? "");
+      if (match?.[1]) return match[1];
+    }
+    const rulePattern = new RegExp(String.raw`\.(${prefix}\w+)`);
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const rule of rules) {
+        if (!(rule instanceof CSSStyleRule) || !rule.selectorText.includes(ruleContext)) continue;
+        const match = rulePattern.exec(rule.selectorText);
+        if (match?.[1]) return match[1];
+      }
+    }
+    return null;
+  }
+  function cityNavItem() {
+    return document.querySelector(SELECTORS.cityItem) ?? document.querySelector(SELECTORS.cityLink)?.closest(SELECTORS.cityItemFromLink) ?? null;
+  }
+  function lendClass(element, on2, attr, find) {
+    const owned = element.getAttribute(attr);
+    if (on2) {
+      if (owned) {
+        if (!element.classList.contains(owned)) element.classList.add(owned);
+        return;
+      }
+      const name = find();
+      if (!name || element.classList.contains(name)) return;
+      element.classList.add(name);
+      element.setAttribute(attr, name);
+    } else if (owned) {
+      element.classList.remove(owned);
+      element.removeAttribute(attr);
+    }
+  }
+  function setCityLit(lit) {
+    const item = cityNavItem();
+    if (!item) return;
+    lendClass(
+      item,
+      lit,
+      LIT_ATTR,
+      () => tornClass(ATTENTION_CLASS_PREFIX, "#sidebarroot ", "area-")
+    );
+    const icon = item.querySelector(SELECTORS.navIcon);
+    if (icon) {
+      lendClass(
+        icon,
+        lit,
+        BLUE_ATTR,
+        () => tornClass(BLUE_CLASS_PREFIX, `#sidebarroot ${SELECTORS.navIcon}`, "defaultIcon___")
+      );
+    }
+  }
+  function box(id) {
+    let element = document.getElementById(id);
+    if (!element) {
+      element = document.createElement("div");
+      element.id = id;
+      element.hidden = true;
+      document.body.appendChild(element);
+    }
+    return element;
+  }
+  function watchedStock() {
+    if (!isEnabled(CITY_SHOP_STOCK)) return [];
+    const checked = readCheckedItems();
+    if (checked.size === 0) return [];
+    return (readStock()?.shops ?? []).map((shop) => ({ ...shop, items: shop.items.filter((item) => checked.has(item.id)) })).filter((shop) => shop.items.length > 0);
+  }
+  function fillTip(tip) {
+    const title = document.createElement("b");
+    title.textContent = "City Shops";
+    const count = document.createElement("div");
+    count.textContent = `${bought ?? 0}/${DAILY_LIMIT} items bought today`;
+    tip.replaceChildren(title, count);
+  }
+  function fillStock(list) {
+    list.replaceChildren();
+    for (const shop of watchedStock()) {
+      const group = document.createElement("div");
+      group.className = "aue-tip-shop";
+      const link = document.createElement("a");
+      link.href = shop.url;
+      link.textContent = shop.name;
+      group.appendChild(link);
+      for (const item of shop.items) {
+        const row = document.createElement("div");
+        row.className = "aue-tip-item";
+        const name = document.createElement("span");
+        name.textContent = item.name;
+        const stock = document.createElement("span");
+        stock.textContent = typeof item.stock === "number" ? item.stock.toLocaleString() : "?";
+        row.append(name, stock);
+        group.appendChild(row);
+      }
+      list.appendChild(group);
+    }
+  }
+  function refill(element, fill) {
+    const fresh = document.createElement("div");
+    try {
+      fill(fresh);
+    } catch (error) {
+      log("city shop: could not fill", element.id, error);
+    }
+    if (fresh.innerHTML !== element.innerHTML) element.replaceChildren(...fresh.childNodes);
+  }
+  function showTip(icon) {
+    if (!box(STOCK_ID).hidden) return;
+    const tip = box(TIP_ID);
+    refill(tip, fillTip);
+    tip.hidden = false;
+    const place = icon.getBoundingClientRect();
+    const width = tip.offsetWidth;
+    const centre = place.left + place.width / 2;
+    const left = Math.min(Math.max(4, centre - width / 2), innerWidth - width - 4);
+    tip.style.left = `${left + scrollX}px`;
+    tip.style.top = `${place.top + scrollY - tip.offsetHeight - 8}px`;
+    tip.style.setProperty("--aue-arrow-left", `${centre - left}px`);
+  }
+  function hideTip() {
+    const tip = document.getElementById(TIP_ID);
+    if (tip) tip.hidden = true;
+  }
+  function openStock(icon) {
+    hideTip();
+    const list = box(STOCK_ID);
+    refill(list, fillStock);
+    list.hidden = false;
+    const place = icon.getBoundingClientRect();
+    const width = list.offsetWidth;
+    const left = Math.min(
+      Math.max(4, place.left + place.width / 2 - width / 2),
+      innerWidth - width - 4
+    );
+    list.style.left = `${left + scrollX}px`;
+    list.style.top = `${place.bottom + scrollY + 6}px`;
+  }
+  function closeStock() {
+    const list = document.getElementById(STOCK_ID);
+    if (list) list.hidden = true;
+  }
+  function buildIcon() {
+    const item = document.createElement("li");
+    item.id = ICON_ID;
+    const link = document.createElement("a");
+    link.href = CITY_URL2;
+    link.setAttribute("aria-label", "City shops");
+    item.appendChild(link);
+    let touch = false;
+    link.addEventListener("pointerdown", (event) => touch = event.pointerType === "touch");
+    link.addEventListener("pointerenter", (event) => {
+      if (event.pointerType !== "touch") showTip(link);
+    });
+    link.addEventListener("pointerleave", (event) => {
+      if (event.pointerType !== "touch") hideTip();
+    });
+    link.addEventListener("click", (event) => {
+      if (watchedStock().length === 0) {
+        if (touch && box(TIP_ID).hidden) {
+          event.preventDefault();
+          showTip(link);
+        }
+        return;
+      }
+      event.preventDefault();
+      if (touch && box(TIP_ID).hidden && box(STOCK_ID).hidden) {
+        showTip(link);
+        return;
+      }
+      if (box(STOCK_ID).hidden) openStock(link);
+      else closeStock();
+    });
+    return item;
+  }
+  function placeIcon() {
+    const list = document.querySelector(SELECTORS.statusList);
+    if (!list) return;
+    const icon = document.getElementById(ICON_ID) ?? buildIcon();
+    const faction = list.querySelector(SELECTORS.factionIcon)?.closest("li");
+    const bank = list.querySelector(SELECTORS.bankIcon)?.closest("li");
+    if (faction) {
+      if (faction.nextElementSibling !== icon) faction.after(icon);
+    } else if (bank) {
+      if (bank.previousElementSibling !== icon) bank.before(icon);
+    } else if (icon.parentElement !== list) {
+      list.appendChild(icon);
+    }
+    const neighbour = faction ?? bank ?? list.querySelector(`li:not(#${ICON_ID})`);
+    if (neighbour) {
+      const style = getComputedStyle(neighbour);
+      if (icon.style.width !== style.width) icon.style.width = style.width;
+      if (icon.style.height !== style.height) icon.style.height = style.height;
+      if (icon.style.margin !== style.margin) icon.style.margin = style.margin;
+    }
+  }
+  function apply() {
+    const known = isEnabled(CITY_SHOP_ALERT) && bought !== null;
+    const left = known && (bought ?? 0) < DAILY_LIMIT;
+    setCityLit(left);
+    if (known) {
+      placeIcon();
+      const link = document.querySelector(`#${ICON_ID} a`);
+      const state = left ? "open" : "done";
+      if (link && link.dataset.bag !== state) {
+        link.dataset.bag = state;
+        link.style.backgroundImage = `url("${left ? BAG_OPEN : BAG_DONE}")`;
+      }
+      const tip = document.getElementById(TIP_ID);
+      if (tip && !tip.hidden) refill(tip, fillTip);
+      const list = document.getElementById(STOCK_ID);
+      if (list && !list.hidden) refill(list, fillStock);
+    } else {
+      document.getElementById(ICON_ID)?.remove();
+      hideTip();
+      closeStock();
+    }
+  }
+  function installCityShopAlert() {
+    if (!isEnabled(CITY_SHOP_ALERT)) return;
+    update = (force = false) => void Promise.all([refresh(force), refreshStock(force)]).then(apply);
+    update();
+    if (location.pathname === SHOPS_PATH) {
+      new MutationObserver((records) => {
+        for (const record of records) {
+          const nodes = record.type === "characterData" ? [record.target] : record.addedNodes;
+          for (const node of nodes) {
+            const quantity = purchaseIn(node.nodeType === Node.TEXT_NODE ? node.parentNode ?? node : node);
+            if (quantity > 0) {
+              log("city shop: purchase seen", quantity);
+              onPurchase(quantity);
+              return;
+            }
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+    setInterval(() => update(), REFRESH_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) update();
+    });
+    document.addEventListener("pointerdown", (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(`#${ICON_ID}, #${STOCK_ID}`)) return;
+      hideTip();
+      closeStock();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeStock();
+    });
+    let timer = 0;
+    new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = window.setTimeout(apply, 120);
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   // src/autumns-ui-enhancer/jsonRows.ts
@@ -207,82 +822,6 @@
     }
     log("build:", rows.length, "rows drawn from data");
     return rows;
-  }
-
-  // src/autumns-ui-enhancer/settings.ts
-  var SETTING_PREFIX = "AUE_";
-  var PAGE_JUMP_BLOCK = {
-    key: "PAGE_JUMP_BLOCK",
-    label: "Page Jump Block",
-    defaultOn: true
-  };
-  var INDEPENDENT_CHAT_TABS = {
-    key: "INDEPENDENT_CHAT_TABS",
-    label: "Independent Chat Tabs",
-    note: "Also lets chat align left when dragged",
-    defaultOn: true
-  };
-  var LIST_DISPLAY_EXTENSION = {
-    key: "LIST_DISPLAY_EXTENSION",
-    label: "List Display Extension",
-    defaultOn: true
-  };
-  var LIST_SORTING = {
-    key: "LIST_SORTING",
-    label: "Table Sorting",
-    note: "applies to displayed results only",
-    defaultOn: true
-  };
-  var NEWS_TICKER = {
-    key: "NEWS_TICKER",
-    label: "News Ticker Controls",
-    defaultOn: true
-  };
-  var PREFERRED_RECIPIENT = {
-    // The key stays as it was so nobody's existing choice is forgotten; only
-    // what it covers, and what it is called, have changed.
-    key: "SHOP_SEND",
-    label: "Preferred Recipient",
-    defaultOn: true
-  };
-  var RECIPIENT_SETTING = "SEND_RECIPIENT";
-  var RECIPIENT_LABEL = "SEND_RECIPIENT_LABEL";
-  var PANEL_FOOTNOTE = "Dark/Light Mode switch and table sorting in Torn Wiki enabled by default.";
-  var FEATURES = [
-    PAGE_JUMP_BLOCK,
-    INDEPENDENT_CHAT_TABS,
-    LIST_DISPLAY_EXTENSION,
-    LIST_SORTING,
-    NEWS_TICKER,
-    PREFERRED_RECIPIENT
-  ];
-  function isEnabled(feature) {
-    try {
-      const stored = localStorage.getItem(SETTING_PREFIX + feature.key);
-      if (stored === null) return feature.defaultOn;
-      return stored === "1";
-    } catch {
-      return feature.defaultOn;
-    }
-  }
-  function setEnabled(feature, on2) {
-    try {
-      localStorage.setItem(SETTING_PREFIX + feature.key, on2 ? "1" : "0");
-    } catch {
-    }
-  }
-  function readSetting(key, fallback) {
-    try {
-      return localStorage.getItem(SETTING_PREFIX + key) ?? fallback;
-    } catch {
-      return fallback;
-    }
-  }
-  function writeSetting(key, value) {
-    try {
-      localStorage.setItem(SETTING_PREFIX + key, value);
-    } catch {
-    }
   }
 
   // src/autumns-ui-enhancer/listDisplay.ts
@@ -1019,7 +1558,7 @@
     const page = Math.floor(currentStart() / size) + 1;
     const before = location.hash;
     goToPage(target.widget, page, size);
-    if (location.hash === before) setTimeout(() => void apply(), 0);
+    if (location.hash === before) setTimeout(() => void apply2(), 0);
   }
   var OWN_SIZE_LABEL = "per page";
   function offersOnlyNumbers(select) {
@@ -1133,7 +1672,7 @@
     log("prime: asking Torn for this list so its request can be replayed");
     goToPage(target.widget, Math.floor(currentStart() / size) + 1, size);
   }
-  async function apply() {
+  async function apply2() {
     if (!isEnabled(LIST_DISPLAY_EXTENSION)) {
       removeControl();
       removeTopPager();
@@ -1217,7 +1756,7 @@
       timer = window.setTimeout(
         () => {
           deadline = 0;
-          void apply();
+          void apply2();
         },
         Math.max(0, Math.min(SETTLE_MS, deadline - now))
       );
@@ -1577,21 +2116,21 @@
       wrapper.classList.remove(INSTANT_CLASS);
     }
   }
-  function wrapperOf(box) {
-    const wrapper = box.parentElement?.parentElement;
+  function wrapperOf(box2) {
+    const wrapper = box2.parentElement?.parentElement;
     return wrapper instanceof HTMLElement ? wrapper : null;
   }
   function boxOf(element) {
-    const box = element.closest(BOX_SELECTOR);
-    if (!box || !box.id || NOT_A_CHAT.test(box.id)) return null;
-    return box;
+    const box2 = element.closest(BOX_SELECTOR);
+    if (!box2 || !box2.id || NOT_A_CHAT.test(box2.id)) return null;
+    return box2;
   }
   function chatWindows() {
     const found = [];
     for (const button of document.querySelectorAll(MINIMISE_SELECTOR)) {
-      const box = boxOf(button);
-      const wrapper = box && wrapperOf(box);
-      if (box && wrapper) found.push({ id: box.id, wrapper });
+      const box2 = boxOf(button);
+      const wrapper = box2 && wrapperOf(box2);
+      if (box2 && wrapper) found.push({ id: box2.id, wrapper });
     }
     return found;
   }
@@ -1764,14 +2303,14 @@
     const hidden = readSet(HIDDEN_KEY);
     hidden.add(id);
     writeSet(HIDDEN_KEY, hidden);
-    apply2();
+    apply3();
     log("chat:", id, "hidden in this tab only");
   }
   function show(id) {
     const hidden = readSet(HIDDEN_KEY);
     hidden.delete(id);
     writeSet(HIDDEN_KEY, hidden);
-    apply2();
+    apply3();
     log("chat:", id, "back in this tab");
   }
   function forget(id) {
@@ -1782,7 +2321,7 @@
     writeSet(HIDDEN_KEY, hidden);
     writeSet(KNOWN_KEY, known);
   }
-  function apply2() {
+  function apply3() {
     if (!isEnabled(INDEPENDENT_CHAT_TABS)) {
       for (const hiddenWindow of document.querySelectorAll(`.${HIDDEN_CLASS}`)) {
         hiddenWindow.classList.remove(HIDDEN_CLASS);
@@ -1797,19 +2336,19 @@
     let changed = false;
     let seen2 = 0;
     for (const button of document.querySelectorAll(MINIMISE_SELECTOR)) {
-      const box = boxOf(button);
-      const wrapper = box && wrapperOf(box);
-      if (!box || !wrapper) continue;
+      const box2 = boxOf(button);
+      const wrapper = box2 && wrapperOf(box2);
+      if (!box2 || !wrapper) continue;
       seen2 += 1;
-      if (!known.has(box.id)) {
-        known.add(box.id);
+      if (!known.has(box2.id)) {
+        known.add(box2.id);
         changed = true;
         if (!fresh && !openedHere) {
-          hidden.add(box.id);
-          log("chat:", box.id, "was opened in another tab, so hidden here");
+          hidden.add(box2.id);
+          log("chat:", box2.id, "was opened in another tab, so hidden here");
         }
       }
-      wrapper.classList.toggle(HIDDEN_CLASS, hidden.has(box.id));
+      wrapper.classList.toggle(HIDDEN_CLASS, hidden.has(box2.id));
     }
     if (changed || fresh) {
       writeSet(KNOWN_KEY, known);
@@ -1830,16 +2369,16 @@
     if (!(target instanceof Element)) return;
     const closing = target.closest(CLOSE_SELECTOR);
     if (closing) {
-      const box = boxOf(closing);
-      if (box) forget(box.id);
+      const box2 = boxOf(closing);
+      if (box2) forget(box2.id);
       return;
     }
     const minimising = target.closest(MINIMISE_SELECTOR);
     if (minimising) {
-      const box = boxOf(minimising);
-      if (!box) return;
+      const box2 = boxOf(minimising);
+      if (!box2) return;
       swallow(event);
-      hide(box.id);
+      hide(box2.id);
       return;
     }
     const tab = target.closest(TASKBAR_SELECTOR);
@@ -1851,8 +2390,8 @@
         show(id);
         return;
       }
-      const box = document.getElementById(id);
-      const wrapper = box && wrapperOf(box);
+      const box2 = document.getElementById(id);
+      const wrapper = box2 && wrapperOf(box2);
       const onScreen = wrapper ? wrapper.getBoundingClientRect().width > 0 : false;
       if (!onScreen) {
         forget(id);
@@ -1875,17 +2414,17 @@
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.closest(NOT_A_HANDLE)) return;
-    const box = boxOf(target);
-    if (!box) return;
-    const wrapper = wrapperOf(box);
+    const box2 = boxOf(target);
+    if (!box2) return;
+    const wrapper = wrapperOf(box2);
     if (!wrapper || wrapper.parentElement !== windowRow()) return;
-    const depth = event.clientY - box.getBoundingClientRect().top;
+    const depth = event.clientY - box2.getBoundingClientRect().top;
     if (depth > HEADER_DEPTH) {
       log("chat: grab", Math.round(depth), "px down, below the top strip");
       return;
     }
     dragFrom = event.clientX;
-    log("chat: grabbed", box.id, "- drag across the screen to move the bar");
+    log("chat: grabbed", box2.id, "- drag across the screen to move the bar");
   }
   function onPointerMove(event) {
     if (dragFrom === null) return;
@@ -1937,7 +2476,7 @@
     passTimer = window.setTimeout(
       () => {
         passDeadline = 0;
-        apply2();
+        apply3();
       },
       Math.max(0, Math.min(SETTLE_MS3, passDeadline - now))
     );
@@ -1967,7 +2506,7 @@
       if (!rowIsWatched) queueRelayout();
       schedulePass();
     }).observe(document.body, { childList: true, subtree: true });
-    apply2();
+    apply3();
   }
 
   // src/autumns-ui-enhancer/newsTicker.ts
@@ -2053,9 +2592,9 @@
     return (slide ?? slides[0])?.querySelector(HEADLINE_SELECTOR) ?? bar.querySelector(HEADLINE_SELECTOR);
   }
   function compareText(html) {
-    const box = document.createElement("div");
-    box.innerHTML = html;
-    return (box.textContent ?? "").replace(/[[d:s]+]s*$/, "").replace(/s+/g, " ").trim().toLowerCase();
+    const box2 = document.createElement("div");
+    box2.innerHTML = html;
+    return (box2.textContent ?? "").replace(/[[d:s]+]s*$/, "").replace(/s+/g, " ").trim().toLowerCase();
   }
   function remember(bar) {
     const headline = liveHeadline(bar);
@@ -2081,23 +2620,23 @@
   var startedAt = 0;
   var pausedAt = 0;
   var pointerOver = false;
-  function marqueeKey(box) {
-    return `${box.scrollWidth}:${box.clientWidth}:${box.textContent?.length ?? 0}`;
+  function marqueeKey(box2) {
+    return `${box2.scrollWidth}:${box2.clientWidth}:${box2.textContent?.length ?? 0}`;
   }
   function tick(now) {
     requestAnimationFrame(tick);
-    const box = scroller;
-    if (!box || !box.isConnected) return;
-    const distance = box.scrollWidth - box.clientWidth;
+    const box2 = scroller;
+    if (!box2 || !box2.isConnected) return;
+    const distance = box2.scrollWidth - box2.clientWidth;
     if (distance <= OVERFLOW_SLACK) {
-      box.scrollLeft = 0;
+      box2.scrollLeft = 0;
       return;
     }
-    const key = marqueeKey(box);
+    const key = marqueeKey(box2);
     if (key !== scrollKey) {
       scrollKey = key;
       startedAt = now;
-      box.scrollLeft = 0;
+      box2.scrollLeft = 0;
       return;
     }
     if (pointerOver || document.hidden) {
@@ -2111,17 +2650,17 @@
     const travel = distance / SCROLL_SPEED * 1e3;
     const cycle = 2 * (travel + HOLD_MS);
     const at = (now - startedAt) % cycle;
-    if (at < HOLD_MS) box.scrollLeft = 0;
+    if (at < HOLD_MS) box2.scrollLeft = 0;
     else if (at < HOLD_MS + travel) {
-      box.scrollLeft = distance * (at - HOLD_MS) / travel;
-    } else if (at < 2 * HOLD_MS + travel) box.scrollLeft = distance;
+      box2.scrollLeft = distance * (at - HOLD_MS) / travel;
+    } else if (at < 2 * HOLD_MS + travel) box2.scrollLeft = distance;
     else {
-      box.scrollLeft = distance * (1 - (at - 2 * HOLD_MS - travel) / travel);
+      box2.scrollLeft = distance * (1 - (at - 2 * HOLD_MS - travel) / travel);
     }
   }
-  function watchScroller(box) {
-    if (box === scroller) return;
-    scroller = box;
+  function watchScroller(box2) {
+    if (box2 === scroller) return;
+    scroller = box2;
     scrollKey = "";
     pausedAt = 0;
   }
@@ -2218,7 +2757,7 @@
     link.appendChild(text);
     return link;
   }
-  function apply3() {
+  function apply4() {
     const bar = document.querySelector(BAR_SELECTOR);
     if (!bar) return;
     if (!isEnabled(NEWS_TICKER)) {
@@ -2255,7 +2794,7 @@
     const schedule = () => {
       if (writing3) return;
       clearTimeout(timer);
-      timer = window.setTimeout(apply3, 120);
+      timer = window.setTimeout(apply4, 120);
     };
     new MutationObserver(schedule).observe(document.body, {
       childList: true,
@@ -2276,7 +2815,7 @@
         countdown.textContent = countdownText2(item.endTime);
       }
     }, 1e3);
-    apply3();
+    apply4();
   }
 
   // src/autumns-ui-enhancer/pageJumpBlock.ts
@@ -2391,6 +2930,12 @@
     color: #fff;
   }
   .aue-title {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    border: 0;
+    text-align: left;
+    cursor: pointer;
     border-radius: 5px 5px 0 0;
     height: 30px;
     line-height: 30px;
@@ -2434,7 +2979,6 @@
       0 1px 0 rgba(0, 0, 0, 0.4);
     transition: background 0.15s;
     -webkit-tap-highlight-color: transparent;
-    user-select: none;
   }
   .aue-row:hover,
   .aue-row:active,
@@ -2462,7 +3006,6 @@
     opacity: 0.7;
   }
   .aue-footnote {
-    border-radius: 0 0 5px 5px;
     padding: 6px 12px;
     background: linear-gradient(180deg, #3a3a3a 0%, #2e2e2e 100%);
     box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
@@ -2477,6 +3020,9 @@
     width: 42px;
     height: 22px;
     flex-shrink: 0;
+    /* Only the switch: clicking it quickly should not highlight it, but the
+       panel's words must stay selectable. */
+    user-select: none;
   }
   .aue-switch input {
     opacity: 0;
@@ -2816,9 +3362,202 @@
     border: 0;
     background: transparent;
   }
+  .aue-key-box {
+    position: relative;
+    display: inline-flex;
+  }
+  .aue-input.aue-key-input {
+    width: 150px;
+    padding-right: 36px;
+  }
+  .aue-key-reveal {
+    position: absolute;
+    top: 50%;
+    right: 3px;
+    transform: translateY(-50%);
+    padding: 0 3px;
+    border: 0;
+    background: none;
+    color: #555;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .aue-key-reveal:hover {
+    color: #000;
+  }
+  .torn-btn.aue-key-check {
+    height: 22px;
+    padding: 0 8px;
+    line-height: 20px;
+    font-size: 12px;
+  }
+  .aue-key-check:not(.torn-btn) {
+    padding: 2px 8px;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 4px;
+    background: linear-gradient(180deg, #8a8a8a 0%, #555 100%);
+    color: #fff;
+    font-size: 12px;
+  }
+  .aue-title::after,
+  .aue-section-toggle::after {
+    content: "▾";
+    float: right;
+    margin-right: 10px;
+    transition: transform 0.15s;
+  }
+  .aue-title[aria-expanded="false"]::after,
+  .aue-section-toggle[aria-expanded="false"]::after {
+    transform: rotate(-90deg);
+  }
+  #${PANEL_ID}.aue-collapsed .aue-title {
+    border-radius: 5px;
+  }
+  .aue-body-api {
+    border-radius: 0 0 5px 5px;
+  }
+  .aue-row-wide {
+    grid-column: 1 / -1;
+  }
+  .aue-note.aue-key-note {
+    margin-top: 0;
+  }
+  .aue-section-toggle {
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #fff;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    line-height: 22px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .aue-section-toggle::after {
+    margin-right: 0;
+  }
+  /* A long list under the pointer should not light up as one big row. */
+  .aue-row.aue-stock-row:hover,
+  .aue-row.aue-stock-row:active,
+  .aue-row.aue-stock-row:focus-within {
+    background: none;
+  }
+  .aue-stock-list {
+    width: 100%;
+  }
+  .aue-stock-shop {
+    margin-top: 8px;
+  }
+  .aue-stock-shop-name {
+    margin-bottom: 4px;
+    font-size: 12px;
+    font-weight: bold;
+  }
+  .aue-stock-items {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 2px 12px;
+  }
+  .aue-stock-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .aue-key-field {
+    flex-wrap: wrap;
+    flex-shrink: 1;
+  }
+  /* A long error from Torn takes its own line instead of a narrow column. */
+  .aue-key-result {
+    flex-basis: 100%;
+    font-size: 11px;
+  }
+  .aue-key-result:empty {
+    display: none;
+  }
+  .aue-key-good {
+    color: #9fdf6f;
+  }
+  .aue-key-bad {
+    color: #ff8f8f;
+  }
+  #aue-city-shop-icon {
+    list-style: none;
+    /* Torn's own rule for these items paints a default sprite (a green dot). */
+    background: none !important;
+  }
+  #aue-city-shop-icon a {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: center / contain no-repeat;
+  }
+  /* Matches Torn's own status icon tooltips: grey, above the icon, arrow down. */
+  #aue-city-shop-tip {
+    position: absolute;
+    z-index: 999999;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #4a4a4a;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    line-height: 17px;
+    color: #fff;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  #aue-city-shop-tip::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: var(--aue-arrow-left, 50%);
+    margin-left: -6px;
+    border: 6px solid transparent;
+    border-top-color: #4a4a4a;
+  }
+  #aue-city-shop-stock {
+    position: absolute;
+    z-index: 999999;
+    padding: 6px 9px;
+    border-radius: 5px;
+    background: #2e2e2e;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    color: #fff;
+    white-space: nowrap;
+  }
+  #aue-city-shop-stock[hidden] {
+    display: none;
+  }
+  .aue-tip-shop + .aue-tip-shop {
+    margin-top: 6px;
+  }
+  .aue-tip-shop a {
+    color: #a9d1ff;
+    font-weight: bold;
+    text-decoration: none;
+  }
+  .aue-tip-shop a:hover {
+    text-decoration: underline;
+  }
+  .aue-tip-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  #aue-city-shop-tip[hidden] {
+    display: none;
+  }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.18.27");
+    document.documentElement.setAttribute("data-aue", "0.20.4");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -2904,7 +3643,7 @@
     list.className = "aue-suggest";
     list.hidden = true;
     field.appendChild(list);
-    const refresh = () => {
+    const refresh2 = () => {
       const id = readSetting(RECIPIENT_SETTING, "");
       lookup.href = `https://www.torn.com/profiles.php?XID=${id}`;
       lookup.textContent = id ? `[${id}]` : "";
@@ -2915,7 +3654,7 @@
       writeSetting(RECIPIENT_SETTING, id);
       writeSetting(RECIPIENT_LABEL, input.value);
       list.hidden = true;
-      refresh();
+      refresh2();
     };
     const offer = (users) => {
       list.replaceChildren();
@@ -2941,7 +3680,7 @@
       const id = /^\d+$/.test(typed) ? typed : /\[(\d+)\]/.exec(typed)?.[1] ?? "";
       writeSetting(RECIPIENT_SETTING, id);
       writeSetting(RECIPIENT_LABEL, typed);
-      refresh();
+      refresh2();
       clearTimeout(timer);
       if (typed.length < MIN_QUERY || /^\d+$/.test(typed)) {
         list.hidden = true;
@@ -2957,50 +3696,238 @@
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") list.hidden = true;
     });
-    refresh();
+    refresh2();
+    return row;
+  }
+  var API_KEY_CREATE_URL = "https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=AutumnsUIEv1&user=log&torn=cityshops&logIds=86&logtypes=4200";
+  function buildApiKeyRow() {
+    const row = document.createElement("div");
+    row.className = "aue-row aue-row-stack aue-row-wide";
+    const heading = document.createElement("span");
+    heading.className = "aue-heading";
+    row.appendChild(heading);
+    const label = document.createElement("span");
+    label.className = "aue-label";
+    label.textContent = "API Key";
+    heading.appendChild(label);
+    const generate = document.createElement("a");
+    generate.className = "aue-field-link";
+    generate.href = API_KEY_CREATE_URL;
+    generate.target = "_blank";
+    generate.rel = "noopener";
+    generate.textContent = "Generate key";
+    heading.appendChild(generate);
+    const field = document.createElement("span");
+    field.className = "aue-field aue-key-field";
+    row.appendChild(field);
+    const note = document.createElement("span");
+    note.className = "aue-note aue-key-note";
+    note.textContent = "The custom key fetches City shop purchase logs and shop stock only.";
+    row.appendChild(note);
+    const box2 = document.createElement("span");
+    box2.className = "aue-key-box";
+    field.appendChild(box2);
+    const input = document.createElement("input");
+    input.className = "aue-input aue-key-input";
+    input.type = "password";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = "custom key";
+    input.value = readSetting(API_KEY_SETTING, "");
+    box2.appendChild(input);
+    const reveal = document.createElement("button");
+    reveal.type = "button";
+    reveal.className = "aue-key-reveal";
+    reveal.textContent = "Show";
+    reveal.addEventListener("click", () => {
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      reveal.textContent = hidden ? "Hide" : "Show";
+    });
+    box2.appendChild(reveal);
+    const check = document.createElement("button");
+    check.type = "button";
+    check.className = "torn-btn aue-key-check";
+    check.textContent = "Check";
+    field.appendChild(check);
+    const result = document.createElement("span");
+    result.className = "aue-key-result";
+    field.appendChild(result);
+    input.addEventListener("input", () => {
+      result.textContent = "";
+      result.className = "aue-key-result";
+    });
+    check.addEventListener("click", () => {
+      const key = input.value.trim();
+      if (!key) {
+        writeSetting(API_KEY_SETTING, "");
+        forgetCityShopCount();
+        result.textContent = "Removed";
+        result.className = "aue-key-result";
+        return;
+      }
+      check.disabled = true;
+      void checkApiKey(key).then((problem) => {
+        check.disabled = false;
+        if (problem) {
+          result.textContent = problem;
+          result.className = "aue-key-result aue-key-bad";
+          return;
+        }
+        writeSetting(API_KEY_SETTING, key);
+        forgetCityShopCount();
+        result.textContent = "Saved";
+        result.className = "aue-key-result aue-key-good";
+      });
+    });
+    return row;
+  }
+  function buildSwitchRow(feature) {
+    const row = document.createElement("div");
+    row.className = "aue-row";
+    const label = document.createElement("span");
+    label.className = "aue-label";
+    label.textContent = feature.label;
+    if (feature.note) {
+      const note = document.createElement("span");
+      note.className = "aue-note";
+      note.textContent = feature.note;
+      label.appendChild(note);
+    }
+    row.appendChild(label);
+    const toggle = document.createElement("label");
+    toggle.className = "aue-switch";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = isEnabled(feature);
+    input.addEventListener("change", () => setEnabled(feature, input.checked));
+    toggle.appendChild(input);
+    const slider = document.createElement("span");
+    slider.className = "aue-slider";
+    toggle.appendChild(slider);
+    row.appendChild(toggle);
+    return row;
+  }
+  function buildToggleHeading(className, text, setting, openByDefault, onChange) {
+    const heading = document.createElement("div");
+    heading.setAttribute("role", "button");
+    heading.tabIndex = 0;
+    heading.className = className;
+    heading.textContent = text;
+    heading.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      heading.click();
+    });
+    const set = (open) => {
+      heading.setAttribute("aria-expanded", String(open));
+      onChange(open);
+    };
+    heading.addEventListener("click", () => {
+      if (getSelection()?.toString()) return;
+      const open = heading.getAttribute("aria-expanded") !== "true";
+      writeSetting(setting, open ? "1" : "0");
+      set(open);
+    });
+    queueMicrotask(() => set(readSetting(setting, openByDefault ? "1" : "0") === "1"));
+    return heading;
+  }
+  function fillStockList(list, shops) {
+    const checked = readCheckedItems();
+    list.replaceChildren();
+    for (const shop of shops) {
+      const group = document.createElement("div");
+      group.className = "aue-stock-shop";
+      const name = document.createElement("div");
+      name.className = "aue-stock-shop-name";
+      name.textContent = shop.name;
+      group.appendChild(name);
+      const items = document.createElement("div");
+      items.className = "aue-stock-items";
+      for (const item of shop.items) {
+        const option = document.createElement("label");
+        option.className = "aue-stock-item";
+        const box2 = document.createElement("input");
+        box2.type = "checkbox";
+        box2.checked = checked.has(item.id);
+        box2.addEventListener("change", () => {
+          const now = readCheckedItems();
+          if (box2.checked) now.add(item.id);
+          else now.delete(item.id);
+          writeCheckedItems(now);
+        });
+        option.append(box2, document.createTextNode(item.name));
+        items.appendChild(option);
+      }
+      group.appendChild(items);
+      list.appendChild(group);
+    }
+  }
+  function buildStockListRow() {
+    const row = document.createElement("div");
+    row.className = "aue-row aue-row-stack aue-row-wide aue-stock-row";
+    const list = document.createElement("div");
+    list.className = "aue-stock-list";
+    let loaded = false;
+    const load = () => {
+      if (loaded) return;
+      loaded = true;
+      const stored = readStock();
+      if (stored) {
+        fillStockList(list, stored.shops);
+        return;
+      }
+      const key = readSetting(API_KEY_SETTING, "").trim();
+      if (!key) {
+        list.textContent = "No API key";
+        loaded = false;
+        return;
+      }
+      list.textContent = "Loading…";
+      fetchCityShops(key).then(
+        (shops) => fillStockList(list, shops),
+        (error) => {
+          list.textContent = error instanceof Error ? error.message : "API error";
+          loaded = false;
+        }
+      );
+    };
+    row.appendChild(
+      buildToggleHeading("aue-section-toggle", "City Shop Items to check", STOCK_LIST_OPEN_SETTING, false, (open) => {
+        list.hidden = !open;
+        if (open) load();
+      })
+    );
+    row.appendChild(list);
     return row;
   }
   function buildPanel() {
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
-    const title = document.createElement("div");
-    title.className = "aue-title";
-    title.textContent = "Autumn's Scripts";
-    panel.appendChild(title);
+    const content = document.createElement("div");
+    content.className = "aue-content";
+    panel.appendChild(
+      buildToggleHeading("aue-title", "Autumn's Scripts", PANEL_OPEN_SETTING, true, (open) => {
+        content.hidden = !open;
+        panel.classList.toggle("aue-collapsed", !open);
+      })
+    );
+    panel.appendChild(content);
     const body = document.createElement("div");
     body.className = "aue-body";
-    panel.appendChild(body);
-    for (const feature of FEATURES) {
-      const row = document.createElement("div");
-      row.className = "aue-row";
-      const label = document.createElement("span");
-      label.className = "aue-label";
-      label.textContent = feature.label;
-      if (feature.note) {
-        const note = document.createElement("span");
-        note.className = "aue-note";
-        note.textContent = feature.note;
-        label.appendChild(note);
-      }
-      row.appendChild(label);
-      const toggle = document.createElement("label");
-      toggle.className = "aue-switch";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = isEnabled(feature);
-      input.addEventListener("change", () => setEnabled(feature, input.checked));
-      toggle.appendChild(input);
-      const slider = document.createElement("span");
-      slider.className = "aue-slider";
-      toggle.appendChild(slider);
-      row.appendChild(toggle);
-      body.appendChild(row);
-    }
+    for (const feature of FEATURES) body.appendChild(buildSwitchRow(feature));
     body.appendChild(buildRecipientRow());
+    content.appendChild(body);
     const footnote = document.createElement("div");
     footnote.className = "aue-footnote";
     footnote.textContent = PANEL_FOOTNOTE;
-    panel.appendChild(footnote);
+    content.appendChild(footnote);
+    const api = document.createElement("div");
+    api.className = "aue-body aue-body-api";
+    api.appendChild(buildApiKeyRow());
+    for (const feature of API_FEATURES) api.appendChild(buildSwitchRow(feature));
+    api.appendChild(buildStockListRow());
+    content.appendChild(api);
     return panel;
   }
   function placePanel() {
@@ -3084,7 +4011,7 @@
     }
     const boxes = Array.from(
       form.querySelectorAll(TEXT_FIELD_SELECTOR)
-    ).filter((box) => !box.disabled && !box.readOnly);
+    ).filter((box2) => !box2.disabled && !box2.readOnly);
     const userBox = form.querySelector(USER_FIELD_SELECTOR) ?? boxes[0];
     if (!userBox) {
       log("send: no recipient box in", boxes.length, "boxes on this form");
@@ -3347,6 +4274,7 @@
     }
     start("per-tab chat", installLocalChat);
     start("news ticker", installNewsTicker);
+    start("city shop alert", installCityShopAlert);
     if (location.pathname === PREFERENCES_PATH) {
       start("preferences panel", installPreferencesPanel);
       return;

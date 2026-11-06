@@ -52,6 +52,34 @@ export const PREFERRED_RECIPIENT: Feature = {
   defaultOn: true,
 };
 
+export const CITY_SHOP_ALERT: Feature = {
+  // The key keeps the feature's first name so nobody's choice is forgotten.
+  key: "CITY_SHOP_ALERT",
+  label: "City Shop Purchase Check",
+  defaultOn: true,
+};
+
+export const CITY_SHOP_STOCK: Feature = {
+  key: "CITY_SHOP_STOCK",
+  label: "City Shop Stock Check",
+  defaultOn: true,
+};
+
+// Do not move the key to GM_setValue: any @grant sandboxes this script, and
+// the fetch, XHR and scroll patches would stop reaching Torn's own code.
+
+/** Where the API key is kept. */
+export const API_KEY_SETTING = "API_KEY";
+
+/** Where the ids of the city shop items whose stock is shown are kept, as JSON. */
+export const STOCK_ITEMS_SETTING = "CITY_SHOP_STOCK_ITEMS";
+
+/** Whether the preferences panel is open. */
+export const PANEL_OPEN_SETTING = "PANEL_OPEN";
+
+/** Whether the list of city shop items to check is open. */
+export const STOCK_LIST_OPEN_SETTING = "CITY_SHOP_STOCK_LIST_OPEN";
+
 /** Where the default recipient is kept. */
 export const RECIPIENT_SETTING = "SEND_RECIPIENT";
 
@@ -62,7 +90,7 @@ export const RECIPIENT_LABEL = "SEND_RECIPIENT_LABEL";
 export const PANEL_FOOTNOTE =
   "Dark/Light Mode switch and table sorting in Torn Wiki enabled by default.";
 
-/** Every switch the preferences panel offers, in the order it shows them. */
+/** The switches that need no API key, in the order the panel shows them. */
 export const FEATURES: Feature[] = [
   PAGE_JUMP_BLOCK,
   INDEPENDENT_CHAT_TABS,
@@ -71,6 +99,9 @@ export const FEATURES: Feature[] = [
   NEWS_TICKER,
   PREFERRED_RECIPIENT,
 ];
+
+/** The switches that use the API key, shown under it. */
+export const API_FEATURES: Feature[] = [CITY_SHOP_ALERT, CITY_SHOP_STOCK];
 
 /** Whether a feature is switched on. */
 export function isEnabled(feature: Feature): boolean {
