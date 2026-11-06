@@ -27,6 +27,8 @@ const SELECTORS = {
   tooltip: '[data-floating-ui-portal], [role="tooltip"]',
   // The travel button, e.g. aria-label="Travel to Argentina".
   travelButton: 'button[aria-label^="Travel to" i]',
+  // The flight time beside a destination, e.g. <span class="duration___aexCM">1h 29m</span>.
+  flightDuration: '[class^="duration___"], [class*=" duration___"]',
   // Leaf nodes scanned for a button's caption.
   buttonish: "button, a, span, div",
   // Chrome that is never the travel control, whatever its caption says.
@@ -106,6 +108,43 @@ function parseWordyDuration(text: string): number | null {
       60 +
     unit(/(\d+)\s*second/i);
   return total > 0 ? total * 1000 : null;
+}
+
+/** "1h 29m" -> ms. Null unless the whole text is such a duration. */
+function parseCompactDuration(text: string): number | null {
+  const match = text
+    .trim()
+    .match(/^(?:(\d+)\s*d\s*)?(?:(\d+)\s*h\s*)?(?:(\d+)\s*m\s*)?(?:(\d+)\s*s)?$/i);
+  if (!match) return null;
+  const [days, hours, minutes, seconds] = match
+    .slice(1)
+    .map((digits) => (digits === undefined ? 0 : Number(digits)));
+  const total =
+    (((days ?? 0) * 24 + (hours ?? 0)) * 60 + (minutes ?? 0)) * 60 +
+    (seconds ?? 0);
+  return total > 0 ? total * 1000 : null;
+}
+
+/** Of `candidates`, the one sharing the closest ancestor with `anchor`. */
+function nearestTo<T extends HTMLElement>(
+  anchor: HTMLElement,
+  candidates: T[],
+): T | null {
+  let best: T | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    let distance = 0;
+    let ancestor: HTMLElement | null = candidate;
+    while (ancestor && !ancestor.contains(anchor)) {
+      ancestor = ancestor.parentElement;
+      distance++;
+    }
+    if (ancestor && distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  return best;
 }
 
 // ------------------------------------------------------------- step 1: OC
@@ -379,8 +418,30 @@ function retryOcNow(): void {
 
 // --------------------------------------------------- step 2: flight time
 
-/** "Flight Time - 01:51" -> ms. Only present once a destination is selected. */
+/** The travel button on screen, if any. */
+function findVisibleTravelButton(): HTMLElement | null {
+  const buttons = findTravelButtons();
+  return buttons.find(isVisible) ?? buttons[0] ?? null;
+}
+
+/** The selected flight's duration in ms. Only present once a destination is selected. */
 function findFlightTimeMs(): number | null {
+  const durations = [
+    ...document.querySelectorAll<HTMLElement>(SELECTORS.flightDuration),
+  ].filter(
+    (element) =>
+      !element.closest(`.${OWN_CLASS}`) &&
+      parseCompactDuration(element.textContent ?? "") !== null,
+  );
+  if (durations.length > 0) {
+    // Do not take the first: the page may list a duration per destination.
+    const button = findVisibleTravelButton();
+    const chosen =
+      (button && nearestTo(button, durations.filter(isVisible))) ??
+      (durations.length === 1 ? durations[0] : null);
+    if (chosen) return parseCompactDuration(chosen.textContent ?? "");
+  }
+
   const text = document.body.innerText;
 
   const clock = text.match(/Flight\s*Time\s*[-–—:]*\s*(\d{1,2}):(\d{2})/i);
@@ -958,29 +1019,23 @@ function findSelectedDestination(): string | null {
   }
 
   const [confirmButton] = findByCaption(CONFIRM_LABELS, false);
-  if (!confirmButton) return null;
+  const anchor = confirmButton ?? findVisibleTravelButton();
+  if (!anchor) return null;
 
-  let bestCountry: string | null = null;
-  let bestDistance = Infinity;
-  for (const element of document.body.querySelectorAll<HTMLElement>("*")) {
-    if (element.children.length > 0) continue;
-    const text = (element.textContent ?? "").trim();
-    if (!TRAVEL_COUNTRIES.includes(text)) continue;
-
-    let distance = 0;
-    let ancestor: HTMLElement | null = element;
-    while (ancestor && !ancestor.contains(confirmButton)) {
-      ancestor = ancestor.parentElement;
-      distance++;
-    }
-    if (!ancestor) continue;
-
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestCountry = text;
-    }
-  }
-  return bestCountry;
+  const countries = [
+    ...document.body.querySelectorAll<HTMLElement>("*"),
+  ].filter(
+    (element) =>
+      element.children.length === 0 &&
+      !element.closest(`.${OWN_CLASS}`) &&
+      TRAVEL_COUNTRIES.includes((element.textContent ?? "").trim()),
+  );
+  const visibleCountries = countries.filter(isVisible);
+  const nearest = nearestTo(
+    anchor,
+    visibleCountries.length > 0 ? visibleCountries : countries,
+  );
+  return nearest ? (nearest.textContent ?? "").trim() : null;
 }
 
 /** Every short leaf element mentioning a travel country, for the console. */

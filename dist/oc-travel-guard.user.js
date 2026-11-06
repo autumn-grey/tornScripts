@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OC Travel Guard
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.4
+// @version      1.0.5
 // @description  Blocks travel to any destination you could not fly back from before your Organised Crime starts.
 // @author       AutumnGrey
 // @license      MIT
@@ -38,6 +38,8 @@
     tooltip: '[data-floating-ui-portal], [role="tooltip"]',
     // The travel button, e.g. aria-label="Travel to Argentina".
     travelButton: 'button[aria-label^="Travel to" i]',
+    // The flight time beside a destination, e.g. <span class="duration___aexCM">1h 29m</span>.
+    flightDuration: '[class^="duration___"], [class*=" duration___"]',
     // Leaf nodes scanned for a button's caption.
     buttonish: "button, a, span, div",
     // Chrome that is never the travel control, whatever its caption says.
@@ -98,6 +100,30 @@
     };
     const total = ((unit(/(\d+)\s*day/i) * 24 + unit(/(\d+)\s*hour/i)) * 60 + unit(/(\d+)\s*minute/i)) * 60 + unit(/(\d+)\s*second/i);
     return total > 0 ? total * 1e3 : null;
+  }
+  function parseCompactDuration(text) {
+    const match = text.trim().match(/^(?:(\d+)\s*d\s*)?(?:(\d+)\s*h\s*)?(?:(\d+)\s*m\s*)?(?:(\d+)\s*s)?$/i);
+    if (!match) return null;
+    const [days, hours, minutes, seconds] = match.slice(1).map((digits) => digits === void 0 ? 0 : Number(digits));
+    const total = (((days ?? 0) * 24 + (hours ?? 0)) * 60 + (minutes ?? 0)) * 60 + (seconds ?? 0);
+    return total > 0 ? total * 1e3 : null;
+  }
+  function nearestTo(anchor, candidates) {
+    let best = null;
+    let bestDistance = Infinity;
+    for (const candidate of candidates) {
+      let distance = 0;
+      let ancestor = candidate;
+      while (ancestor && !ancestor.contains(anchor)) {
+        ancestor = ancestor.parentElement;
+        distance++;
+      }
+      if (ancestor && distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+    return best;
   }
   var OC_UNKNOWN = "unknown";
   var OC_TIMER = "timer";
@@ -275,7 +301,21 @@
       scheduleOcRetry();
     });
   }
+  function findVisibleTravelButton() {
+    const buttons = findTravelButtons();
+    return buttons.find(isVisible) ?? buttons[0] ?? null;
+  }
   function findFlightTimeMs() {
+    const durations = [
+      ...document.querySelectorAll(SELECTORS.flightDuration)
+    ].filter(
+      (element) => !element.closest(`.${OWN_CLASS}`) && parseCompactDuration(element.textContent ?? "") !== null
+    );
+    if (durations.length > 0) {
+      const button = findVisibleTravelButton();
+      const chosen = (button && nearestTo(button, durations.filter(isVisible))) ?? (durations.length === 1 ? durations[0] : null);
+      if (chosen) return parseCompactDuration(chosen.textContent ?? "");
+    }
     const text = document.body.innerText;
     const clock = text.match(/Flight\s*Time\s*[-–—:]*\s*(\d{1,2}):(\d{2})/i);
     if (clock?.[1] !== void 0 && clock[2] !== void 0) {
@@ -754,26 +794,19 @@
       }
     }
     const [confirmButton] = findByCaption(CONFIRM_LABELS, false);
-    if (!confirmButton) return null;
-    let bestCountry = null;
-    let bestDistance = Infinity;
-    for (const element of document.body.querySelectorAll("*")) {
-      if (element.children.length > 0) continue;
-      const text = (element.textContent ?? "").trim();
-      if (!TRAVEL_COUNTRIES.includes(text)) continue;
-      let distance = 0;
-      let ancestor = element;
-      while (ancestor && !ancestor.contains(confirmButton)) {
-        ancestor = ancestor.parentElement;
-        distance++;
-      }
-      if (!ancestor) continue;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestCountry = text;
-      }
-    }
-    return bestCountry;
+    const anchor = confirmButton ?? findVisibleTravelButton();
+    if (!anchor) return null;
+    const countries = [
+      ...document.body.querySelectorAll("*")
+    ].filter(
+      (element) => element.children.length === 0 && !element.closest(`.${OWN_CLASS}`) && TRAVEL_COUNTRIES.includes((element.textContent ?? "").trim())
+    );
+    const visibleCountries = countries.filter(isVisible);
+    const nearest = nearestTo(
+      anchor,
+      visibleCountries.length > 0 ? visibleCountries : countries
+    );
+    return nearest ? (nearest.textContent ?? "").trim() : null;
   }
   function findDestinationCandidates() {
     const results = [];
