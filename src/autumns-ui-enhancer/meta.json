@@ -1,7 +1,7 @@
 {
   "name": "Autumn's UI Enhancer",
   "version": "0.20.26",
-  "description": "Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, keeps chat windows minimised in one tab without minimising them in the rest and lets the chat bar be dragged to either side of the screen, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, fills your usual recipient into the send forms on the items page and offers to send what you have just bought from a shop, lights up the City while you have city shop buys left today, and shows the stock of the city shop items you pick. Switched on and off from a panel on the preferences page.",
+  "description": "Heaps of QOL features, all are optional, check Torn settings to see the full list",
   "match": [
     "https://www.torn.com/*",
     "https://wiki.torn.com/*"
