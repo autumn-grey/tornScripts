@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.20.4
-// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, keeps chat windows minimised in one tab without minimising them in the rest and lets the chat bar be dragged to either side of the screen, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, fills your usual recipient into the send forms on the items page, lights up the City while you have city shop buys left today, and shows the stock of the city shop items you pick. Switched on and off from a panel on the preferences page.
+// @version      0.20.26
+// @description  Small quality-of-life fixes for Torn's interface: stops filter links jumping the page, keeps chat windows minimised in one tab without minimising them in the rest and lets the chat bar be dragged to either side of the screen, adds an items-per-page selector to paged lists, sorts those lists and the wiki's tables by column, adds a light/dark switch to the wiki, scrolls the news ticker with arrows for stepping through the headlines, fills your usual recipient into the send forms on the items page and offers to send what you have just bought from a shop, lights up the City while you have city shop buys left today, and shows the stock of the city shop items you pick. Switched on and off from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/*
@@ -102,9 +102,9 @@
       return feature.defaultOn;
     }
   }
-  function setEnabled(feature, on2) {
+  function setEnabled(feature, on3) {
     try {
-      localStorage.setItem(SETTING_PREFIX + feature.key, on2 ? "1" : "0");
+      localStorage.setItem(SETTING_PREFIX + feature.key, on3 ? "1" : "0");
     } catch {
     }
   }
@@ -210,6 +210,15 @@
     writeSetting(STOCK_ITEMS_SETTING, JSON.stringify([...ids]));
   }
 
+  // src/autumns-ui-enhancer/purchaseText.ts
+  var FURNITURE_SELECTOR = "#header-root, #sidebarroot, #chatRoot";
+  var LOG_WORDING = /\bat\s+\$[\d,]+\s+each\b/i;
+  function isLogEntry(node) {
+    const element = node instanceof Element ? node : node.parentElement;
+    if (element?.closest(FURNITURE_SELECTOR)) return true;
+    return LOG_WORDING.test(node.textContent ?? "");
+  }
+
   // src/autumns-ui-enhancer/cityShop.ts
   var SELECTORS = {
     // The City item in the side menu, which carries the attention class:
@@ -250,7 +259,7 @@
   var REFRESH_MS = 2 * 6e4;
   var AFTER_BUY_MS = 1500;
   var MIN_GAP_MS = 5e3;
-  var PURCHASE_TEXT = /\bbought\s+(\d+)\s*x\b/i;
+  var PURCHASE_TEXT = /\byou bought\s+(?:([\d,]+)\s*x\b|an?\s)/i;
   var STATE_SETTING = "CITY_SHOP_STATE";
   var SHOPS_PATH = "/shops.php";
   var ICON_ID = "aue-city-shop-icon";
@@ -378,8 +387,10 @@
   }
   function purchaseIn(node) {
     if (node instanceof Element && node.closest(`#${TIP_ID}, #${ICON_ID}`)) return 0;
+    if (isLogEntry(node)) return 0;
     const match = PURCHASE_TEXT.exec(node.textContent ?? "");
-    return match ? Number(match[1]) : 0;
+    if (!match) return 0;
+    return match[1] ? Number(match[1].replace(/,/g, "")) : 1;
   }
   function tornClass(prefix, scope, ruleContext) {
     const pattern = new RegExp(String.raw`(?:^|\s)(${prefix}\w+)`);
@@ -406,9 +417,9 @@
   function cityNavItem() {
     return document.querySelector(SELECTORS.cityItem) ?? document.querySelector(SELECTORS.cityLink)?.closest(SELECTORS.cityItemFromLink) ?? null;
   }
-  function lendClass(element, on2, attr, find) {
+  function lendClass(element, on3, attr, find) {
     const owned = element.getAttribute(attr);
-    if (on2) {
+    if (on3) {
       if (owned) {
         if (!element.classList.contains(owned)) element.classList.add(owned);
         return;
@@ -2018,8 +2029,9 @@
   var INSTANT_CLASS = "aue-chat-instant";
   var HIDDEN_KEY = "AUE_CHAT_HIDDEN";
   var KNOWN_KEY = "AUE_CHAT_KNOWN";
-  var LAST_HIDDEN_KEY = "AUE_CHAT_HIDDEN_LAST";
   var SIDE_KEY = "AUE_CHAT_SIDE";
+  var PEOPLE_PANEL_SELECTOR = "#people_panel";
+  var MENU_OPEN_MS = 3e3;
   var HEADER_DEPTH = 34;
   var DRAG_THRESHOLD = 24;
   var TASKBAR_CLIMB = 4;
@@ -2056,19 +2068,21 @@
   function writeSet(key, ids) {
     try {
       sessionStorage.setItem(key, JSON.stringify([...ids]));
-      if (key === HIDDEN_KEY) {
-        localStorage.setItem(LAST_HIDDEN_KEY, JSON.stringify([...ids]));
-      }
     } catch {
     }
   }
-  function seedHidden() {
-    try {
-      if (sessionStorage.getItem(HIDDEN_KEY) !== null) return;
-      const last = localStorage.getItem(LAST_HIDDEN_KEY);
-      if (last) sessionStorage.setItem(HIDDEN_KEY, last);
-    } catch {
-    }
+  var startHidden = false;
+  var menuOpen = null;
+  function chatName(box2) {
+    const label = box2.querySelector(MINIMISE_SELECTOR)?.getAttribute("aria-label") ?? "";
+    return label.replace(/^Minimi[sz]e\s*(chat\s*(with)?\s*)?/i, "").trim();
+  }
+  function pickedFromMenu(box2) {
+    if (!menuOpen || Date.now() > menuOpen.until) return false;
+    const name = chatName(box2);
+    if (name === "" || !menuOpen.texts.includes(name)) return false;
+    menuOpen = null;
+    return true;
   }
   function tabIsNew() {
     try {
@@ -2331,7 +2345,6 @@
     }
     const hidden = readSet(HIDDEN_KEY);
     const known = readSet(KNOWN_KEY);
-    const fresh = tabIsNew();
     const openedHere = focusedOnArrival;
     let changed = false;
     let seen2 = 0;
@@ -2340,17 +2353,26 @@
       const wrapper = box2 && wrapperOf(box2);
       if (!box2 || !wrapper) continue;
       seen2 += 1;
-      if (!known.has(box2.id)) {
+      if (pickedFromMenu(box2)) {
+        if (hidden.delete(box2.id)) {
+          changed = true;
+          log("chat:", box2.id, "picked from the private chats list, so shown");
+        }
+        if (!known.has(box2.id)) {
+          known.add(box2.id);
+          changed = true;
+        }
+      } else if (!known.has(box2.id)) {
         known.add(box2.id);
         changed = true;
-        if (!fresh && !openedHere) {
+        if (startHidden || !openedHere) {
           hidden.add(box2.id);
-          log("chat:", box2.id, "was opened in another tab, so hidden here");
+          log("chat:", box2.id, startHidden ? "hidden as the tab is new" : "was opened in another tab, so hidden here");
         }
       }
       wrapper.classList.toggle(HIDDEN_CLASS, hidden.has(box2.id));
     }
-    if (changed || fresh) {
+    if (changed) {
       writeSet(KNOWN_KEY, known);
       writeSet(HIDDEN_KEY, hidden);
     }
@@ -2483,19 +2505,45 @@
   }
   function hideChatsEarly() {
     if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
-    seedHidden();
-    const hidden = [...readSet(HIDDEN_KEY)].filter((id) => SAFE_ID.test(id));
-    if (hidden.length === 0) return;
+    let rules;
+    if (tabIsNew()) {
+      startHidden = true;
+      setTimeout(() => startHidden = false, FAILSAFE_MS);
+      rules = `div:has(> div > div[id]:not([id$="_panel"]) ${MINIMISE_SELECTOR}) { display: none !important; }`;
+      log("chat: new tab, holding back every chat until the page settles");
+    } else {
+      const hidden = [...readSet(HIDDEN_KEY)].filter((id) => SAFE_ID.test(id));
+      if (hidden.length === 0) return;
+      rules = hidden.map((id) => `div:has(> div > div[id="${id}"]) { display: none !important; }`).join("\n");
+      log("chat: holding back", hidden.length, "window(s) until the page settles");
+    }
     const style = document.createElement("style");
-    style.textContent = hidden.map((id) => `div:has(> div > div[id="${id}"]) { display: none !important; }`).join("\n");
+    style.textContent = rules;
     (document.head ?? document.documentElement).appendChild(style);
     earlyHide = style;
-    log("chat: holding back", hidden.length, "window(s) until the page settles");
     setTimeout(liftEarlyHide, FAILSAFE_MS);
   }
+  function onMenuClick(event) {
+    if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(PEOPLE_PANEL_SELECTOR)) return;
+    const entry = target.closest("li, a, button, [role='button']") ?? target;
+    const texts = [];
+    for (const element of [entry, ...entry.querySelectorAll("*")]) {
+      const own = [...element.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent ?? "").join("").trim();
+      if (own === "") continue;
+      texts.push(own);
+      const sender = /^(.+?)\s:\s/.exec(own)?.[1];
+      if (sender) texts.push(sender.trim());
+    }
+    if (texts.length === 0) return;
+    menuOpen = { texts, until: Date.now() + MENU_OPEN_MS };
+    log("chat: picked from the private chats list:", texts);
+    apply3();
+  }
   function installLocalChat() {
-    seedHidden();
     addEventListener("click", onClick, true);
+    addEventListener("click", onMenuClick, true);
     addEventListener("pointerdown", onPointerDown, true);
     addEventListener("pointermove", onPointerMove, true);
     addEventListener("pointerup", onPointerUp, true);
@@ -3336,8 +3384,9 @@
     color: #ccc;
     font-size: 11px;
   }
+  /* Invisible but full height: at no height, the items page never loads the
+     items past its first chunk, which it only does as its list is scrolled. */
   .aue-send-frame-waiting {
-    height: 0 !important;
     visibility: hidden;
   }
   .aue-chat-hidden {
@@ -3355,12 +3404,13 @@
   .aue-chat-instant {
     transition-duration: 0s !important;
   }
+  /* As when the send option worked: tall enough for the row and its form. */
   .aue-send-frame {
     display: block;
     width: 100%;
-    height: 220px;
+    height: 320px;
     border: 0;
-    background: transparent;
+    background: #111;
   }
   .aue-key-box {
     position: relative;
@@ -3557,7 +3607,7 @@
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.20.4");
+    document.documentElement.setAttribute("data-aue", "0.20.26");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -3955,6 +4005,7 @@
   var SEND_PROMPT = /who would you like to send/i;
   var TEXT_FIELD_SELECTOR = "input[type='text'], input[type='number'], input:not([type])";
   var USER_FIELD_SELECTOR = "input[name*='user' i], input[placeholder*='user' i], input[id*='user' i]";
+  var AMOUNT_FIELD_SELECTOR = "input[name*='amount' i], input[placeholder*='amount' i], input[id*='amount' i], input[type='number']";
   var FORM_MAX_LENGTH = 400;
   var REFILL_DELAYS_MS = [150, 400, 900];
   function defaultRecipient() {
@@ -4052,6 +4103,648 @@
     new MutationObserver(() => {
       clearTimeout(timer);
       timer = window.setTimeout(pass2, SETTLE_MS4);
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  // src/autumns-ui-enhancer/shopSend.ts
+  var SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
+  var ITEMS_URL = "https://www.torn.com/item.php";
+  var ALL_TAB_SELECTOR = "a[href='#all-items']";
+  var ITEM_ATTR = "data-aue-item";
+  var AMOUNT_ATTR = "data-aue-amount";
+  var NAME_ATTR = "data-aue-name";
+  var PANEL_ATTR = "data-aue-panel";
+  var MARKED_ATTR = "data-aue-send";
+  var BOUGHT_TEXT = /\byou (?:bought|purchased|have bought)\b/i;
+  var BOUGHT_ITEM = /\byou (?:bought|purchased|have bought)\s+(?:(?:a|an|the)\s+)?(?:([\d,]+)\s*x?\s+)?(.+?)(?:\s+at\s+\$[\d,]+\s+each)?\s+for\s/i;
+  var MESSAGE_MAX_LENGTH = 300;
+  var ITEM_IMAGE = /\/items\/(\d+)\//;
+  var ANCESTOR_LIMIT = 6;
+  var FRAME_READY_MS = 2e4;
+  var POLL_MS = 250;
+  var SETTLE_MS5 = 150;
+  var FORM_TRIES = 28;
+  var FORM_CLICK_EVERY = 3;
+  var BOX_LIMIT = 8;
+  var CONTENT_ROOT_SELECTOR2 = ".content-wrapper, #mainContainer";
+  var SEND_PANEL_MAX_LENGTH = 220;
+  var FORM_WATCH_MS = 500;
+  var CLOSE_LINK_ATTR = "data-aue-closes";
+  var CLOSE_LIMIT = 4;
+  var MESSAGE_CLOSE_SELECTOR = "button[aria-label='Close' i], .close-icon";
+  var OPTION_TEXT = /your items|equip|use item|read|open|start|abroad/i;
+  var ROW_SELECTOR = "li, tr";
+  var SEND_TEXT = /^\s*send\s*$/i;
+  var CLICKABLE_SELECTOR = "button, a, li, span, div, [role='button']";
+  var SEND_SELECTORS = [
+    "[aria-label='Send' i]",
+    "[title='Send' i]",
+    "a[href*='send' i]",
+    "[class*='send' i]"
+  ];
+  var ROW_MAX_LENGTH = 300;
+  var PLANE_PATH = "M2 21l21-9L2 3v7l15 2-15 2v7z";
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var QUIET_ATTR = "data-aue-quiet-list";
+  var SUGGESTIONS_SELECTOR = ".autocomplete-wrap";
+  var ENGAGED_ATTR = "data-aue-recipient-used";
+  var HOLD_PAGE_MS = 4e3;
+  var FRAME_MIN_HEIGHT = 50;
+  var FRAME_MAX_HEIGHT = 220;
+  var WAITING_CLASS = "aue-send-frame-waiting";
+  var ONLY_CLASS = "aue-send-only";
+  var HIDE_CLASS = "aue-send-hidden";
+  var KEEP_CLASS = "aue-send-kept";
+  var FRAME_CSS = `
+  .${ONLY_CLASS} .${HIDE_CLASS} {
+    display: none !important;
+  }
+  .${ONLY_CLASS} .${KEEP_CLASS} {
+    position: static !important;
+    transform: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: transparent !important;
+    display: block !important;
+  }
+  .${ONLY_CLASS} body {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  #sidebarroot,
+  #header-root,
+  .header-wrapper-top,
+  .header-wrapper-bottom,
+  #chatRoot,
+  #footer,
+  .footer,
+  .content-title,
+  .links-top-wrap,
+  .breadcrumbs,
+  .ad-wrapper {
+    display: none !important;
+  }
+  [${QUIET_ATTR}] {
+    display: none !important;
+  }
+  body { background: transparent !important; }
+`;
+  var panelCount = 0;
+  function on2() {
+    return isEnabled(PREFERRED_RECIPIENT);
+  }
+  function itemIdIn(scope) {
+    const tagged = scope.matches("[data-item], [data-itemid]") ? scope : scope.querySelector("[data-item], [data-itemid]");
+    const attribute = tagged?.getAttribute("data-item") ?? tagged?.getAttribute("data-itemid") ?? null;
+    if (attribute && /^\d+$/.test(attribute)) return attribute;
+    const image = scope.querySelector("img[src*='/items/']");
+    const match = ITEM_IMAGE.exec(image?.getAttribute("src") ?? "");
+    return match?.[1] ?? null;
+  }
+  function itemIdFor(message) {
+    let node = message;
+    for (let depth = 0; node && depth < ANCESTOR_LIMIT; depth += 1) {
+      const id = itemIdIn(node);
+      if (id) return id;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function findOptionRow(message) {
+    let node = message;
+    for (let depth = 0; node && depth < ANCESTOR_LIMIT; depth += 1) {
+      const links = Array.from(node.querySelectorAll("a"));
+      const option = links.find((link) => OPTION_TEXT.test(link.textContent ?? ""));
+      if (option?.parentElement) return option.parentElement;
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function findRow(doc, itemId) {
+    if (!itemId) return null;
+    const tagged = doc.querySelector(
+      `[data-item="${itemId}"], [data-itemid="${itemId}"]`
+    );
+    if (tagged) return tagged.closest(ROW_SELECTOR) ?? tagged;
+    const images = doc.querySelectorAll("img[src*='/items/']");
+    for (const image of images) {
+      const match = ITEM_IMAGE.exec(image.getAttribute("src") ?? "");
+      if (match && match[1] === itemId) {
+        return image.closest(ROW_SELECTOR) ?? image.parentElement;
+      }
+    }
+    return null;
+  }
+  function findSendControl(row) {
+    for (const scope of [row, row.nextElementSibling, row.parentElement]) {
+      if (!scope) continue;
+      let best = null;
+      const clickable = scope.querySelectorAll(CLICKABLE_SELECTOR);
+      for (const element of clickable) {
+        if (!SEND_TEXT.test(element.textContent ?? "")) continue;
+        if (!best || best.contains(element)) best = element;
+      }
+      if (best) return best;
+      for (const selector of SEND_SELECTORS) {
+        const control = scope.querySelector(selector);
+        if (control) return control;
+      }
+    }
+    return null;
+  }
+  function expandRow(row) {
+    const handle = row.querySelector("img[src*='/items/']") ?? row;
+    handle.click();
+  }
+  function amountBought(message) {
+    const match = BOUGHT_ITEM.exec(message.textContent ?? "");
+    if (!match) return null;
+    const amount = match[1]?.replace(/,/g, "") ?? "1";
+    return /^[1-9]\d*$/.test(amount) ? amount : null;
+  }
+  function nameBought(message) {
+    const match = BOUGHT_ITEM.exec(message.textContent ?? "");
+    return match?.[2]?.replace(/\s+/g, " ").trim() ?? "";
+  }
+  function findRowByName(doc, name) {
+    if (!name) return null;
+    const wanted = name.toLowerCase();
+    let best = null;
+    for (const row of doc.querySelectorAll(ROW_SELECTOR)) {
+      const text = (row.textContent ?? "").toLowerCase();
+      if (!text.includes(wanted) || text.length > ROW_MAX_LENGTH) continue;
+      if (!best || text.length < (best.textContent ?? "").length) best = row;
+    }
+    return best;
+  }
+  function sendFormScope(row) {
+    if (row.querySelector(TEXT_FIELD_SELECTOR)) return row;
+    const next = row.nextElementSibling;
+    if (next?.querySelector(TEXT_FIELD_SELECTOR)) return next;
+    return row;
+  }
+  function isElement(value) {
+    return typeof value === "object" && value !== null && value.nodeType === Node.ELEMENT_NODE;
+  }
+  function quietSuggestions(scope) {
+    const doc = scope.ownerDocument;
+    if (doc.documentElement.hasAttribute(ENGAGED_ATTR)) return;
+    const input = scope.querySelector(USER_FIELD_SELECTOR);
+    if (!input) return;
+    const dropdown = (input.id ? doc.getElementById(`${input.id}-cont`) : null) ?? input.parentElement?.querySelector(SUGGESTIONS_SELECTOR) ?? null;
+    if (dropdown && !dropdown.hasAttribute(QUIET_ATTR)) dropdown.setAttribute(QUIET_ATTR, "");
+  }
+  function wakeSuggestions(doc) {
+    if (doc.documentElement.dataset.aueWakeWatched === "1") return;
+    doc.documentElement.dataset.aueWakeWatched = "1";
+    const wake = (event) => {
+      const target = event.target;
+      if (!event.isTrusted || !isElement(target) || !target.matches(USER_FIELD_SELECTOR)) return;
+      doc.documentElement.setAttribute(ENGAGED_ATTR, "");
+      for (const hidden of doc.querySelectorAll(`[${QUIET_ATTR}]`)) hidden.removeAttribute(QUIET_ATTR);
+    };
+    doc.addEventListener("pointerdown", wake, true);
+    doc.addEventListener("keydown", wake, true);
+  }
+  function fillSendForm(row, amount) {
+    const scope = sendFormScope(row);
+    const boxes = Array.from(
+      scope.querySelectorAll(TEXT_FIELD_SELECTOR)
+    ).filter((box2) => !box2.disabled && !box2.readOnly);
+    if (boxes.length === 0) return;
+    const recipient = recipientText();
+    const userBox = scope.querySelector(USER_FIELD_SELECTOR) ?? boxes[0];
+    const amountBox = scope.querySelector(AMOUNT_FIELD_SELECTOR) ?? (boxes[1] === userBox ? boxes[0] : boxes[1]);
+    if (recipient && userBox && userBox.value === "") {
+      fillField(userBox, recipient);
+      log("send: recipient", recipient);
+      wakeSuggestions(userBox.ownerDocument);
+      quietSuggestions(scope);
+    }
+    if (amount && amountBox && amountBox !== userBox) {
+      fillField(amountBox, amount);
+      log("send: amount", amount);
+    }
+  }
+  function isolateRow(doc, target, toTop = true) {
+    const keep = /* @__PURE__ */ new Set();
+    for (let node = target; node; node = node.parentElement) {
+      keep.add(node);
+    }
+    for (const node of keep) {
+      for (const sibling of Array.from(node.parentElement?.children ?? [])) {
+        if (!keep.has(sibling) && !sibling.classList.contains(HIDE_CLASS)) {
+          sibling.classList.add(HIDE_CLASS);
+        }
+      }
+      if (node !== target && !node.classList.contains(KEEP_CLASS)) node.classList.add(KEEP_CLASS);
+    }
+    if (!doc.documentElement.classList.contains(ONLY_CLASS)) {
+      doc.documentElement.classList.add(ONLY_CLASS);
+    }
+    if (toTop) doc.defaultView?.scrollTo(0, 0);
+  }
+  function findSendPanel(row) {
+    const scope = sendFormScope(row);
+    const user = scope.querySelector(USER_FIELD_SELECTOR) ?? scope.querySelector(TEXT_FIELD_SELECTOR);
+    if (!user) return null;
+    let best = user;
+    for (let node = user.parentElement; node && node !== row; ) {
+      if ((node.textContent ?? "").length > SEND_PANEL_MAX_LENGTH) break;
+      best = node;
+      node = node.parentElement;
+    }
+    return best;
+  }
+  function watchForm(frame, doc, form) {
+    const panel = frame.closest(".aue-send");
+    if (!panel) return;
+    const holder = form.parentElement;
+    let shown = form;
+    const keepHidden = () => {
+      if (!shown.isConnected && holder?.isConnected) {
+        shown = holder;
+        log("send: the form was replaced, showing what took its place");
+      }
+      if (!shown.isConnected) return;
+      isolateRow(doc, shown, false);
+      quietSuggestions(shown);
+      fitFrame(frame, shown);
+    };
+    const FrameObserver = doc.defaultView?.MutationObserver ?? MutationObserver;
+    const observer = new FrameObserver(keepHidden);
+    observer.observe(doc.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class"]
+    });
+    const timer = window.setInterval(() => {
+      if (!panel.isConnected || panel.hidden) {
+        clearInterval(timer);
+        observer.disconnect();
+        return;
+      }
+      keepHidden();
+    }, FORM_WATCH_MS);
+  }
+  function fitFrame(frame, shown) {
+    const view = shown.ownerDocument.defaultView;
+    const scrolled = view?.scrollY ?? 0;
+    let bottom = 0;
+    for (const element of [shown, ...shown.querySelectorAll("*")]) {
+      const box2 = element.getBoundingClientRect();
+      if (box2.height > 0) bottom = Math.max(bottom, box2.bottom + scrolled);
+    }
+    const height = Math.min(FRAME_MAX_HEIGHT, Math.max(FRAME_MIN_HEIGHT, Math.ceil(bottom) + 6));
+    const wanted = `${height}px`;
+    if (frame.style.height !== wanted) frame.style.height = wanted;
+  }
+  function showFrame(frame, status) {
+    frame.classList.remove(WAITING_CLASS);
+    frame.inert = false;
+    status.hidden = true;
+  }
+  function failPanel(status, reason) {
+    status.hidden = false;
+    status.textContent = `${reason} `;
+    const link = document.createElement("a");
+    link.className = "aue-send-link";
+    link.href = ITEMS_URL;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "Open items page";
+    status.appendChild(link);
+  }
+  function sendFormOpen(row) {
+    return sendFormScope(row).querySelector(TEXT_FIELD_SELECTOR) !== null;
+  }
+  var FRAME_CLOSE_SELECTOR = ".close-icon, a, button";
+  var CLOSE_TEXT = /^\s*close\s*$/i;
+  function watchFrameClicks(frame, doc) {
+    if (doc.documentElement.dataset.aueClicksWatched === "1") return;
+    doc.documentElement.dataset.aueClicksWatched = "1";
+    doc.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!isElement(target)) return;
+      const control = target.closest(FRAME_CLOSE_SELECTOR);
+      const isClose = control !== null && (control.matches(".close-icon") || CLOSE_TEXT.test(control.textContent ?? "") || /^close$/i.test(control.getAttribute("aria-label") ?? ""));
+      if (isClose) {
+        const panel = frame.closest(".aue-send");
+        setTimeout(() => panel && closePanel(panel), 0);
+        log("send: Torn's Close pressed, putting the panel away");
+        return;
+      }
+      const link = target.closest("a[href]");
+      const href = link?.getAttribute("href") ?? "";
+      if (!link || href === "" || href.startsWith("#") || href.startsWith("javascript:")) return;
+      if (link.target !== "_blank" && link.target !== "_top") {
+        link.target = "_top";
+        log("send: a link in the frame will open in the whole window", href);
+      }
+    }, true);
+  }
+  function openSendForm(frame, doc, item, status) {
+    let polls = 0;
+    const step = () => {
+      const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
+      if (row && sendFormOpen(row)) {
+        fillSendForm(row, item.amount);
+        const form = findSendPanel(row) ?? row;
+        isolateRow(doc, form);
+        showFrame(frame, status);
+        fitFrame(frame, form);
+        watchForm(frame, doc, form);
+        log("send: the form is open for", item.itemId);
+        return;
+      }
+      if (row && polls % FORM_CLICK_EVERY === 0) {
+        const control = findSendControl(row);
+        if (control) control.click();
+        else expandRow(row);
+      }
+      polls += 1;
+      if (polls < FORM_TRIES) {
+        setTimeout(step, POLL_MS);
+        return;
+      }
+      failPanel(status, `Couldn't open the send form for ${item.name}.`);
+      log("send: the form never opened for", item.itemId);
+    };
+    step();
+  }
+  function styleFrame(doc) {
+    if (doc.getElementById("aue-send-frame-styles")) return;
+    const style = doc.createElement("style");
+    style.id = "aue-send-frame-styles";
+    style.textContent = FRAME_CSS;
+    (doc.head ?? doc.documentElement).appendChild(style);
+  }
+  function showAllItems(doc) {
+    const tab = doc.querySelector(ALL_TAB_SELECTOR);
+    const selected = tab?.closest("[role='tab']")?.getAttribute("aria-selected") === "true";
+    if (!tab || selected || tab.dataset.aueClicked === "1") return;
+    tab.dataset.aueClicked = "1";
+    tab.addEventListener("click", (event) => event.preventDefault(), { once: true });
+    tab.click();
+    log("send: switched the items page to All");
+  }
+  function openInFrame(frame, item, status) {
+    const started = Date.now();
+    const attempt = () => {
+      let doc = null;
+      try {
+        doc = frame.contentDocument;
+      } catch {
+        doc = null;
+      }
+      const expired = Date.now() - started >= FRAME_READY_MS;
+      if (!doc || !doc.body) {
+        if (!expired) {
+          setTimeout(attempt, POLL_MS);
+          return;
+        }
+        failPanel(status, "Torn would not show your items here.");
+        log("send: the items page never loaded in the frame");
+        return;
+      }
+      styleFrame(doc);
+      const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
+      if (!row) {
+        showAllItems(doc);
+        const view = doc.defaultView;
+        view?.scrollTo(0, doc.documentElement.scrollHeight);
+        if (!expired) {
+          setTimeout(attempt, POLL_MS);
+          return;
+        }
+        failPanel(status, `Couldn't find ${item.name} in your items.`);
+        log("send: item", item.itemId, item.name, "not found on the items page");
+        return;
+      }
+      watchFrameClicks(frame, doc);
+      openSendForm(frame, doc, item, status);
+      log("send: found item", item.itemId, "in your items");
+    };
+    attempt();
+  }
+  function buildFrame(item, status) {
+    const frame = document.createElement("iframe");
+    frame.className = `aue-send-frame ${WAITING_CLASS}`;
+    frame.inert = true;
+    frame.src = ITEMS_URL;
+    frame.addEventListener("load", () => openInFrame(frame, item, status));
+    return frame;
+  }
+  function buildTrigger(panelId) {
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "aue-send-trigger";
+    trigger.title = "Send item";
+    trigger.setAttribute("aria-label", "Send item");
+    trigger.setAttribute(PANEL_ATTR, panelId);
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", PLANE_PATH);
+    path.setAttribute("fill", "currentColor");
+    svg.appendChild(path);
+    trigger.appendChild(svg);
+    return trigger;
+  }
+  function buildPanel2(panelId, itemId, name, amount) {
+    const panel = document.createElement("div");
+    panel.className = "aue-send";
+    panel.id = panelId;
+    panel.hidden = true;
+    panel.setAttribute(ITEM_ATTR, itemId);
+    panel.setAttribute(NAME_ATTR, name);
+    if (amount) panel.setAttribute(AMOUNT_ATTR, amount);
+    const status = document.createElement("div");
+    status.className = "aue-send-status";
+    panel.appendChild(status);
+    return panel;
+  }
+  function openPanel(panel) {
+    const status = panel.querySelector(".aue-send-status");
+    const itemId = panel.getAttribute(ITEM_ATTR) ?? "";
+    const name = panel.getAttribute(NAME_ATTR) ?? "";
+    if (!status || !itemId && !name) return;
+    panel.hidden = false;
+    status.hidden = false;
+    status.textContent = name ? `Opening the send form for ${name}...` : "Opening the send form...";
+    if (!panel.querySelector("iframe")) {
+      holdPage();
+      const amount = panel.getAttribute(AMOUNT_ATTR);
+      panel.appendChild(buildFrame({ itemId, name, amount }, status));
+    }
+    log("send: opened item", itemId);
+  }
+  function holdPage() {
+    const x = scrollX;
+    const y = scrollY;
+    const until = Date.now() + HOLD_PAGE_MS;
+    const events = ["wheel", "touchstart", "keydown", "mousedown"];
+    const stop = () => {
+      removeEventListener("scroll", restore);
+      for (const type of events) removeEventListener(type, stop, true);
+    };
+    const restore = () => {
+      if (Date.now() > until) {
+        stop();
+        return;
+      }
+      if (scrollX !== x || scrollY !== y) {
+        scrollTo(x, y);
+        log("send: kept the shop page from jumping");
+      }
+    };
+    addEventListener("scroll", restore);
+    for (const type of events) addEventListener(type, stop, true);
+    setTimeout(stop, HOLD_PAGE_MS);
+  }
+  function closePanel(panel) {
+    panel.hidden = true;
+    panel.querySelector("iframe")?.remove();
+  }
+  function dropPanel(panelId) {
+    document.getElementById(panelId)?.remove();
+    document.querySelector(`[${PANEL_ATTR}="${panelId}"]`)?.remove();
+    document.querySelector(`[${MARKED_ATTR}="${panelId}"]`)?.removeAttribute(
+      MARKED_ATTR
+    );
+    log("send: purchase message dismissed, panel taken away");
+  }
+  function linkClose(message, panelId) {
+    let node = message;
+    for (let depth = 0; node && depth < CLOSE_LIMIT; depth += 1) {
+      const buttons = node.querySelectorAll(MESSAGE_CLOSE_SELECTOR);
+      if (buttons.length > 1) return;
+      if (buttons.length === 1) {
+        buttons[0]?.setAttribute(CLOSE_LINK_ATTR, panelId);
+        return;
+      }
+      node = node.parentElement;
+    }
+  }
+  function installClicks() {
+    document.addEventListener(
+      "click",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const trigger = target.closest(`[${PANEL_ATTR}]`);
+        if (trigger) {
+          event.preventDefault();
+          event.stopPropagation();
+          const panel = document.getElementById(
+            trigger.getAttribute(PANEL_ATTR) ?? ""
+          );
+          if (!panel) return;
+          if (panel.hidden) openPanel(panel);
+          else closePanel(panel);
+          return;
+        }
+        const dismissing = target.closest(`[${CLOSE_LINK_ATTR}]`);
+        if (dismissing) dropPanel(dismissing.getAttribute(CLOSE_LINK_ATTR) ?? "");
+      },
+      true
+    );
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      for (const panel of document.querySelectorAll(".aue-send")) {
+        if (!panel.hidden) closePanel(panel);
+      }
+    });
+  }
+  function isPurchaseMessage(element) {
+    if (element.closest(".aue-send") || isLogEntry(element)) return false;
+    const text = element.textContent ?? "";
+    return text.length <= MESSAGE_MAX_LENGTH && BOUGHT_TEXT.test(text);
+  }
+  function ensureTrigger(message, panelId) {
+    linkClose(message, panelId);
+    if (document.querySelector(`[${PANEL_ATTR}="${panelId}"]`)) return;
+    const trigger = buildTrigger(panelId);
+    const row = findOptionRow(message);
+    if (row) {
+      row.appendChild(trigger);
+    } else {
+      trigger.classList.add("aue-send-trigger-loose");
+      message.insertAdjacentElement("afterend", trigger);
+    }
+    linkClose(message, panelId);
+    log("send: aeroplane placed", row ? "in Torn's row" : "on its own");
+  }
+  function purchaseBox(message) {
+    let box2 = message;
+    for (let depth = 0; depth < BOX_LIMIT; depth += 1) {
+      const parent = box2.parentElement;
+      if (!parent || parent === document.body) break;
+      if (parent.matches(CONTENT_ROOT_SELECTOR2)) break;
+      box2 = parent;
+    }
+    return box2;
+  }
+  function stockItemId(name) {
+    const wanted = name.toLowerCase();
+    for (const shop of readStock()?.shops ?? []) {
+      const item = shop.items.find((candidate) => candidate.name.toLowerCase() === wanted);
+      if (item) return String(item.id);
+    }
+    return "";
+  }
+  function offerSend(message) {
+    const name = nameBought(message);
+    const itemId = itemIdFor(message) ?? stockItemId(name);
+    if (!itemId && !name) {
+      message.setAttribute(MARKED_ATTR, "none");
+      log("send: neither an item id nor a name in", message.textContent);
+      return;
+    }
+    if (!itemId) log("send: no item id near the message, going by the name", name);
+    panelCount += 1;
+    const panelId = `aue-send-${panelCount}`;
+    message.setAttribute(MARKED_ATTR, panelId);
+    const panel = buildPanel2(panelId, itemId, name, amountBought(message));
+    const box2 = purchaseBox(message);
+    box2.insertAdjacentElement("afterend", panel);
+    ensureTrigger(message, panelId);
+    log("send: offering item", itemId);
+  }
+  function scan(root) {
+    const found = [];
+    if (isPurchaseMessage(root)) found.push(root);
+    for (const element of root.querySelectorAll("*")) {
+      if (isPurchaseMessage(element)) found.push(element);
+    }
+    for (const message of found) {
+      if (found.some((other) => other !== message && message.contains(other))) {
+        continue;
+      }
+      const marked = message.getAttribute(MARKED_ATTR);
+      if (!marked) offerSend(message);
+      else if (marked !== "none") ensureTrigger(message, marked);
+    }
+  }
+  function installShopSend() {
+    if (!on2()) return;
+    installClicks();
+    scan(document.body);
+    let timer = 0;
+    new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (on2()) scan(document.body);
+      }, SETTLE_MS5);
     }).observe(document.body, { childList: true, subtree: true });
   }
 
@@ -4280,6 +4973,7 @@
       return;
     }
     if (location.pathname === ITEMS_PATH) start("item send", installItemSend);
+    if (SHOP_PATHS.includes(location.pathname)) start("shop send", installShopSend);
     start("list display", installListDisplay);
     start("list sort", installListSort);
   }

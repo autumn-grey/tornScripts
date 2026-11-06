@@ -14,6 +14,7 @@ import {
   readStock,
 } from "./cityStock";
 import { log } from "./debug";
+import { isLogEntry } from "./purchaseText";
 import {
   API_KEY_SETTING,
   CITY_SHOP_ALERT,
@@ -81,8 +82,9 @@ const REFRESH_MS = 2 * 60_000;
 const AFTER_BUY_MS = 1_500;
 /** The least time between two fetches, so a burst of purchases is one call. */
 const MIN_GAP_MS = 5_000;
-// Torn's confirmation after a city shop purchase, e.g. "You bought 2x ...".
-const PURCHASE_TEXT = /\bbought\s+(\d+)\s*x\b/i;
+// Torn's confirmation after a city shop purchase: "You bought 2x Plain Silver
+// Ring ..." for several, but "You bought a Plain Silver Ring ..." for one.
+const PURCHASE_TEXT = /\byou bought\s+(?:([\d,]+)\s*x\b|an?\s)/i;
 /** Where the last fetched count is kept, so every page load does not ask. */
 const STATE_SETTING = "CITY_SHOP_STATE";
 
@@ -265,8 +267,12 @@ function onPurchase(quantity: number): void {
 /** Returns the quantity in a purchase confirmation inside a node, or 0. */
 function purchaseIn(node: Node): number {
   if (node instanceof Element && node.closest(`#${TIP_ID}, #${ICON_ID}`)) return 0;
+  // Opening the log on a shop page would otherwise count every entry in it.
+  if (isLogEntry(node)) return 0;
   const match = PURCHASE_TEXT.exec(node.textContent ?? "");
-  return match ? Number(match[1]) : 0;
+  if (!match) return 0;
+  // No number means "a" or "an", which is one.
+  return match[1] ? Number(match[1].replace(/,/g, "")) : 1;
 }
 
 /** Returns one of Torn's classes, hash and all, or null when it cannot be found. */

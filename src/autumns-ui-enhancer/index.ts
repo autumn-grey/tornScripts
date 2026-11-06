@@ -9,6 +9,7 @@ import { installNewsTicker } from "./newsTicker";
 import { installPageJumpBlock } from "./pageJumpBlock";
 import { installPreferencesPanel } from "./panel";
 import { ITEMS_PATH, installItemSend } from "./itemSend";
+import { SHOP_PATHS, installShopSend } from "./shopSend";
 import { injectStyles } from "./styles";
 import { installWikiTheme } from "./wikiTheme";
 
@@ -54,9 +55,8 @@ function onReady(): void {
     start("preferences panel", installPreferencesPanel);
     return;
   }
-  // The shop purchase send button is not started: it stopped appearing and
-  // has not been diagnosed. See the note at the top of shopSend.ts.
   if (location.pathname === ITEMS_PATH) start("item send", installItemSend);
+  if (SHOP_PATHS.includes(location.pathname)) start("shop send", installShopSend);
   start("list display", installListDisplay);
   start("list sort", installListSort);
 }

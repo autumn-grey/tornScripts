@@ -420,8 +420,9 @@ const CSS = `
     color: #ccc;
     font-size: 11px;
   }
+  /* Invisible but full height: at no height, the items page never loads the
+     items past its first chunk, which it only does as its list is scrolled. */
   .aue-send-frame-waiting {
-    height: 0 !important;
     visibility: hidden;
   }
   .aue-chat-hidden {
@@ -439,12 +440,13 @@ const CSS = `
   .aue-chat-instant {
     transition-duration: 0s !important;
   }
+  /* As when the send option worked: tall enough for the row and its form. */
   .aue-send-frame {
     display: block;
     width: 100%;
-    height: 220px;
+    height: 320px;
     border: 0;
-    background: transparent;
+    background: #111;
   }
   .aue-key-box {
     position: relative;

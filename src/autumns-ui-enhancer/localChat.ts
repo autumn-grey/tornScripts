@@ -53,17 +53,11 @@ const INSTANT_CLASS = "aue-chat-instant";
  */
 const HIDDEN_KEY = "AUE_CHAT_HIDDEN";
 const KNOWN_KEY = "AUE_CHAT_KNOWN";
-/**
- * The same thing again, kept where every tab can see it.
- *
- * Torn is never told about a window hidden here, so as far as it is
- * concerned every chat is always open - and a tab opened later is handed
- * the lot. This is what the last tab to change anything had hidden, and a
- * new tab starts from it. Only the start: once a tab is running it keeps
- * its own copy and the two go their own ways, which is the whole point.
- */
-const LAST_HIDDEN_KEY = "AUE_CHAT_HIDDEN_LAST";
 const SIDE_KEY = "AUE_CHAT_SIDE";
+/** The private chats list, whose entries open a chat. */
+const PEOPLE_PANEL_SELECTOR = "#people_panel";
+/** How long after a click in that list the chat it opens is waited for. */
+const MENU_OPEN_MS = 3000;
 
 /** The strip at the top of a chat window that can be taken hold of. */
 const HEADER_DEPTH = 34;
@@ -143,26 +137,43 @@ function readSet(key: string): Set<string> {
 function writeSet(key: string, ids: Set<string>): void {
   try {
     sessionStorage.setItem(key, JSON.stringify([...ids]));
-    // Hidden windows are also recorded where a later tab can find them.
-    if (key === HIDDEN_KEY) {
-      localStorage.setItem(LAST_HIDDEN_KEY, JSON.stringify([...ids]));
-    }
   } catch {}
 }
 
 /**
- * Gives a tab opening for the first time the last state anything was in.
+ * Whether this page load is a new tab starting with every chat hidden.
  *
- * Without it every new tab shows every chat, because Torn believes they are
- * all open and only this tab's own memory says otherwise - and a new tab
- * has no memory yet.
+ * Torn believes every chat is open, so a new tab would otherwise show the
+ * lot. It lasts FAILSAFE_MS from the page starting, long enough for Torn to
+ * draw the chats it already had, so a chat opened later in the tab is not
+ * caught. Torn can draw them one at a time, which is why it is not ended by
+ * the first one turning up.
  */
-function seedHidden(): void {
-  try {
-    if (sessionStorage.getItem(HIDDEN_KEY) !== null) return;
-    const last = localStorage.getItem(LAST_HIDDEN_KEY);
-    if (last) sessionStorage.setItem(HIDDEN_KEY, last);
-  } catch {}
+let startHidden = false;
+
+/** A click in the private chats list: each piece of text in the entry, and until when they count. */
+let menuOpen: { texts: string[]; until: number } | null = null;
+
+/** Returns the name a chat window's minimise control carries. */
+function chatName(box: Element): string {
+  const label = box.querySelector(MINIMISE_SELECTOR)?.getAttribute("aria-label") ?? "";
+  return label.replace(/^Minimi[sz]e\s*(chat\s*(with)?\s*)?/i, "").trim();
+}
+
+/**
+ * Whether a chat is the one just picked from the private chats list.
+ *
+ * A match uses the pick up, so minimising the chat straight afterwards is
+ * not undone by the same pick a moment later.
+ */
+function pickedFromMenu(box: Element): boolean {
+  if (!menuOpen || Date.now() > menuOpen.until) return false;
+  const name = chatName(box);
+  // The whole of one piece of text, so picking "Alex" does not open "Al",
+  // and a name run together with the last message beside it still matches.
+  if (name === "" || !menuOpen.texts.includes(name)) return false;
+  menuOpen = null;
+  return true;
 }
 
 /** Whether this tab has been here before, or is opening its first page. */
@@ -670,10 +681,12 @@ function forget(id: string): void {
 /**
  * Brings every chat window into line with what this tab wants.
  *
- * A chat this tab has not met before has either just been opened here, which
- * a click a moment ago stands for, or been opened in another tab and arrived
- * through Torn's sync - and the second kind is hidden on arrival, so opening
- * a chat somewhere else does not open it here.
+ * A new tab hides every chat it finds. After that, a chat this tab has not
+ * met before has either just been opened here, which the tab having the
+ * focus stands for, or been opened in another tab and arrived through Torn's
+ * sync - and the second kind is hidden on arrival, so opening a chat
+ * somewhere else does not open it here. A chat picked from the private chats
+ * list is always shown, hidden or not.
  */
 function apply(): void {
   if (!isEnabled(INDEPENDENT_CHAT_TABS)) {
@@ -686,7 +699,6 @@ function apply(): void {
 
   const hidden = readSet(HIDDEN_KEY);
   const known = readSet(KNOWN_KEY);
-  const fresh = tabIsNew();
   const openedHere = focusedOnArrival;
   let changed = false;
   let seen = 0;
@@ -697,22 +709,30 @@ function apply(): void {
     if (!box || !wrapper) continue;
     seen += 1;
 
-    if (!known.has(box.id)) {
+    if (pickedFromMenu(box)) {
+      if (hidden.delete(box.id)) {
+        changed = true;
+        log("chat:", box.id, "picked from the private chats list, so shown");
+      }
+      if (!known.has(box.id)) {
+        known.add(box.id);
+        changed = true;
+      }
+    } else if (!known.has(box.id)) {
       known.add(box.id);
       changed = true;
-      // A tab opening for the first time takes what is already on screen as
-      // its own. After that, a chat appearing in the tab being used was
-      // opened there, and one appearing in a background tab was not.
-      if (!fresh && !openedHere) {
+      // A chat appearing in the tab being used was opened there, and one
+      // appearing in a background tab was not.
+      if (startHidden || !openedHere) {
         hidden.add(box.id);
-        log("chat:", box.id, "was opened in another tab, so hidden here");
+        log("chat:", box.id, startHidden ? "hidden as the tab is new" : "was opened in another tab, so hidden here");
       }
     }
 
     wrapper.classList.toggle(HIDDEN_CLASS, hidden.has(box.id));
   }
 
-  if (changed || fresh) {
+  if (changed) {
     writeSet(KNOWN_KEY, known);
     writeSet(HIDDEN_KEY, hidden);
   }
@@ -949,25 +969,71 @@ function schedulePass(): void {
  */
 export function hideChatsEarly(): void {
   if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
-  seedHidden();
-  const hidden = [...readSet(HIDDEN_KEY)].filter((id) => SAFE_ID.test(id));
-  if (hidden.length === 0) return;
+
+  let rules: string;
+  if (tabIsNew()) {
+    // A new tab has no ids yet and hides every chat, so the rule names none:
+    // any window holding a minimise control, apart from Torn's own panels.
+    startHidden = true;
+    setTimeout(() => (startHidden = false), FAILSAFE_MS);
+    rules = `div:has(> div > div[id]:not([id$="_panel"]) ${MINIMISE_SELECTOR}) { display: none !important; }`;
+    log("chat: new tab, holding back every chat until the page settles");
+  } else {
+    const hidden = [...readSet(HIDDEN_KEY)].filter((id) => SAFE_ID.test(id));
+    if (hidden.length === 0) return;
+    rules = hidden
+      .map((id) => `div:has(> div > div[id="${id}"]) { display: none !important; }`)
+      .join("\n");
+    log("chat: holding back", hidden.length, "window(s) until the page settles");
+  }
 
   const style = document.createElement("style");
-  style.textContent = hidden
-    .map((id) => `div:has(> div > div[id="${id}"]) { display: none !important; }`)
-    .join("\n");
+  style.textContent = rules;
   (document.head ?? document.documentElement).appendChild(style);
   earlyHide = style;
-  log("chat: holding back", hidden.length, "window(s) until the page settles");
-
   setTimeout(liftEarlyHide, FAILSAFE_MS);
+}
+
+/**
+ * Remembers a click in the private chats list, so the chat it opens is shown.
+ *
+ * Torn opens the chat for the whole account, and when it was already open
+ * somewhere it changes nothing here - so a chat this tab had hidden would
+ * stay hidden. The entry's words carry the person's name, which is matched
+ * to the chat window's own name when it turns up or is already there.
+ */
+function onMenuClick(event: MouseEvent): void {
+  if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest(PEOPLE_PANEL_SELECTOR)) return;
+
+  const entry = target.closest("li, a, button, [role='button']") ?? target;
+  // Each element's own text, without its children's: the name can sit beside
+  // an icon in one element, and the last message in another.
+  const texts: string[] = [];
+  for (const element of [entry, ...entry.querySelectorAll("*")]) {
+    const own = [...element.childNodes]
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent ?? "")
+      .join("")
+      .trim();
+    if (own === "") continue;
+    texts.push(own);
+    // The last message reads "Blaffle : i stole so much…", which names the
+    // person even where nothing else in the entry does.
+    const sender = /^(.+?)\s:\s/.exec(own)?.[1];
+    if (sender) texts.push(sender.trim());
+  }
+  if (texts.length === 0) return;
+  menuOpen = { texts, until: Date.now() + MENU_OPEN_MS };
+  log("chat: picked from the private chats list:", texts);
+  apply();
 }
 
 /** Keeps chat windows open and minimised per tab rather than per account. */
 export function installLocalChat(): void {
-  seedHidden();
   addEventListener("click", onClick, true);
+  addEventListener("click", onMenuClick, true);
   addEventListener("pointerdown", onPointerDown, true);
   addEventListener("pointermove", onPointerMove, true);
   addEventListener("pointerup", onPointerUp, true);
