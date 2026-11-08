@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Autumn's Record Tracker
 // @namespace    https://github.com/autumn-grey
-// @version      0.1.5
-// @description  Hall of Fame level progress, racing records by class, and a merit purchase tracker on the Points Building. Set up from Torn settings.
+// @version      1.0.0
+// @description  Displays your progress towards achieving all merits requiring points purchases, estimates your level progress and allows you to see all car classes' record lists.
 // @author       AutumnGrey
 // @license      MIT
 // @match        https://www.torn.com/preferences.php*
