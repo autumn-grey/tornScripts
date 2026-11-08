@@ -1,0 +1,15 @@
+{
+  "name": "Autumn's Record Tracker",
+  "version": "0.1.5",
+  "description": "Hall of Fame level progress, racing records by class, and a merit purchase tracker on the Points Building. Set up from Torn settings.",
+  "match": [
+    "https://www.torn.com/preferences.php*",
+    "https://www.torn.com/page.php*"
+  ],
+  "grant": [
+    "GM_setValue",
+    "GM_getValue"
+  ],
+  "run-at": "document-idle",
+  "noframes": true
+}
