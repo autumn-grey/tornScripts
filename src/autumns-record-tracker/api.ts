@@ -168,13 +168,21 @@ async function confirmCategory(key: string): Promise<number> {
   return found.id;
 }
 
-/** Returns why a key cannot do what this script needs, or null when it can. */
-export async function checkApiKey(key: string): Promise<string | null> {
+/** Torn's error code for a key whose access level is too low for the selection. */
+const ACCESS_TOO_LOW = 16;
+
+/** What Check found: why the key is unusable, if it is, and whether it can read logs. */
+export interface KeyCheck {
+  problem: string | null;
+  logs: boolean;
+}
+
+/** Returns whether a key can do what this script needs, and whether it can read the Points Building log. */
+export async function checkApiKey(key: string): Promise<KeyCheck> {
   const reason = (error: unknown): string => (error instanceof Error ? error.message : "API error");
   const steps: [string, () => Promise<unknown>][] = [
     ["Hall of Fame", () => fetchMyLevel(key)],
     ["Log categories", () => confirmCategory(key)],
-    ["Points Building log", () => tornGet("user/log", { cat: pointsBuildingCategory(), limit: 1 }, key)],
     ["Level leaderboard", () => tornGet("torn/hof", { cat: "level", limit: 1 }, key)],
     ["Racing records", () => tornGet("racing/6/records", { cat: "A" }, key)],
     ["Points market", () => tornGet("market/pointsmarket", {}, key)],
@@ -184,8 +192,15 @@ export async function checkApiKey(key: string): Promise<string | null> {
     try {
       await step();
     } catch (error) {
-      return `${name}: ${reason(error)}`;
+      return { problem: `${name}: ${reason(error)}`, logs: false };
     }
   }
-  return null;
+  // Only the Point Merit Tracker reads logs, so a public key is still worth saving for the rest.
+  try {
+    await tornGet("user/log", { cat: pointsBuildingCategory(), limit: 1 }, key);
+  } catch (error) {
+    if (error instanceof ApiError && error.code === ACCESS_TOO_LOW) return { problem: null, logs: false };
+    return { problem: `Points Building log: ${reason(error)}`, logs: false };
+  }
+  return { problem: null, logs: true };
 }

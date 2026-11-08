@@ -166,12 +166,12 @@
     writeSetting(CATEGORY_SETTING, found.id);
     return found.id;
   }
+  var ACCESS_TOO_LOW = 16;
   async function checkApiKey(key) {
     const reason = (error) => error instanceof Error ? error.message : "API error";
     const steps = [
       ["Hall of Fame", () => fetchMyLevel(key)],
       ["Log categories", () => confirmCategory(key)],
-      ["Points Building log", () => tornGet("user/log", { cat: pointsBuildingCategory(), limit: 1 }, key)],
       ["Level leaderboard", () => tornGet("torn/hof", { cat: "level", limit: 1 }, key)],
       ["Racing records", () => tornGet("racing/6/records", { cat: "A" }, key)],
       ["Points market", () => tornGet("market/pointsmarket", {}, key)],
@@ -181,10 +181,16 @@
       try {
         await step();
       } catch (error) {
-        return `${name}: ${reason(error)}`;
+        return { problem: `${name}: ${reason(error)}`, logs: false };
       }
     }
-    return null;
+    try {
+      await tornGet("user/log", { cat: pointsBuildingCategory(), limit: 1 }, key);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === ACCESS_TOO_LOW) return { problem: null, logs: false };
+      return { problem: `Points Building log: ${reason(error)}`, logs: false };
+    }
+    return { problem: null, logs: true };
   }
 
   // src/autumns-record-tracker/styles.ts
@@ -285,6 +291,11 @@
   }
   .art-field-link:hover {
     text-decoration: underline;
+  }
+  .art-key-note {
+    font-size: 11px;
+    line-height: 15px;
+    color: #bbb;
   }
   .art-key-field {
     display: flex;
@@ -981,6 +992,10 @@
     generate.rel = "noopener";
     generate.textContent = "Generate key";
     heading.appendChild(generate);
+    const note = document.createElement("span");
+    note.className = "art-key-note";
+    note.textContent = "Custom key fetches your points purchase logs, point market prices, race records and hall of fame positions. If you don't need the point merit tracker a public key will work.";
+    row.appendChild(note);
     const field = document.createElement("span");
     field.className = "art-key-field";
     row.appendChild(field);
@@ -1028,7 +1043,7 @@
       check.disabled = true;
       result.textContent = "Checking…";
       result.className = "art-key-result";
-      void checkApiKey(key).then((problem) => {
+      void checkApiKey(key).then(({ problem, logs }) => {
         check.disabled = false;
         if (problem) {
           result.textContent = problem;
@@ -1036,7 +1051,7 @@
           return;
         }
         writeSetting(API_KEY_SETTING, key);
-        result.textContent = "Saved";
+        result.textContent = logs ? "Saved" : "Saved, without log access";
         result.className = "art-key-result art-good";
       });
     });

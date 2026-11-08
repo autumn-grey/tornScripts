@@ -102,6 +102,11 @@ const CSS = `
   .art-field-link:hover {
     text-decoration: underline;
   }
+  .art-key-note {
+    font-size: 11px;
+    line-height: 15px;
+    color: #bbb;
+  }
   .art-key-field {
     display: flex;
     flex-wrap: wrap;

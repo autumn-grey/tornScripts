@@ -50,6 +50,12 @@ function buildApiKeyRow(): HTMLElement {
   generate.textContent = "Generate key";
   heading.appendChild(generate);
 
+  const note = document.createElement("span");
+  note.className = "art-key-note";
+  note.textContent =
+    "Custom key fetches your points purchase logs, point market prices, race records and hall of fame positions. If you don't need the point merit tracker a public key will work.";
+  row.appendChild(note);
+
   const field = document.createElement("span");
   field.className = "art-key-field";
   row.appendChild(field);
@@ -105,7 +111,7 @@ function buildApiKeyRow(): HTMLElement {
     check.disabled = true;
     result.textContent = "Checking…";
     result.className = "art-key-result";
-    void checkApiKey(key).then((problem) => {
+    void checkApiKey(key).then(({ problem, logs }) => {
       check.disabled = false;
       if (problem) {
         result.textContent = problem;
@@ -113,7 +119,7 @@ function buildApiKeyRow(): HTMLElement {
         return;
       }
       writeSetting(API_KEY_SETTING, key);
-      result.textContent = "Saved";
+      result.textContent = logs ? "Saved" : "Saved, without log access";
       result.className = "art-key-result art-good";
     });
   });
