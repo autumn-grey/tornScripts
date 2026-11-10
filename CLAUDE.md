@@ -60,7 +60,12 @@ Standard professional practice, which is also the style already in `src/`:
 
 **GreasyFork:** no minified/obfuscated source. `@require` only from allowlisted CDNs (jsdelivr, cdnjs, unpkg, ajax.googleapis.com, code.jquery.com), always version-pinned, never from our own domain.
 
-**Torn:** display-layer changes only. Greying out controls, warnings, overlays and injected info are fine — TornTools and similar do this throughout the game. Do not automate gameplay: no clicking, submitting, or navigating on the user's behalf.
+**Torn:** follows Torn's scripting rule (Rules page, "Scripting abuse"). In practice:
+
+- Data comes from the API, or from the page the player loaded and is looking at. Never scrape a page they are not viewing.
+- A request to Torn's own (non-API) pages must be started by the player, one click for one action. A button that does one thing when clicked is fine. Requests a script sends by itself, on a timer, on page load, or as extra requests on top of the one the player asked for, are not.
+- Nothing from an unfocused tab: no reading it to send elsewhere, no alerts or attention-grabbing from it.
+- Display changes (greying out, warnings, overlays, injected info) are always fine.
 
 **API keys:** never written to a file in this repo. `.gitignore` blocks the usual accidents, but the rule is that keys never touch disk here at all. In the browser, a script keeps its key in `GM_setValue` when it already has GM grants, or in `localStorage` when it runs with `@grant none` (Autumn's UI Enhancer: adding a grant would sandbox it and cut its fetch, XHR and scroll patches off from Torn's own code).
 
