@@ -17,12 +17,11 @@ const CATEGORY_SETTING = "LOG_CATEGORY";
 /**
  * Opens Torn's new key form, filled in as a custom key that reads the user's
  * Hall of Fame standing, the Points Building log category, the level
- * leaderboard, the log category names, the city stats, racing records and the
- * points market.
+ * leaderboard, the log category names, racing records and the points market.
  */
 export const API_KEY_CREATE_URL =
   "https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=AutumnRTv1" +
-  `&user=hof,log&torn=hof,logcategories,stats&racing=records&market=pointsmarket&logIds=${POINTS_BUILDING_CATEGORY}`;
+  `&user=hof,log&torn=hof,logcategories&racing=records&market=pointsmarket&logIds=${POINTS_BUILDING_CATEGORY}`;
 
 /** How long the point value is used before the market is asked again. */
 const POINT_VALUE_MAX_AGE_MS = 10 * 60_000;
@@ -83,56 +82,18 @@ export async function fetchPointValue(key: string): Promise<PointValue> {
 
   const body = await tornGet<{ pointsmarket?: { cost?: number }[] }>("market/pointsmarket", {}, key);
   const prices = (body.pointsmarket ?? []).map((listing) => listing.cost ?? 0).filter((cost) => cost > 0);
-  if (prices.length === 0) throw new ApiError("No points listed", null);
 
   const value: PointValue = { price: median(prices), listings: prices.length, fetchedAt: Date.now() };
   writeSetting(POINT_VALUE_SETTING, value);
   return value;
 }
 
-/** How many days across the last year are sampled for the average point price. */
-const YEAR_SAMPLES = 12;
-const DAY_MS = 24 * 60 * 60_000;
-const YEAR_AVERAGE_SETTING = "POINT_YEAR_AVERAGE";
-
-/** The average price a point sold for over the last year. */
-export interface YearAverage {
-  price: number;
-  fetchedAt: number;
-}
-
 /**
- * Returns the average of Torn's daily average point price, sampled once a
- * month across the last year. torn/stats with a timestamp gives that day's
- * city stats; the samples are kept for a day, as they barely move.
+ * Torn's average point sell price, averaged across the days below, taken by hand
+ * from the Points Market's "Average sell value" chart. The API has no price
+ * history, so this is refreshed by hand now and then.
  */
-export async function fetchYearAverage(key: string): Promise<YearAverage> {
-  const stored = readSetting<YearAverage | null>(YEAR_AVERAGE_SETTING, null);
-  if (stored && Date.now() - stored.fetchedAt < DAY_MS) return stored;
-
-  const now = Math.floor(Date.now() / 1000);
-  const step = Math.floor((365 * DAY_MS) / 1000 / YEAR_SAMPLES);
-  const prices: number[] = [];
-  // One at a time, like every other run of calls here, to stay well under Torn's per-minute limit.
-  for (let sample = 0; sample < YEAR_SAMPLES; sample++) {
-    const body = await tornGet<{ stats?: { currency?: { points_average_cost?: number } } }>(
-      "torn/stats",
-      { timestamp: now - sample * step },
-      key,
-    );
-    const price = body.stats?.currency?.points_average_cost;
-    if (typeof price === "number" && price > 0) prices.push(price);
-  }
-  if (prices.length === 0) throw new ApiError("No point prices in the city stats", null);
-
-  const average: YearAverage = {
-    price: prices.reduce((sum, price) => sum + price, 0) / prices.length,
-    fetchedAt: Date.now(),
-  };
-  log("point prices over the year", prices, average);
-  writeSetting(YEAR_AVERAGE_SETTING, average);
-  return average;
-}
+export const POINT_AVERAGE = { price: 32_844, from: "2025-11-08", to: "2026-11-07" };
 
 /** The user's level and where it places them on the level leaderboard. */
 export interface MyLevel {
@@ -142,12 +103,9 @@ export interface MyLevel {
 
 /** Returns the user's level and leaderboard position. */
 export async function fetchMyLevel(key: string): Promise<MyLevel> {
-  const body = await tornGet<{ hof?: { level?: { value?: number; rank?: number } } }>("user/hof", {}, key);
-  const level = body.hof?.level;
-  if (typeof level?.value !== "number" || typeof level.rank !== "number") {
-    throw new ApiError("No level in the Hall of Fame", null);
-  }
-  return { level: level.value, position: level.rank };
+  // Torn sends an error rather than a reply without the level, so the reply is taken as it comes.
+  const body = await tornGet<{ hof: { level: { value: number; rank: number } } }>("user/hof", {}, key);
+  return { level: body.hof.level.value, position: body.hof.level.rank };
 }
 
 /** Returns the Points Building log category id: the one Check confirmed, else the built-in one. */
@@ -155,7 +113,7 @@ export function pointsBuildingCategory(): number {
   return readSetting<number>(CATEGORY_SETTING, POINTS_BUILDING_CATEGORY);
 }
 
-/** Looks the Points Building category up by name and keeps its id. */
+/** Looks the Points Building category up by name and keeps its id, keeping the built-in one if the name is not found. */
 async function confirmCategory(key: string): Promise<number> {
   const body = await tornGet<{ logcategories?: { id: number; title: string }[] }>(
     "torn/logcategories",
@@ -163,7 +121,7 @@ async function confirmCategory(key: string): Promise<number> {
     key,
   );
   const found = (body.logcategories ?? []).find((category) => POINTS_BUILDING_TITLE.test(category.title));
-  if (!found) throw new ApiError("No Points building log category", null);
+  if (!found) return pointsBuildingCategory();
   writeSetting(CATEGORY_SETTING, found.id);
   return found.id;
 }
@@ -171,10 +129,11 @@ async function confirmCategory(key: string): Promise<number> {
 /** Torn's error code for a key whose access level is too low for the selection. */
 const ACCESS_TOO_LOW = 16;
 
-/** What Check found: why the key is unusable, if it is, and whether it can read logs. */
+/** What Check found: why the key is unusable, if it is, whether it can read logs, and whether it is a Full Access key. */
 export interface KeyCheck {
   problem: string | null;
   logs: boolean;
+  full: boolean;
 }
 
 /** Returns whether a key can do what this script needs, and whether it can read the Points Building log. */
@@ -186,21 +145,22 @@ export async function checkApiKey(key: string): Promise<KeyCheck> {
     ["Level leaderboard", () => tornGet("torn/hof", { cat: "level", limit: 1 }, key)],
     ["Racing records", () => tornGet("racing/6/records", { cat: "A" }, key)],
     ["Points market", () => tornGet("market/pointsmarket", {}, key)],
-    ["City stats", () => tornGet("torn/stats", {}, key)],
   ];
   for (const [name, step] of steps) {
     try {
       await step();
     } catch (error) {
-      return { problem: `${name}: ${reason(error)}`, logs: false };
+      return { problem: `${name}: ${reason(error)}`, logs: false, full: false };
     }
   }
   // Only the Point Merit Tracker reads logs, so a public key is still worth saving for the rest.
   try {
     await tornGet("user/log", { cat: pointsBuildingCategory(), limit: 1 }, key);
   } catch (error) {
-    if (error instanceof ApiError && error.code === ACCESS_TOO_LOW) return { problem: null, logs: false };
-    return { problem: `Points Building log: ${reason(error)}`, logs: false };
+    if (error instanceof ApiError && error.code === ACCESS_TOO_LOW) return { problem: null, logs: false, full: false };
+    return { problem: `Points Building log: ${reason(error)}`, logs: false, full: false };
   }
-  return { problem: null, logs: true };
+  // Only a Custom or Full Access key reads logs, so only here is it worth asking which one this is.
+  const info = await tornGet<{ info?: { access?: { type?: string } } }>("key/info", {}, key).catch(() => null);
+  return { problem: null, logs: true, full: info?.info?.access?.type === "Full Access" };
 }

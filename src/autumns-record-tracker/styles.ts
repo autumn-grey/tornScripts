@@ -102,6 +102,13 @@ const CSS = `
   .art-field-link:hover {
     text-decoration: underline;
   }
+  .art-key-prompt {
+    color: #a9d1ff !important;
+    text-decoration: none;
+  }
+  .art-key-prompt:hover {
+    text-decoration: underline;
+  }
   .art-key-note {
     font-size: 11px;
     line-height: 15px;
@@ -157,6 +164,9 @@ const CSS = `
   }
   .art-good {
     color: #9fdf6f;
+  }
+  .art-warn {
+    color: #f0c674;
   }
   .art-bad {
     color: #ff8f8f;
@@ -443,6 +453,34 @@ const CSS = `
   /* As wide as the longer of its title and figure, so the line under the title can match. */
   .art-fact-inner {
     display: inline-block;
+  }
+  .art-has-tip {
+    position: relative;
+    cursor: help;
+    outline: none;
+  }
+  /* Opens upwards over the table: the body scrolls sideways, so anything below the facts would be clipped. */
+  .art-tip {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    width: max-content;
+    max-width: 260px;
+    padding: 6px 9px;
+    border: 1px solid #191919;
+    border-radius: 4px;
+    background: linear-gradient(#555, #333);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    font-size: 12px;
+    line-height: 17px;
+    text-align: center;
+  }
+  .art-has-tip:hover .art-tip,
+  .art-has-tip:focus .art-tip {
+    display: block;
   }
   .art-fact-title {
     font-family: var(--art-title-font);

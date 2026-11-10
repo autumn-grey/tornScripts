@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Record Tracker
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.0.5
 // @description  Displays your progress towards achieving all merits requiring points purchases, estimates your level progress and allows you to see all car classes' record lists.
 // @author       AutumnGrey
 // @license      MIT
@@ -80,7 +80,7 @@
   var POINTS_BUILDING_CATEGORY = 113;
   var POINTS_BUILDING_TITLE = /^points building$/i;
   var CATEGORY_SETTING = "LOG_CATEGORY";
-  var API_KEY_CREATE_URL = `https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=AutumnRTv1&user=hof,log&torn=hof,logcategories,stats&racing=records&market=pointsmarket&logIds=${POINTS_BUILDING_CATEGORY}`;
+  var API_KEY_CREATE_URL = `https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=AutumnRTv1&user=hof,log&torn=hof,logcategories&racing=records&market=pointsmarket&logIds=${POINTS_BUILDING_CATEGORY}`;
   var POINT_VALUE_MAX_AGE_MS = 10 * 6e4;
   var POINT_VALUE_SETTING = "POINT_VALUE";
   var ApiError = class extends Error {
@@ -112,45 +112,14 @@
     if (stored && Date.now() - stored.fetchedAt < POINT_VALUE_MAX_AGE_MS) return stored;
     const body = await tornGet("market/pointsmarket", {}, key);
     const prices = (body.pointsmarket ?? []).map((listing) => listing.cost ?? 0).filter((cost) => cost > 0);
-    if (prices.length === 0) throw new ApiError("No points listed", null);
     const value = { price: median(prices), listings: prices.length, fetchedAt: Date.now() };
     writeSetting(POINT_VALUE_SETTING, value);
     return value;
   }
-  var YEAR_SAMPLES = 12;
-  var DAY_MS = 24 * 60 * 6e4;
-  var YEAR_AVERAGE_SETTING = "POINT_YEAR_AVERAGE";
-  async function fetchYearAverage(key) {
-    const stored = readSetting(YEAR_AVERAGE_SETTING, null);
-    if (stored && Date.now() - stored.fetchedAt < DAY_MS) return stored;
-    const now = Math.floor(Date.now() / 1e3);
-    const step = Math.floor(365 * DAY_MS / 1e3 / YEAR_SAMPLES);
-    const prices = [];
-    for (let sample = 0; sample < YEAR_SAMPLES; sample++) {
-      const body = await tornGet(
-        "torn/stats",
-        { timestamp: now - sample * step },
-        key
-      );
-      const price = body.stats?.currency?.points_average_cost;
-      if (typeof price === "number" && price > 0) prices.push(price);
-    }
-    if (prices.length === 0) throw new ApiError("No point prices in the city stats", null);
-    const average = {
-      price: prices.reduce((sum, price) => sum + price, 0) / prices.length,
-      fetchedAt: Date.now()
-    };
-    log("point prices over the year", prices, average);
-    writeSetting(YEAR_AVERAGE_SETTING, average);
-    return average;
-  }
+  var POINT_AVERAGE = { price: 32844, from: "2025-11-08", to: "2026-11-07" };
   async function fetchMyLevel(key) {
     const body = await tornGet("user/hof", {}, key);
-    const level = body.hof?.level;
-    if (typeof level?.value !== "number" || typeof level.rank !== "number") {
-      throw new ApiError("No level in the Hall of Fame", null);
-    }
-    return { level: level.value, position: level.rank };
+    return { level: body.hof.level.value, position: body.hof.level.rank };
   }
   function pointsBuildingCategory() {
     return readSetting(CATEGORY_SETTING, POINTS_BUILDING_CATEGORY);
@@ -162,7 +131,7 @@
       key
     );
     const found = (body.logcategories ?? []).find((category) => POINTS_BUILDING_TITLE.test(category.title));
-    if (!found) throw new ApiError("No Points building log category", null);
+    if (!found) return pointsBuildingCategory();
     writeSetting(CATEGORY_SETTING, found.id);
     return found.id;
   }
@@ -174,23 +143,38 @@
       ["Log categories", () => confirmCategory(key)],
       ["Level leaderboard", () => tornGet("torn/hof", { cat: "level", limit: 1 }, key)],
       ["Racing records", () => tornGet("racing/6/records", { cat: "A" }, key)],
-      ["Points market", () => tornGet("market/pointsmarket", {}, key)],
-      ["City stats", () => tornGet("torn/stats", {}, key)]
+      ["Points market", () => tornGet("market/pointsmarket", {}, key)]
     ];
     for (const [name, step] of steps) {
       try {
         await step();
       } catch (error) {
-        return { problem: `${name}: ${reason(error)}`, logs: false };
+        return { problem: `${name}: ${reason(error)}`, logs: false, full: false };
       }
     }
     try {
       await tornGet("user/log", { cat: pointsBuildingCategory(), limit: 1 }, key);
     } catch (error) {
-      if (error instanceof ApiError && error.code === ACCESS_TOO_LOW) return { problem: null, logs: false };
-      return { problem: `Points Building log: ${reason(error)}`, logs: false };
+      if (error instanceof ApiError && error.code === ACCESS_TOO_LOW) return { problem: null, logs: false, full: false };
+      return { problem: `Points Building log: ${reason(error)}`, logs: false, full: false };
     }
-    return { problem: null, logs: true };
+    const info = await tornGet("key/info", {}, key).catch(() => null);
+    return { problem: null, logs: true, full: info?.info?.access?.type === "Full Access" };
+  }
+
+  // src/autumns-record-tracker/keyPrompt.ts
+  var SETTINGS_FLAG = "art-settings";
+  var SETTINGS_URL = `https://www.torn.com/preferences.php?${SETTINGS_FLAG}=1`;
+  var KEY_ERRORS = /* @__PURE__ */ new Set([2, 16]);
+  function isKeyProblem(error) {
+    return error instanceof ApiError && error.code !== null && KEY_ERRORS.has(error.code);
+  }
+  function keyPrompt() {
+    const link = document.createElement("a");
+    link.className = "art-key-prompt";
+    link.href = SETTINGS_URL;
+    link.textContent = "Please load a valid API Key in script settings";
+    return link;
   }
 
   // src/autumns-record-tracker/styles.ts
@@ -292,6 +276,13 @@
   .art-field-link:hover {
     text-decoration: underline;
   }
+  .art-key-prompt {
+    color: #a9d1ff !important;
+    text-decoration: none;
+  }
+  .art-key-prompt:hover {
+    text-decoration: underline;
+  }
   .art-key-note {
     font-size: 11px;
     line-height: 15px;
@@ -347,6 +338,9 @@
   }
   .art-good {
     color: #9fdf6f;
+  }
+  .art-warn {
+    color: #f0c674;
   }
   .art-bad {
     color: #ff8f8f;
@@ -633,6 +627,34 @@
   /* As wide as the longer of its title and figure, so the line under the title can match. */
   .art-fact-inner {
     display: inline-block;
+  }
+  .art-has-tip {
+    position: relative;
+    cursor: help;
+    outline: none;
+  }
+  /* Opens upwards over the table: the body scrolls sideways, so anything below the facts would be clipped. */
+  .art-tip {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    width: max-content;
+    max-width: 260px;
+    padding: 6px 9px;
+    border: 1px solid #191919;
+    border-radius: 4px;
+    background: linear-gradient(#555, #333);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    font-size: 12px;
+    line-height: 17px;
+    text-align: center;
+  }
+  .art-has-tip:hover .art-tip,
+  .art-has-tip:focus .art-tip {
+    display: block;
   }
   .art-fact-title {
     font-family: var(--art-title-font);
@@ -947,7 +969,7 @@
     table.insertAdjacentElement("afterend", widget);
     const key = readKey();
     if (!key) {
-      widget.textContent = "Level Progress needs a Record API Key";
+      widget.replaceChildren(keyPrompt());
       return;
     }
     widget.textContent = "Loading level progress…";
@@ -956,7 +978,8 @@
       ({ me, band }) => drawBar(widget, me, band),
       (error) => {
         progress = null;
-        widget.textContent = `Level Progress: ${error instanceof Error ? error.message : "API error"}`;
+        if (isKeyProblem(error)) widget.replaceChildren(keyPrompt());
+        else widget.textContent = `Level Progress: ${error instanceof Error ? error.message : "API error"}`;
       }
     );
   }
@@ -975,6 +998,8 @@
   };
   var SECTION_ID = "art-prefs-section";
   var JOIN_WAIT_MS = 2e3;
+  var cameForSettings = new URLSearchParams(location.search).has(SETTINGS_FLAG);
+  var scrolled = false;
   function buildApiKeyRow() {
     const row = document.createElement("div");
     row.className = "art-row art-row-wide";
@@ -1043,7 +1068,7 @@
       check.disabled = true;
       result.textContent = "Checking…";
       result.className = "art-key-result";
-      void checkApiKey(key).then(({ problem, logs }) => {
+      void checkApiKey(key).then(({ problem, logs, full }) => {
         check.disabled = false;
         if (problem) {
           result.textContent = problem;
@@ -1051,6 +1076,11 @@
           return;
         }
         writeSetting(API_KEY_SETTING, key);
+        if (full) {
+          result.textContent = "Full Access will work but is not required for this script. For your security, the custom API key, which has significantly less permission, is suggested.";
+          result.className = "art-key-result art-warn";
+          return;
+        }
         result.textContent = logs ? "Saved" : "Saved, without log access";
         result.className = "art-key-result art-good";
       });
@@ -1120,7 +1150,7 @@
       event.preventDefault();
       title.click();
     });
-    set(readSetting(PANEL_OPEN_SETTING, true));
+    set(cameForSettings || readSetting(PANEL_OPEN_SETTING, true));
     return panel;
   }
   function findAnchor() {
@@ -1132,12 +1162,19 @@
   }
   var section = null;
   var startedAt = Date.now();
+  function scrollToSettings() {
+    if (!cameForSettings || scrolled || !section?.isConnected) return;
+    scrolled = true;
+    const target = section.offsetParent ? section : section.closest("#aue-prefs-panel, #" + STANDALONE_PANEL_ID);
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
   function place2() {
     section ?? (section = buildSection());
     const host = document.querySelector(SELECTORS2.enhancerContent);
     if (host) {
       if (host.lastElementChild !== section) host.appendChild(section);
       document.getElementById(STANDALONE_PANEL_ID)?.remove();
+      scrollToSettings();
       return;
     }
     if (Date.now() - startedAt < JOIN_WAIT_MS) return;
@@ -1150,6 +1187,7 @@
     }
     const content = panel.querySelector(".art-content");
     if (content && section.parentElement !== content) content.appendChild(section);
+    scrollToSettings();
   }
   function installPreferencesPanel() {
     injectStyles();
@@ -1408,11 +1446,27 @@
     return element;
   }
   var USUAL_PRICE_RANGE = 250;
-  function priceClass(price, average) {
-    if (!average || Math.abs(price - average.price) <= USUAL_PRICE_RANGE) return "";
-    return price > average.price ? "art-dear" : "art-cheap";
+  function priceClass(price) {
+    if (Math.abs(price - POINT_AVERAGE.price) <= USUAL_PRICE_RANGE) return "";
+    return price > POINT_AVERAGE.price ? "art-dear" : "art-cheap";
   }
-  function drawTracker(body, purchases, value, average, level) {
+  function addAverageTip(element, price) {
+    const dollars = (value) => `$${Math.round(value).toLocaleString("en-US")}`;
+    const gap = Math.round(price - POINT_AVERAGE.price);
+    const tip = document.createElement("div");
+    tip.className = "art-tip";
+    const first = document.createElement("div");
+    first.textContent = `Annual average point value: ${dollars(POINT_AVERAGE.price)}`;
+    const second = document.createElement("div");
+    second.textContent = gap === 0 ? "Current value matches the annual average" : `Current value is ${dollars(Math.abs(gap))} ${gap > 0 ? "above" : "below"} the annual average`;
+    tip.append(first, second);
+    const inner = element.querySelector(".art-fact-inner");
+    if (!inner) return;
+    inner.tabIndex = 0;
+    inner.classList.add("art-has-tip");
+    inner.appendChild(tip);
+  }
+  function drawTracker(body, purchases, value, level) {
     const price = value.price;
     const bought = /* @__PURE__ */ new Map();
     for (const purchase of purchases) {
@@ -1497,10 +1551,12 @@
     const meritPoints = meritsUnlocked * MERIT_PRICE;
     const spent = purchases.reduce((sum, purchase) => sum + pointsOf(purchase), 0);
     const both = (points) => `${short(points)} | $${short(points * price)}`;
+    const pointValue = fact("Point Value", `${short(price)}`, priceClass(price));
+    addAverageTip(pointValue, price);
     const facts = document.createElement("div");
     facts.className = "art-tracker-facts";
     facts.append(
-      fact("Point Value", `$${short(price)}`, priceClass(price, average)),
+      pointValue,
       fact("Honors Unlocked", `${unlocked.length} of ${HONOR_BARS.length}`),
       fact("Unlocked Honors Cost", both(unlockedPoints)),
       fact("Merits Unlocked", `${meritsUnlocked} of ${MERIT_TARGET}`),
@@ -1554,19 +1610,19 @@
     body.appendChild(status);
     const key = readKey();
     if (!key) {
-      status.textContent = "Point Merit Tracker needs a Record API Key";
+      status.replaceChildren(keyPrompt());
       return;
     }
     status.textContent = "Loading…";
     void (async () => {
       try {
         const value = await fetchPointValue(key);
-        const average = await fetchYearAverage(key).catch(() => null);
         const me = await fetchMyLevel(key);
         const entries = await syncPointsLog(key);
-        drawTracker(body, entries.map(readPurchase), value, average, me.level);
+        drawTracker(body, entries.map(readPurchase), value, me.level);
       } catch (error) {
-        status.textContent = `Point Merit Tracker: ${error instanceof Error ? error.message : "API error"}`;
+        if (isKeyProblem(error)) status.replaceChildren(keyPrompt());
+        else status.textContent = `Point Merit Tracker: ${error instanceof Error ? error.message : "API error"}`;
       }
     })();
   }
@@ -1672,7 +1728,7 @@
       const status = document.createElement("li");
       status.className = "art-class-status";
       if (!key) {
-        status.textContent = "Needs a Record API Key";
+        status.replaceChildren(keyPrompt());
         this.list.replaceChildren(status);
         return;
       }
@@ -1689,7 +1745,8 @@
         },
         (error) => {
           if (shown !== this.shown) return;
-          status.textContent = error instanceof Error ? error.message : "API error";
+          if (isKeyProblem(error)) status.replaceChildren(keyPrompt());
+          else status.textContent = error instanceof Error ? error.message : "API error";
         }
       );
     }

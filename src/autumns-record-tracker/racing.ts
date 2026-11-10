@@ -7,6 +7,7 @@
 // after it opens, so the tabs are found as they arrive.
 
 import { tornGet } from "./api";
+import { isKeyProblem, keyPrompt } from "./keyPrompt";
 import { readKey } from "./settings";
 import { injectStyles } from "./styles";
 
@@ -137,7 +138,7 @@ class TrackPicker {
     const status = document.createElement("li");
     status.className = "art-class-status";
     if (!key) {
-      status.textContent = "Needs a Record API Key";
+      status.replaceChildren(keyPrompt());
       this.list.replaceChildren(status);
       return;
     }
@@ -154,7 +155,8 @@ class TrackPicker {
       },
       (error: unknown) => {
         if (shown !== this.shown) return;
-        status.textContent = error instanceof Error ? error.message : "API error";
+        if (isKeyProblem(error)) status.replaceChildren(keyPrompt());
+        else status.textContent = error instanceof Error ? error.message : "API error";
       },
     );
   }

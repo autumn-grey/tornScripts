@@ -5,6 +5,7 @@
 // the same, which steps aside if the Enhancer's panel turns up later.
 
 import { API_KEY_CREATE_URL, checkApiKey } from "./api";
+import { SETTINGS_FLAG } from "./keyPrompt";
 import {
   API_KEY_SETTING,
   FEATURES,
@@ -27,6 +28,9 @@ const SELECTORS = {
 const SECTION_ID = "art-prefs-section";
 /** How long to wait for the UI Enhancer's panel before drawing one of our own. */
 const JOIN_WAIT_MS = 2000;
+/** Whether this visit came from a "load a valid API Key" link, so the settings should be scrolled to. */
+const cameForSettings = new URLSearchParams(location.search).has(SETTINGS_FLAG);
+let scrolled = false;
 
 /** Returns the row holding the API key. */
 function buildApiKeyRow(): HTMLElement {
@@ -111,7 +115,7 @@ function buildApiKeyRow(): HTMLElement {
     check.disabled = true;
     result.textContent = "Checking…";
     result.className = "art-key-result";
-    void checkApiKey(key).then(({ problem, logs }) => {
+    void checkApiKey(key).then(({ problem, logs, full }) => {
       check.disabled = false;
       if (problem) {
         result.textContent = problem;
@@ -119,6 +123,12 @@ function buildApiKeyRow(): HTMLElement {
         return;
       }
       writeSetting(API_KEY_SETTING, key);
+      if (full) {
+        result.textContent =
+          "Full Access will work but is not required for this script. For your security, the custom API key, which has significantly less permission, is suggested.";
+        result.className = "art-key-result art-warn";
+        return;
+      }
       result.textContent = logs ? "Saved" : "Saved, without log access";
       result.className = "art-key-result art-good";
     });
@@ -206,7 +216,7 @@ function buildStandalonePanel(): HTMLElement {
     event.preventDefault();
     title.click();
   });
-  set(readSetting<boolean>(PANEL_OPEN_SETTING, true));
+  set(cameForSettings || readSetting<boolean>(PANEL_OPEN_SETTING, true));
   return panel;
 }
 
@@ -222,6 +232,15 @@ function findAnchor(): Element | null {
 let section: HTMLElement | null = null;
 const startedAt = Date.now();
 
+/** Scrolls to the settings once, when they are on the page and this visit asked for them. */
+function scrollToSettings(): void {
+  if (!cameForSettings || scrolled || !section?.isConnected) return;
+  scrolled = true;
+  // A collapsed UI Enhancer panel hides the rows, and a hidden element cannot be scrolled to.
+  const target = section.offsetParent ? section : (section.closest("#aue-prefs-panel, #" + STANDALONE_PANEL_ID) as HTMLElement | null);
+  target?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 /** Puts the rows in the UI Enhancer's panel, or in our own once it is clear that is not coming. */
 function place(): void {
   section ??= buildSection();
@@ -230,6 +249,7 @@ function place(): void {
   if (host) {
     if (host.lastElementChild !== section) host.appendChild(section);
     document.getElementById(STANDALONE_PANEL_ID)?.remove();
+    scrollToSettings();
     return;
   }
   if (Date.now() - startedAt < JOIN_WAIT_MS) return;
@@ -244,6 +264,7 @@ function place(): void {
   }
   const content = panel.querySelector(".art-content");
   if (content && section.parentElement !== content) content.appendChild(section);
+  scrollToSettings();
 }
 
 /** Adds this script's settings to the preferences page. */

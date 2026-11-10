@@ -3,7 +3,8 @@
 // has been bought so far (from the Points Building log), and what the rest
 // costs at the points market's median price.
 
-import { PointValue, YearAverage, fetchMyLevel, fetchPointValue, fetchYearAverage } from "./api";
+import { POINT_AVERAGE, PointValue, fetchMyLevel, fetchPointValue } from "./api";
+import { isKeyProblem, keyPrompt } from "./keyPrompt";
 import { Purchase, PurchaseKind, readPurchase, syncPointsLog } from "./pointsLog";
 import { TRACKER_OPEN_SETTING, readKey, readSetting, writeSetting } from "./settings";
 import { injectStyles } from "./styles";
@@ -239,13 +240,35 @@ function fact(title: string, value: string, className = ""): HTMLElement {
   return element;
 }
 
-/** How far the point price may sit from the year's average and still count as usual. */
+/** How far the point price may sit from the average and still count as usual. */
 const USUAL_PRICE_RANGE = 250;
 
-/** Returns the class colouring the point price against the year's average: dear, cheap or neither. */
-function priceClass(price: number, average: YearAverage | null): string {
-  if (!average || Math.abs(price - average.price) <= USUAL_PRICE_RANGE) return "";
-  return price > average.price ? "art-dear" : "art-cheap";
+/** Returns the class colouring the point price against the average: dear, cheap or neither. */
+function priceClass(price: number): string {
+  if (Math.abs(price - POINT_AVERAGE.price) <= USUAL_PRICE_RANGE) return "";
+  return price > POINT_AVERAGE.price ? "art-dear" : "art-cheap";
+}
+
+/** Adds a tooltip to the Point Value figure comparing it with the average. */
+function addAverageTip(element: HTMLElement, price: number): void {
+  const dollars = (value: number): string => `$${Math.round(value).toLocaleString("en-US")}`;
+  const gap = Math.round(price - POINT_AVERAGE.price);
+  const tip = document.createElement("div");
+  tip.className = "art-tip";
+  const first = document.createElement("div");
+  first.textContent = `Annual average point value: ${dollars(POINT_AVERAGE.price)}`;
+  const second = document.createElement("div");
+  second.textContent =
+    gap === 0
+      ? "Current value matches the annual average"
+      : `Current value is ${dollars(Math.abs(gap))} ${gap > 0 ? "above" : "below"} the annual average`;
+  tip.append(first, second);
+  const inner = element.querySelector<HTMLElement>(".art-fact-inner");
+  if (!inner) return;
+  // Focusable so a tap opens it on a phone, where there is no hover.
+  inner.tabIndex = 0;
+  inner.classList.add("art-has-tip");
+  inner.appendChild(tip);
 }
 
 /** Draws the table and the figures under it. */
@@ -253,7 +276,6 @@ function drawTracker(
   body: HTMLElement,
   purchases: Purchase[],
   value: PointValue,
-  average: YearAverage | null,
   level: number,
 ): void {
   const price = value.price;
@@ -351,10 +373,13 @@ function drawTracker(
   const spent = purchases.reduce((sum, purchase) => sum + pointsOf(purchase), 0);
   const both = (points: number): string => `${short(points)} | $${short(points * price)}`;
 
+  const pointValue = fact("Point Value", `${short(price)}`, priceClass(price));
+  addAverageTip(pointValue, price);
+
   const facts = document.createElement("div");
   facts.className = "art-tracker-facts";
   facts.append(
-    fact("Point Value", `$${short(price)}`, priceClass(price, average)),
+    pointValue,
     fact("Honors Unlocked", `${unlocked.length} of ${HONOR_BARS.length}`),
     fact("Unlocked Honors Cost", both(unlockedPoints)),
     fact("Merits Unlocked", `${meritsUnlocked} of ${MERIT_TARGET}`),
@@ -420,7 +445,7 @@ function load(body: HTMLElement): void {
 
   const key = readKey();
   if (!key) {
-    status.textContent = "Point Merit Tracker needs a Record API Key";
+    status.replaceChildren(keyPrompt());
     return;
   }
   status.textContent = "Loading…";
@@ -428,13 +453,12 @@ function load(body: HTMLElement): void {
   void (async () => {
     try {
       const value = await fetchPointValue(key);
-      // The colour on the point price is a nicety, so a failure here only leaves it white.
-      const average = await fetchYearAverage(key).catch(() => null);
       const me = await fetchMyLevel(key);
       const entries = await syncPointsLog(key);
-      drawTracker(body, entries.map(readPurchase), value, average, me.level);
+      drawTracker(body, entries.map(readPurchase), value, me.level);
     } catch (error) {
-      status.textContent = `Point Merit Tracker: ${error instanceof Error ? error.message : "API error"}`;
+      if (isKeyProblem(error)) status.replaceChildren(keyPrompt());
+      else status.textContent = `Point Merit Tracker: ${error instanceof Error ? error.message : "API error"}`;
     }
   })();
 }

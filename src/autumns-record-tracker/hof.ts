@@ -9,6 +9,7 @@
 
 import { MyLevel, fetchMyLevel, tornGet } from "./api";
 import { log } from "./debug";
+import { isKeyProblem, keyPrompt } from "./keyPrompt";
 import { readKey, readSetting, writeSetting } from "./settings";
 import { injectStyles } from "./styles";
 
@@ -278,7 +279,7 @@ function place(): void {
 
   const key = readKey();
   if (!key) {
-    widget.textContent = "Level Progress needs a Record API Key";
+    widget.replaceChildren(keyPrompt());
     return;
   }
   widget.textContent = "Loading level progress…";
@@ -287,7 +288,8 @@ function place(): void {
     ({ me, band }) => drawBar(widget, me, band),
     (error: unknown) => {
       progress = null;
-      widget.textContent = `Level Progress: ${error instanceof Error ? error.message : "API error"}`;
+      if (isKeyProblem(error)) widget.replaceChildren(keyPrompt());
+      else widget.textContent = `Level Progress: ${error instanceof Error ? error.message : "API error"}`;
     },
   );
 }
