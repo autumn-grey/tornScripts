@@ -10,6 +10,16 @@ export interface Feature {
   note?: string;
   /** Used when nothing has been stored yet. */
   defaultOn: boolean;
+  /** Off, and greyed out in the panel, in Torn's mobile view. */
+  desktopOnly?: boolean;
+}
+
+// Torn switches to its mobile layout at this width.
+const MOBILE_QUERY = "(max-width: 784px)";
+
+/** Whether Torn is showing its mobile layout. */
+export function isMobileView(): boolean {
+  return matchMedia(MOBILE_QUERY).matches;
 }
 
 export const PAGE_JUMP_BLOCK: Feature = {
@@ -21,8 +31,14 @@ export const PAGE_JUMP_BLOCK: Feature = {
 export const INDEPENDENT_CHAT_TABS: Feature = {
   key: "INDEPENDENT_CHAT_TABS",
   label: "Independent Chat Tabs",
-  note: "Also lets chat align left when dragged",
   defaultOn: true,
+};
+
+export const CHAT_SIDE_BUTTON: Feature = {
+  key: "CHAT_SIDE_BUTTON",
+  label: "Chat Left/Right Button",
+  defaultOn: true,
+  desktopOnly: true,
 };
 
 export const LIST_DISPLAY_EXTENSION: Feature = {
@@ -49,6 +65,12 @@ export const PREFERRED_RECIPIENT: Feature = {
   // what it covers, and what it is called, have changed.
   key: "SHOP_SEND",
   label: "Preferred Recipient",
+  defaultOn: true,
+};
+
+export const DISPLAY_CASE_BUTTON: Feature = {
+  key: "DISPLAY_CASE_BUTTON",
+  label: "Display Case Button",
   defaultOn: true,
 };
 
@@ -94,10 +116,12 @@ export const PANEL_FOOTNOTE =
 export const FEATURES: Feature[] = [
   PAGE_JUMP_BLOCK,
   INDEPENDENT_CHAT_TABS,
+  CHAT_SIDE_BUTTON,
   LIST_DISPLAY_EXTENSION,
   LIST_SORTING,
   NEWS_TICKER,
   PREFERRED_RECIPIENT,
+  DISPLAY_CASE_BUTTON,
 ];
 
 /** The switches that use the API key, shown under it. */
@@ -105,6 +129,7 @@ export const API_FEATURES: Feature[] = [CITY_SHOP_ALERT, CITY_SHOP_STOCK];
 
 /** Whether a feature is switched on. */
 export function isEnabled(feature: Feature): boolean {
+  if (feature.desktopOnly && isMobileView()) return false;
   try {
     const stored = localStorage.getItem(SETTING_PREFIX + feature.key);
     if (stored === null) return feature.defaultOn;

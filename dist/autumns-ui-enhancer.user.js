@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.20.26
+// @version      0.22.12
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -32,6 +32,10 @@
 
   // src/autumns-ui-enhancer/settings.ts
   var SETTING_PREFIX = "AUE_";
+  var MOBILE_QUERY = "(max-width: 784px)";
+  function isMobileView() {
+    return matchMedia(MOBILE_QUERY).matches;
+  }
   var PAGE_JUMP_BLOCK = {
     key: "PAGE_JUMP_BLOCK",
     label: "Page Jump Block",
@@ -40,8 +44,13 @@
   var INDEPENDENT_CHAT_TABS = {
     key: "INDEPENDENT_CHAT_TABS",
     label: "Independent Chat Tabs",
-    note: "Also lets chat align left when dragged",
     defaultOn: true
+  };
+  var CHAT_SIDE_BUTTON = {
+    key: "CHAT_SIDE_BUTTON",
+    label: "Chat Left/Right Button",
+    defaultOn: true,
+    desktopOnly: true
   };
   var LIST_DISPLAY_EXTENSION = {
     key: "LIST_DISPLAY_EXTENSION",
@@ -66,6 +75,11 @@
     label: "Preferred Recipient",
     defaultOn: true
   };
+  var DISPLAY_CASE_BUTTON = {
+    key: "DISPLAY_CASE_BUTTON",
+    label: "Display Case Button",
+    defaultOn: true
+  };
   var CITY_SHOP_ALERT = {
     // The key keeps the feature's first name so nobody's choice is forgotten.
     key: "CITY_SHOP_ALERT",
@@ -87,13 +101,16 @@
   var FEATURES = [
     PAGE_JUMP_BLOCK,
     INDEPENDENT_CHAT_TABS,
+    CHAT_SIDE_BUTTON,
     LIST_DISPLAY_EXTENSION,
     LIST_SORTING,
     NEWS_TICKER,
-    PREFERRED_RECIPIENT
+    PREFERRED_RECIPIENT,
+    DISPLAY_CASE_BUTTON
   ];
   var API_FEATURES = [CITY_SHOP_ALERT, CITY_SHOP_STOCK];
   function isEnabled(feature) {
+    if (feature.desktopOnly && isMobileView()) return false;
     try {
       const stored = localStorage.getItem(SETTING_PREFIX + feature.key);
       if (stored === null) return feature.defaultOn;
@@ -170,9 +187,7 @@
     const response = await fetch(`${STOCK_URL}?${params}`, { credentials: "omit" });
     const body = await response.json();
     if (body.error) throw new Error(body.error.error ?? "API error");
-    const shops = parseShops(body);
-    log("city shop: stock", shops);
-    return shops;
+    return parseShops(body);
   }
   function readStock() {
     try {
@@ -188,6 +203,7 @@
     if (stored && Date.now() - stored.fetchedAt < maxAgeMs) return stored.shops;
     try {
       const shops = await fetchCityShops(key);
+      if (JSON.stringify(shops) !== JSON.stringify(stored?.shops)) log("city shop: stock changed", shops);
       writeSetting(STOCK_STATE_SETTING, JSON.stringify({ fetchedAt: Date.now(), shops }));
       return shops;
     } catch (error) {
@@ -208,6 +224,23 @@
   }
   function writeCheckedItems(ids) {
     writeSetting(STOCK_ITEMS_SETTING, JSON.stringify([...ids]));
+  }
+
+  // src/autumns-ui-enhancer/ownChanges.ts
+  var OWN_SELECTOR = '[id^="aue-"]';
+  function isOurs(node) {
+    const element = node instanceof Element ? node : node.parentElement;
+    return element?.closest(OWN_SELECTOR) != null;
+  }
+  function onlyOurs(records) {
+    for (const record of records) {
+      if (isOurs(record.target)) continue;
+      if (record.removedNodes.length > 0) return false;
+      for (const node of record.addedNodes) {
+        if (!isOurs(node)) return false;
+      }
+    }
+    return true;
   }
 
   // src/autumns-ui-enhancer/purchaseText.ts
@@ -251,17 +284,20 @@
   }
   var BAG_OPEN = bagIcon("#f2cd92", "#c38d55", "#e9c48c");
   var BAG_DONE = bagIcon("#a8e67a", "#4f9a2e", "#93d665");
-  var CITY_URL2 = "https://www.torn.com/city.php";
+  var BAG_NO_KEY = bagIcon("#f28a7e", "#b8392c", "#ec7a6d");
   var LOG_URL = "https://api.torn.com/v2/user/log";
   var SHOP_BUY_LOG_ID = 4200;
   var DAILY_LIMIT = 100;
   var DAY_S = 86400;
   var REFRESH_MS = 2 * 6e4;
+  var STOCK_REFRESH_MS = 3e4;
+  var STOCK_SLACK_MS = 2e3;
   var AFTER_BUY_MS = 1500;
   var MIN_GAP_MS = 5e3;
   var PURCHASE_TEXT = /\byou bought\s+(?:([\d,]+)\s*x\b|an?\s)/i;
   var STATE_SETTING = "CITY_SHOP_STATE";
   var SHOPS_PATH = "/shops.php";
+  var SETTINGS_URL = "/preferences.php";
   var ICON_ID = "aue-city-shop-icon";
   var TIP_ID = "aue-city-shop-tip";
   var STOCK_ID = "aue-city-shop-stock";
@@ -306,8 +342,8 @@
   }
   function quantityOf(entry) {
     const data = entry.data ?? {};
-    for (const field of ["quantity", "qty", "amount"]) {
-      const value = data[field];
+    for (const field2 of ["quantity", "qty", "amount"]) {
+      const value = data[field2];
       if (typeof value === "number") return value;
     }
     const items = data.items;
@@ -339,7 +375,7 @@
     const key = readSetting(API_KEY_SETTING, "").trim();
     if (!key || !isEnabled(CITY_SHOP_STOCK) || readCheckedItems().size === 0) return;
     if (document.hidden) return;
-    await loadStock(key, force ? 0 : REFRESH_MS);
+    await loadStock(key, force ? 0 : STOCK_REFRESH_MS - STOCK_SLACK_MS);
   }
   async function refresh(force = false) {
     const key = readSetting(API_KEY_SETTING, "").trim();
@@ -468,9 +504,31 @@
     if (checked.size === 0) return [];
     return (readStock()?.shops ?? []).map((shop) => ({ ...shop, items: shop.items.filter((item) => checked.has(item.id)) })).filter((shop) => shop.items.length > 0);
   }
+  function needsKey() {
+    const wanted = isEnabled(CITY_SHOP_ALERT) || isEnabled(CITY_SHOP_STOCK);
+    return wanted && readSetting(API_KEY_SETTING, "").trim() === "";
+  }
+  function openSettings() {
+    writeSetting(PANEL_OPEN_SETTING, "1");
+    location.assign(SETTINGS_URL);
+  }
   function fillTip(tip) {
     const title = document.createElement("b");
     title.textContent = "City Shops";
+    if (needsKey()) {
+      const message = document.createElement("div");
+      message.className = "aue-tip-message";
+      const here = document.createElement("span");
+      here.className = "aue-tip-link";
+      here.textContent = "click here";
+      message.append(
+        "This feature requires an API key. Please ",
+        here,
+        " to open Autumn's UI Enhancer settings."
+      );
+      tip.replaceChildren(title, message);
+      return;
+    }
     const count = document.createElement("div");
     count.textContent = `${bought ?? 0}/${DAILY_LIMIT} items bought today`;
     tip.replaceChildren(title, count);
@@ -545,8 +603,15 @@
     const item = document.createElement("li");
     item.id = ICON_ID;
     const link = document.createElement("a");
-    link.href = CITY_URL2;
+    link.setAttribute("role", "button");
+    link.tabIndex = 0;
     link.setAttribute("aria-label", "City shops");
+    link.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        link.click();
+      }
+    });
     item.appendChild(link);
     let touch = false;
     link.addEventListener("pointerdown", (event) => touch = event.pointerType === "touch");
@@ -557,16 +622,17 @@
       if (event.pointerType !== "touch") hideTip();
     });
     link.addEventListener("click", (event) => {
-      if (watchedStock().length === 0) {
-        if (touch && box(TIP_ID).hidden) {
-          event.preventDefault();
-          showTip(link);
-        }
-        return;
-      }
       event.preventDefault();
       if (touch && box(TIP_ID).hidden && box(STOCK_ID).hidden) {
         showTip(link);
+        return;
+      }
+      if (needsKey()) {
+        openSettings();
+        return;
+      }
+      if (watchedStock().length === 0) {
+        if (touch) hideTip();
         return;
       }
       if (box(STOCK_ID).hidden) openStock(link);
@@ -596,16 +662,18 @@
     }
   }
   function apply() {
-    const known = isEnabled(CITY_SHOP_ALERT) && bought !== null;
+    const missingKey = needsKey();
+    const known = isEnabled(CITY_SHOP_ALERT) && bought !== null && !missingKey;
     const left = known && (bought ?? 0) < DAILY_LIMIT;
     setCityLit(left);
-    if (known) {
+    if (known || missingKey) {
       placeIcon();
       const link = document.querySelector(`#${ICON_ID} a`);
-      const state = left ? "open" : "done";
+      const state = missingKey ? "nokey" : left ? "open" : "done";
       if (link && link.dataset.bag !== state) {
         link.dataset.bag = state;
-        link.style.backgroundImage = `url("${left ? BAG_OPEN : BAG_DONE}")`;
+        const bag = missingKey ? BAG_NO_KEY : left ? BAG_OPEN : BAG_DONE;
+        link.style.backgroundImage = `url("${bag}")`;
       }
       const tip = document.getElementById(TIP_ID);
       if (tip && !tip.hidden) refill(tip, fillTip);
@@ -618,7 +686,7 @@
     }
   }
   function installCityShopAlert() {
-    if (!isEnabled(CITY_SHOP_ALERT)) return;
+    if (!isEnabled(CITY_SHOP_ALERT) && !isEnabled(CITY_SHOP_STOCK)) return;
     update = (force = false) => void Promise.all([refresh(force), refreshStock(force)]).then(apply);
     update();
     if (location.pathname === SHOPS_PATH) {
@@ -636,7 +704,7 @@
         }
       }).observe(document.body, { childList: true, subtree: true, characterData: true });
     }
-    setInterval(() => update(), REFRESH_MS);
+    setInterval(() => update(), STOCK_REFRESH_MS);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) update();
     });
@@ -650,9 +718,727 @@
       if (event.key === "Escape") closeStock();
     });
     let timer = 0;
-    new MutationObserver(() => {
+    new MutationObserver((records) => {
+      if (onlyOurs(records)) return;
       clearTimeout(timer);
       timer = window.setTimeout(apply, 120);
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  // src/autumns-ui-enhancer/clash.ts
+  var POPUP_ID = "aue-clash";
+  var SEEN_KEY = "AUE_CLASH_SEEN";
+  var RUNNING_ATTR = "data-aue-running";
+  var KNOWN_SCRIPTS = [
+    {
+      name: "TornW3B Companion",
+      selector: '[id^="w3b-"], [class^="w3b-"], [class*=" w3b-"], [data-w3b-chat-resize]'
+    },
+    { name: "TornTools", selector: '[id^="tt-"], [class^="tt-"], [class*=" tt-"]' }
+  ];
+  var W3B_ONE_TAB_LOCK = "w3b-chat-owner";
+  var CHECK_AFTER_MS = [1500, 6e3, 15e3];
+  var FIGHT_LIMIT = 6;
+  var FIGHT_WINDOW_MS = 1e4;
+  var SQUIGGLES = [
+    [15, 0, -100],
+    [50, 0, -90],
+    [85, 0, -80],
+    [15, 100, 100],
+    [50, 100, 90],
+    [85, 100, 80],
+    [0, 50, 180],
+    [100, 50, 0],
+    [0, 0, -135],
+    [100, 0, -45],
+    [0, 100, 135],
+    [100, 100, 45]
+  ];
+  var reported = /* @__PURE__ */ new Set();
+  var waiting = [];
+  function seen() {
+    try {
+      return new Set(JSON.parse(sessionStorage.getItem(SEEN_KEY) ?? "[]"));
+    } catch {
+      return /* @__PURE__ */ new Set();
+    }
+  }
+  function keyOf(clash) {
+    return `${clash.feature}|${clash.script ?? ""}`;
+  }
+  function reportClash(clash) {
+    const key = keyOf(clash);
+    if (reported.has(key) || seen().has(key)) return;
+    reported.add(key);
+    log("clash:", clash.feature, "with", clash.script ?? "an unknown script", "-", clash.how);
+    if (!document.body) {
+      waiting.push(clash);
+      return;
+    }
+    addToPopup(clash);
+  }
+  function popup() {
+    const existing = document.getElementById(POPUP_ID);
+    if (existing) return existing;
+    const box2 = document.createElement("div");
+    box2.id = POPUP_ID;
+    box2.setAttribute("role", "alert");
+    const squiggles = SQUIGGLES.map(
+      ([x, y, angle], index) => `<span class="aue-squiggle" style="left:${x}%;top:${y}%;--aue-angle:${angle}deg;animation-delay:${index % 4 * -0.3}s"><svg viewBox="0 0 30 10"><path d="M1 5q3.5-5 7 0t7 0 7 0 7 0"/></svg></span>`
+    ).join("");
+    box2.innerHTML = `<span class="aue-squiggles" aria-hidden="true">${squiggles}</span><div class="aue-clash-list"></div>`;
+    const dismiss = () => {
+      if (getSelection()?.toString()) return;
+      const dismissed = seen();
+      for (const key of reported) dismissed.add(key);
+      try {
+        sessionStorage.setItem(SEEN_KEY, JSON.stringify([...dismissed]));
+      } catch {
+      }
+      box2.remove();
+      document.removeEventListener("click", dismiss, true);
+    };
+    setTimeout(() => document.addEventListener("click", dismiss, true));
+    document.body.appendChild(box2);
+    return box2;
+  }
+  function addToPopup(clash) {
+    const line = document.createElement("div");
+    line.className = "aue-clash-line";
+    const feature = document.createElement("span");
+    feature.className = "aue-clash-feature";
+    feature.textContent = clash.feature;
+    const rest = clash.script ? ` clashes with ${clash.script}: ${clash.how}` : ` clash: ${clash.how}`;
+    line.append(feature, rest);
+    popup().querySelector(".aue-clash-list")?.appendChild(line);
+  }
+  function scriptsIn(root) {
+    if (!root) return [];
+    return KNOWN_SCRIPTS.filter(
+      (script) => root.matches(script.selector) || root.querySelector(script.selector)
+    ).map((script) => script.name);
+  }
+  var fights = /* @__PURE__ */ new Map();
+  function noteUndone(feature, what, near) {
+    const now = Date.now();
+    const times = (fights.get(feature) ?? []).filter((time) => now - time < FIGHT_WINDOW_MS);
+    times.push(now);
+    fights.set(feature, times);
+    if (times.length < FIGHT_LIMIT) return;
+    const suspects = scriptsIn(near);
+    const how = `something keeps undoing ${what}, so the two keep fighting over it. Try turning one of them off.`;
+    reportClash(suspects.length > 0 ? { feature, script: suspects.join(" or "), how } : { feature, how });
+  }
+  function claimPage() {
+    const root = document.documentElement;
+    if (root.hasAttribute(RUNNING_ATTR)) {
+      reportClash({
+        feature: "Autumn's UI Enhancer",
+        script: "another copy of itself",
+        how: "it is installed or switched on twice, so this copy has stood down. Remove one in your userscript manager."
+      });
+      return false;
+    }
+    root.setAttribute(RUNNING_ATTR, "0.22.12");
+    return true;
+  }
+  async function w3bOneTabOn() {
+    try {
+      const state = await navigator.locks.query();
+      return [...state.held ?? [], ...state.pending ?? []].some(
+        (lock) => lock.name === W3B_ONE_TAB_LOCK
+      );
+    } catch {
+      return false;
+    }
+  }
+  async function checkKnown() {
+    if (isEnabled(INDEPENDENT_CHAT_TABS) && await w3bOneTabOn()) {
+      reportClash({
+        feature: "Independent Chat Tabs",
+        script: "TornW3B Companion (Chat in one tab only)",
+        how: "both decide which chats each tab shows, so chats can vanish or refuse to come back. Turn one of them off."
+      });
+    }
+  }
+  function installClashCheck(checkMarkers) {
+    for (const clash of waiting.splice(0)) addToPopup(clash);
+    if (!checkMarkers) return;
+    for (const delay2 of CHECK_AFTER_MS) setTimeout(() => void checkKnown(), delay2);
+  }
+
+  // src/autumns-ui-enhancer/tornForms.ts
+  var RFCV_COOKIE = /(?:^|;\s*)rfc_v=([^;]+)/;
+  async function postTorn(url, fields) {
+    const rfcv = RFCV_COOKIE.exec(document.cookie)?.[1] ?? "";
+    const response = await fetch(`${url}?rfcv=${encodeURIComponent(rfcv)}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: new URLSearchParams(fields).toString()
+    });
+    if (!response.ok) throw new Error(`Torn answered ${response.status}`);
+    return response.text();
+  }
+  function cleanAmount(value, max) {
+    const digits = value.replace(/\D+/g, "");
+    const limit = Number(max);
+    if (digits === "" || !(limit > 0)) return digits;
+    return String(Math.min(Number(digits), limit));
+  }
+  function showReply(target, html) {
+    const parsed = new DOMParser().parseFromString(html, "text/html").body;
+    const copy = (from, to) => {
+      for (const node of from.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          to.appendChild(document.createTextNode(node.textContent ?? ""));
+        } else if (node instanceof Element && node.tagName === "B") {
+          const bold = document.createElement("b");
+          copy(node, bold);
+          to.appendChild(bold);
+        } else if (node instanceof Element && node.tagName === "A") {
+          const href = node.getAttribute("href") ?? "";
+          const link = document.createElement("a");
+          if (href.startsWith("/")) link.href = href;
+          link.className = "aue-send-link";
+          copy(node, link);
+          to.appendChild(link);
+        } else {
+          copy(node, to);
+        }
+      }
+    };
+    target.replaceChildren();
+    copy(parsed, target);
+  }
+  function field(label, className, value) {
+    const wrap = document.createElement("label");
+    wrap.className = `aue-send-field ${className}`;
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value;
+    wrap.append(caption, input);
+    return wrap;
+  }
+  function tornButton(text, className) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `torn-btn ${className}`;
+    button.textContent = text;
+    return button;
+  }
+
+  // src/autumns-ui-enhancer/displayCase.ts
+  var DISPLAY_URL = "https://www.torn.com/displaycase.php";
+  var INVENTORY_URL = "https://www.torn.com/inventory.php";
+  var SELECTORS2 = {
+    // One item in a category's list: <ul class="items-cont …"><li data-item="27"
+    // data-category="Primary" data-armoryid="2182…" data-qty="" data-rowkey="u2182…">.
+    // data-qty is empty for a single item. The loadout's equipped tiles are built
+    // the same way, which is why the list is named.
+    row: ".items-cont > li[data-item][data-category][data-rowkey]",
+    // The row's own buttons: <div class="actions right"><ul class="actions-wrap">
+    // with Equip, Send, Sell, Trash, then <li class="clear">. Every slot is
+    // used by some item, so the button is a fifth.
+    actionsBox: ".actions",
+    actions: ".actions-wrap",
+    // Damage, accuracy and the rest, pinned the actions' width from the right.
+    bonuses: ".bonuses",
+    // In the list view, the picture and name: <div class="title left"> at the
+    // row's width less the actions' (646 of 784), holding the 58px picture and
+    // <span class="name-wrap"> at 576px plus 12px padding. Both give up a slot.
+    title: ".title-wrap > .title",
+    nameWrap: ".title-wrap > .title > .name-wrap",
+    // A faction's item on loan, which has Return in place of Send.
+    loaned: "[data-action='return'], .actions-wrap > li.return",
+    // Torn's narrow layout, where the actions open as a bar under the item.
+    accordion: ".ui-accordion-content, .ui-accordion-header",
+    // An equippable item's Equip button names its copy in the inventory.
+    equip: "[data-action='equip'][data-id]",
+    name: ".name-wrap .name",
+    // The counts the row shows: <span class="qty bold d-hide">x5</span> and its
+    // t-hide twin beside the name, and <div class="item-amount qty">5</div>.
+    nameCount: ".name-wrap > .qty",
+    pictureCount: ".item-amount.qty",
+    // The part of the row the panel goes after.
+    body: ".cont-wrap"
+  };
+  var FIVE_CLASS = "aue-display-five";
+  var ROW_ATTR = "data-aue-display-row";
+  var PENDING_ATTR = "data-aue-pending";
+  var SETTLE_MS = 150;
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var CASE_PATH = "M3 2h18v20H3zM5.5 4.5v15h5.25v-15zM13.25 4.5v15h5.25v-15z";
+  function readRow(row) {
+    const key = row.dataset.rowkey ?? "";
+    const itemId = row.dataset.item ?? "";
+    const category = row.dataset.category ?? "";
+    if (!/^[\w-]+$/.test(key) || !/^\d+$/.test(itemId) || !category) return null;
+    const copyId = row.dataset.armoryid ?? row.querySelector(SELECTORS2.equip)?.dataset.id ?? "";
+    const name = row.querySelector(SELECTORS2.name)?.textContent?.trim() ?? "";
+    const held = Number(row.dataset.qty) || 1;
+    return { key, itemId, category, copyId: /^\d+$/.test(copyId) ? copyId : "", name, held };
+  }
+  function caseIcon() {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("aue-display-icon");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", CASE_PATH);
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("fill-rule", "evenodd");
+    svg.appendChild(path);
+    return svg;
+  }
+  function buildBlank(key) {
+    const item = document.createElement("li");
+    item.className = "left aue-display-slot aue-display-blank";
+    item.id = `aue-display-blank-${key}`;
+    return item;
+  }
+  function buildOption(key, name) {
+    const item = document.createElement("li");
+    item.className = "left aue-display-slot aue-display-option";
+    item.id = `aue-display-${key}`;
+    item.setAttribute(ROW_ATTR, key);
+    const wrap = document.createElement("span");
+    wrap.className = "icon-h";
+    wrap.title = "Display this Item";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "wai-btn aue-display-button";
+    button.setAttribute("aria-label", `Add ${name} to your display case`);
+    button.appendChild(caseIcon());
+    const label = document.createElement("span");
+    label.className = "opt-name";
+    label.append("Display ");
+    const more = document.createElement("span");
+    more.className = "t-hide";
+    more.textContent = "this Item";
+    label.appendChild(more);
+    wrap.append(button, label);
+    item.appendChild(wrap);
+    return item;
+  }
+  function buildPanel(row) {
+    const panel = document.createElement("div");
+    panel.className = "aue-send aue-display";
+    panel.id = `aue-display-panel-${row.key}`;
+    panel.setAttribute(ROW_ATTR, row.key);
+    panel.hidden = true;
+    const form = document.createElement("div");
+    form.className = "aue-send-form";
+    if (row.held > 1) {
+      const amount = field("Amount", "aue-send-amount", "1");
+      amount.querySelector("input")?.setAttribute("inputmode", "numeric");
+      form.appendChild(amount);
+    }
+    form.appendChild(tornButton("ADD", "aue-display-add"));
+    const confirm = document.createElement("div");
+    confirm.className = "aue-send-confirm";
+    confirm.hidden = true;
+    const question = document.createElement("div");
+    question.className = "aue-send-question";
+    confirm.append(question, tornButton("YES", "aue-display-yes"), tornButton("NO", "aue-display-no"));
+    const status = document.createElement("div");
+    status.className = "aue-send-status";
+    status.hidden = true;
+    panel.append(form, confirm, status);
+    return panel;
+  }
+  function rowFor(key) {
+    return document.querySelector(`${SELECTORS2.row}[data-rowkey="${key}"]`);
+  }
+  function say(panel, html, failed) {
+    const status = panel.querySelector(".aue-send-status");
+    if (!status) return;
+    showReply(status, html);
+    status.classList.toggle("aue-send-failed", failed);
+    status.hidden = false;
+  }
+  function togglePanel(key) {
+    const rowElement = rowFor(key);
+    const row = rowElement && readRow(rowElement);
+    if (!rowElement || !row) return;
+    let panel = document.getElementById(`aue-display-panel-${key}`);
+    if (!panel) {
+      panel = buildPanel(row);
+      const body = rowElement.querySelector(SELECTORS2.body);
+      if (body) body.insertAdjacentElement("afterend", panel);
+      else rowElement.appendChild(panel);
+    }
+    panel.hidden = !panel.hidden;
+    if (panel.hidden) return;
+    closePanels(panel);
+    cancelAdd(panel);
+    panel.querySelector(".aue-send-status")?.setAttribute("hidden", "");
+    if (!row.copyId && !panel.hasAttribute(COPY_ATTR)) void lookUp(panel, row);
+  }
+  function closePanels(except) {
+    for (const open of document.querySelectorAll(".aue-display:not([hidden])")) {
+      if (open !== except) open.hidden = true;
+    }
+  }
+  function updateCount(rowElement, held) {
+    if (held <= 0) {
+      rowElement.style.display = "none";
+      return;
+    }
+    rowElement.dataset.qty = String(held);
+    for (const label of rowElement.querySelectorAll(SELECTORS2.nameCount)) {
+      label.textContent = held > 1 ? `x${held}` : "";
+    }
+    const badge = rowElement.querySelector(SELECTORS2.pictureCount);
+    if (badge) badge.textContent = held > 1 ? String(held) : "";
+  }
+  var COPY_ATTR = "data-aue-copy";
+  var TYPE_ATTR = "data-aue-type";
+  var inventory = /* @__PURE__ */ new Map();
+  var listNext = /* @__PURE__ */ new Map();
+  var LIST_PAGES_MAX = 10;
+  async function findCopy(itemId, category) {
+    for (const type of ["All", category]) {
+      for (let page = 0; page < LIST_PAGES_MAX && !inventory.has(itemId); page += 1) {
+        const start2 = listNext.get(type) ?? 0;
+        if (listNext.get(type) === null) break;
+        const reply = JSON.parse(
+          await postTorn(INVENTORY_URL, { step: "getList", type, start: String(start2) })
+        );
+        for (const entry of reply.list ?? []) {
+          const kind = String(entry.itemID ?? entry.ID ?? "");
+          if (kind && !entry.equiped && !inventory.has(kind)) inventory.set(kind, entry);
+        }
+        const next = reply.start;
+        const done = reply.loaded === true || !reply.list?.length || typeof next !== "number" || next <= start2;
+        listNext.set(type, done ? null : next);
+      }
+      if (inventory.has(itemId)) break;
+    }
+    return inventory.get(itemId) ?? null;
+  }
+  async function lookUp(panel, row) {
+    panel.setAttribute(COPY_ATTR, "");
+    try {
+      const entry = await findCopy(row.itemId, row.category);
+      const copy = String(entry?.armoryID ?? "");
+      if (!entry || !/^\d+$/.test(copy)) {
+        panel.removeAttribute(COPY_ATTR);
+        say(panel, "Couldn't find this item in your inventory.", true);
+        log("display case: item", row.itemId, "not in the inventory list");
+        return;
+      }
+      panel.setAttribute(COPY_ATTR, copy);
+      if (entry.type2) panel.setAttribute(TYPE_ATTR, entry.type2);
+      log("display case: item", row.itemId, "is copy", copy, entry.type2);
+    } catch (error) {
+      panel.removeAttribute(COPY_ATTR);
+      say(panel, "Couldn't reach Torn. Try again.", true);
+      log("display case: inventory lookup failed", error);
+    }
+  }
+  function heldFor(panel) {
+    const rowElement = rowFor(panel.getAttribute(ROW_ATTR) ?? "");
+    return (rowElement && readRow(rowElement)?.held) ?? 0;
+  }
+  function askToAdd(panel) {
+    const rowElement = rowFor(panel.getAttribute(ROW_ATTR) ?? "");
+    const row = rowElement && readRow(rowElement);
+    if (!row) {
+      say(panel, "This item is no longer on the page.", true);
+      return;
+    }
+    const typed = panel.querySelector(".aue-send-amount input")?.value ?? "1";
+    const amount = cleanAmount(typed, String(heldFor(panel)));
+    if (!amount || amount === "0") {
+      say(panel, "How many should go in?", true);
+      return;
+    }
+    const copyId = row.copyId || panel.getAttribute(COPY_ATTR) || "";
+    if (!copyId) {
+      say(
+        panel,
+        panel.hasAttribute(COPY_ATTR) ? "Still finding this item, try again in a moment." : "Couldn't find this item in your inventory.",
+        true
+      );
+      return;
+    }
+    const fields = {
+      "items[0][amount]": amount,
+      // The inventory list's own category name where it was looked up, as the
+      // row's can differ: the row's Miscellaneous is the list's Other.
+      "items[0][type]": panel.getAttribute(TYPE_ATTR) || row.category,
+      "items[0][id]": copyId,
+      "items[0][itemID]": row.itemId,
+      step: "addInventoryItems"
+    };
+    panel.setAttribute(PENDING_ATTR, JSON.stringify(fields));
+    const question = panel.querySelector(".aue-send-question");
+    if (question) {
+      question.replaceChildren(`Add ${amount} x `);
+      const name = document.createElement("b");
+      name.textContent = row.name || "this item";
+      question.append(name, " to your display case?");
+    }
+    panel.querySelector(".aue-send-form")?.setAttribute("hidden", "");
+    panel.querySelector(".aue-send-status")?.setAttribute("hidden", "");
+    panel.querySelector(".aue-send-confirm")?.removeAttribute("hidden");
+    panel.querySelector(".aue-display-yes")?.focus();
+  }
+  async function addNow(panel) {
+    const yes = panel.querySelector(".aue-display-yes");
+    const raw = panel.getAttribute(PENDING_ATTR);
+    if (!yes || yes.disabled || !raw) return;
+    const fields = JSON.parse(raw);
+    yes.disabled = true;
+    try {
+      const reply = JSON.parse(await postTorn(DISPLAY_URL, fields));
+      log("display case: Torn answered", reply);
+      panel.removeAttribute(PENDING_ATTR);
+      panel.querySelector(".aue-send-confirm")?.setAttribute("hidden", "");
+      const text = reply.logs?.join(" ") || reply.text || "";
+      if (reply.success) {
+        const left = heldFor(panel) - Number(fields["items[0][amount]"]);
+        const amount = panel.querySelector(".aue-send-amount input");
+        if (amount) amount.value = "1";
+        say(panel, text || "Added.", false);
+        const close = document.createElement("a");
+        close.href = "#";
+        close.className = "aue-send-link aue-display-close";
+        close.textContent = "Close";
+        panel.querySelector(".aue-send-status")?.append(" ", close);
+        const rowElement = rowFor(panel.getAttribute(ROW_ATTR) ?? "");
+        if (rowElement) updateCount(rowElement, left);
+      } else {
+        panel.querySelector(".aue-send-form")?.removeAttribute("hidden");
+        say(panel, text || "Torn wouldn't add that.", true);
+      }
+    } catch (error) {
+      say(panel, "Couldn't reach Torn. Try again.", true);
+      log("display case: request failed", error);
+    } finally {
+      yes.disabled = false;
+    }
+  }
+  function cancelAdd(panel) {
+    panel.removeAttribute(PENDING_ATTR);
+    panel.querySelector(".aue-send-confirm")?.setAttribute("hidden", "");
+    panel.querySelector(".aue-send-form")?.removeAttribute("hidden");
+  }
+  function scan() {
+    if (!isEnabled(DISPLAY_CASE_BUTTON)) return;
+    let added = 0;
+    for (const rowElement of document.querySelectorAll(SELECTORS2.row)) {
+      const row = readRow(rowElement);
+      const actions = rowElement.querySelector(SELECTORS2.actions);
+      if (!row || !actions) continue;
+      const existing = rowElement.querySelector(".aue-display-option");
+      const blank = rowElement.querySelector(".aue-display-blank");
+      if (!canDisplay(rowElement)) {
+        if (existing) removeFrom(rowElement);
+        if (!blank) actions.prepend(buildBlank(row.key));
+        if (rowElement.querySelector(SELECTORS2.accordion)) actions.classList.add(FIVE_CLASS);
+        continue;
+      }
+      if (existing) continue;
+      blank?.remove();
+      const option = buildOption(row.key, row.name);
+      actions.prepend(option);
+      if (rowElement.querySelector(SELECTORS2.accordion)) actions.classList.add(FIVE_CLASS);
+      added += 1;
+    }
+    if (added > 0) log("display case: buttons added to", added, "items");
+    for (const rowElement of document.querySelectorAll(SELECTORS2.row)) {
+      const narrowLayout = rowElement.querySelector(SELECTORS2.accordion) !== null;
+      rowElement.querySelector(SELECTORS2.actions)?.classList.toggle(FIVE_CLASS, narrowLayout);
+      matchNeighbour(rowElement);
+      widen(rowElement);
+    }
+  }
+  function relayout() {
+    for (const rowElement of document.querySelectorAll(SELECTORS2.row)) {
+      unwiden(rowElement);
+      rowElement.querySelector(SELECTORS2.actionsBox)?.removeAttribute(WIDE_ATTR);
+      rowElement.querySelector(".aue-display-option")?.removeAttribute(MATCHED_ATTR);
+      const button = rowElement.querySelector(".aue-display-button");
+      button?.removeAttribute("style");
+    }
+    scan();
+  }
+  function canDisplay(rowElement) {
+    if (rowElement.dataset.equipped === "true" || rowElement.classList.contains("bg-green")) return false;
+    return rowElement.querySelector(SELECTORS2.loaned) === null;
+  }
+  function removeFrom(rowElement) {
+    rowElement.querySelector(".aue-display-option")?.remove();
+    rowElement.querySelector(".aue-display")?.remove();
+    unwiden(rowElement);
+    rowElement.querySelector(SELECTORS2.actionsBox)?.removeAttribute(WIDE_ATTR);
+  }
+  var MATCHED_ATTR = "data-aue-matched";
+  function matchNeighbour(rowElement) {
+    const option = rowElement.querySelector(".aue-display-option");
+    const button = option?.querySelector(".aue-display-button");
+    const neighbour = option?.nextElementSibling;
+    const theirs = neighbour?.querySelector("button");
+    if (!option || !button || !neighbour || !theirs || option.hasAttribute(MATCHED_ATTR)) return;
+    const slot = neighbour.getBoundingClientRect();
+    const face = theirs.getBoundingClientRect();
+    if (face.width === 0 || face.height === 0) return;
+    button.style.width = `${face.width}px`;
+    button.style.height = `${face.height}px`;
+    button.style.marginTop = `${face.top - slot.top}px`;
+    button.style.marginLeft = "auto";
+    button.style.marginRight = "auto";
+    option.setAttribute(MATCHED_ATTR, "");
+  }
+  var WIDE_ATTR = "data-aue-wide";
+  var NARROWED = [SELECTORS2.title, SELECTORS2.nameWrap, SELECTORS2.bonuses];
+  function unwiden(rowElement) {
+    const box2 = rowElement.querySelector(SELECTORS2.actionsBox);
+    box2?.style.removeProperty("width");
+    for (const selector of NARROWED) {
+      rowElement.querySelector(selector)?.style.removeProperty("width");
+    }
+    rowElement.querySelector(SELECTORS2.bonuses)?.style.removeProperty("right");
+  }
+  function narrow(element, by) {
+    if (!element) return;
+    const own = parseFloat(getComputedStyle(element).width);
+    if (own > by) element.style.setProperty("width", `${own - by}px`, "important");
+  }
+  function level(a, b) {
+    return Math.abs(a.getBoundingClientRect().top - b.getBoundingClientRect().top) <= 2;
+  }
+  function widen(rowElement) {
+    const box2 = rowElement.querySelector(SELECTORS2.actionsBox);
+    const option = rowElement.querySelector(".aue-display-slot");
+    if (!box2 || !option || box2.hasAttribute(WIDE_ATTR)) return;
+    const boxWidth = box2.getBoundingClientRect().width;
+    if (boxWidth === 0) return;
+    if (getComputedStyle(box2).float !== "right" || rowElement.querySelector(SELECTORS2.accordion)) {
+      box2.setAttribute(WIDE_ATTR, "");
+      return;
+    }
+    const slots = [...box2.querySelectorAll(".actions-wrap > li.left")];
+    const needed = Math.ceil(slots.reduce((sum, slotElement) => {
+      const style = getComputedStyle(slotElement);
+      return sum + slotElement.getBoundingClientRect().width + parseFloat(style.marginLeft) + parseFloat(style.marginRight);
+    }, 0));
+    const slot = needed - boxWidth;
+    if (slot <= 0) {
+      box2.setAttribute(WIDE_ATTR, String(boxWidth));
+      return;
+    }
+    const boxTop = box2.getBoundingClientRect().top;
+    const title = rowElement.querySelector(SELECTORS2.title);
+    const bonuses = rowElement.querySelector(SELECTORS2.bonuses);
+    const pinned = bonuses !== null && getComputedStyle(bonuses).position === "absolute";
+    const titleBeside = title !== null && level(title, box2);
+    const bonusesBeside = bonuses !== null && !pinned && level(bonuses, box2);
+    const neighbour = titleBeside ? title : bonusesBeside ? bonuses : null;
+    const neighbourHeight = neighbour?.getBoundingClientRect().height ?? 0;
+    const width = boxWidth + slot;
+    box2.style.setProperty("width", `${width}px`, "important");
+    if (titleBeside) {
+      narrow(title, slot);
+      narrow(rowElement.querySelector(SELECTORS2.nameWrap), slot);
+    }
+    if (bonusesBeside) narrow(bonuses, slot);
+    if (pinned) bonuses.style.setProperty("right", `${width}px`, "important");
+    const lastSlot = slots[slots.length - 1];
+    const stayed = Math.abs(box2.getBoundingClientRect().top - boxTop) <= 1;
+    const oneLine = !lastSlot || level(lastSlot, option);
+    const neighbourKept = !neighbour || neighbour.getBoundingClientRect().height <= neighbourHeight + 1;
+    if (!stayed || !oneLine || !neighbourKept) {
+      unwiden(rowElement);
+      box2.setAttribute(WIDE_ATTR, "");
+      log("display case: no room for a fifth slot in", rowElement.dataset.rowkey);
+      return;
+    }
+    box2.setAttribute(WIDE_ATTR, String(width));
+  }
+  function installListeners() {
+    document.addEventListener(
+      "click",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (!target.closest(".aue-display")) setTimeout(scan, SETTLE_MS * 2);
+        const clickedRow = target.closest(SELECTORS2.row);
+        if (clickedRow) closePanels(clickedRow.querySelector(".aue-display"));
+        const option = target.closest(".aue-display-option");
+        if (option) {
+          event.preventDefault();
+          event.stopPropagation();
+          togglePanel(option.getAttribute(ROW_ATTR) ?? "");
+          return;
+        }
+        const panel = target.closest(".aue-display");
+        if (!panel) return;
+        event.stopPropagation();
+        if (target.closest(".aue-display-close")) {
+          event.preventDefault();
+          panel.hidden = true;
+        } else if (target.closest(".aue-display-add")) askToAdd(panel);
+        else if (target.closest(".aue-display-yes")) void addNow(panel);
+        else if (target.closest(".aue-display-no")) cancelAdd(panel);
+      },
+      true
+    );
+    document.addEventListener(
+      "beforeinput",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) || !target.closest(".aue-display .aue-send-amount")) return;
+        if (event.data && /\D/.test(event.data)) event.preventDefault();
+      },
+      true
+    );
+    document.addEventListener(
+      "input",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) || !target.closest(".aue-display .aue-send-amount")) return;
+        const panel = target.closest(".aue-display");
+        const held = panel ? String(heldFor(panel)) : "";
+        const cleaned = cleanAmount(target.value, held);
+        if (cleaned !== target.value) target.value = cleaned;
+      },
+      true
+    );
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key !== "Enter") return;
+        const target = event.target;
+        if (target instanceof Element && target.closest(".aue-display")) event.preventDefault();
+      },
+      true
+    );
+  }
+  function installDisplayCase() {
+    if (!isEnabled(DISPLAY_CASE_BUTTON)) {
+      log("display case: switched off");
+      return;
+    }
+    installListeners();
+    scan();
+    let resizeTimer = 0;
+    addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(relayout, SETTLE_MS * 2);
+    });
+    let timer = 0;
+    new MutationObserver((records) => {
+      if (onlyOurs(records)) return;
+      clearTimeout(timer);
+      timer = window.setTimeout(scan, SETTLE_MS);
     }).observe(document.body, { childList: true, subtree: true });
   }
 
@@ -848,7 +1634,7 @@
   var CONTENT_ROOT_SELECTOR = ".content-wrapper, #mainContainer";
   var MAX_REQUESTS = 5;
   var THROTTLE_MS = 150;
-  var SETTLE_MS = 150;
+  var SETTLE_MS2 = 150;
   var MAX_SETTLE_MS = 1e3;
   var SIZE_SETTING = "ITEMS_PER_PAGE";
   var CONTROL_ID = "aue-per-page";
@@ -1086,7 +1872,7 @@
   }
   function findList(widget, step) {
     let node = widget;
-    for (let level = 0; node && node !== document.body && level <= MAX_CLIMB; ) {
+    for (let level2 = 0; node && node !== document.body && level2 <= MAX_CLIMB; ) {
       if (node.matches(CONTENT_ROOT_SELECTOR)) break;
       for (const sibling of siblingsOf(node)) {
         const container = findRowContainer(sibling, step);
@@ -1106,7 +1892,7 @@
         }
       }
       node = node.parentElement;
-      level += 1;
+      level2 += 1;
     }
     return null;
   }
@@ -1769,7 +2555,7 @@
           deadline = 0;
           void apply2();
         },
-        Math.max(0, Math.min(SETTLE_MS, deadline - now))
+        Math.max(0, Math.min(SETTLE_MS2, deadline - now))
       );
     };
     onRequestCaptured = schedule;
@@ -1790,7 +2576,7 @@
   var MIN_COLUMNS = 2;
   var MIN_ROWS = 2;
   var ALREADY_SORTABLE = ".sortable, .jquery-tablesorter";
-  var SETTLE_MS2 = 150;
+  var SETTLE_MS3 = 150;
   var SORTABLE_CLASS = "aue-sort";
   var MARK_CLASS = "aue-sort-mark";
   var ACTIVE_CLASS = "aue-sort-active";
@@ -1806,16 +2592,16 @@
     return match ? Number(match[0]) : null;
   }
   function isNumericColumn(rows, column) {
-    let seen2 = 0;
+    let seen3 = 0;
     for (const row of rows) {
       const text = column.read(row);
       if (text === "") continue;
       if (numberIn(text) === null) return false;
-      seen2 += 1;
+      seen3 += 1;
     }
-    return seen2 > 0;
+    return seen3 > 0;
   }
-  function keyOf(cell) {
+  function keyOf2(cell) {
     for (const name of cell.classList) {
       if (!NOT_A_COLUMN.has(name)) return name;
     }
@@ -1843,7 +2629,7 @@
     const sample = rows.slice(0, 3);
     const columns = [];
     for (const cell of candidate.children) {
-      const key = keyOf(cell);
+      const key = keyOf2(cell);
       if (!key) continue;
       if (!sample.some((row) => cellOf(row, key))) continue;
       columns.push({
@@ -2007,9 +2793,11 @@
     const schedule = () => {
       if (writing2) return;
       clearTimeout(timer);
-      timer = window.setTimeout(pass, SETTLE_MS2);
+      timer = window.setTimeout(pass, SETTLE_MS3);
     };
-    new MutationObserver(schedule).observe(document.body, {
+    new MutationObserver((records) => {
+      if (!onlyOurs(records)) schedule();
+    }).observe(document.body, {
       childList: true,
       subtree: true
     });
@@ -2018,6 +2806,8 @@
   }
 
   // src/autumns-ui-enhancer/localChat.ts
+  var CHAT_ROOT_SELECTOR = "#chatRoot";
+  var CHAT_ID_SELECTOR = 'div[id^="public_"], div[id^="private-"], div[id^="faction"], div[id^="company"], div#staff';
   var MINIMISE_SELECTOR = 'svg[aria-label^="Minimize"]';
   var CLOSE_SELECTOR = 'svg[aria-label^="Close chat"]';
   var TASKBAR_PREFIX = "chat_panel_button:";
@@ -2032,12 +2822,11 @@
   var SIDE_KEY = "AUE_CHAT_SIDE";
   var PEOPLE_PANEL_SELECTOR = "#people_panel";
   var MENU_OPEN_MS = 3e3;
-  var HEADER_DEPTH = 34;
-  var DRAG_THRESHOLD = 24;
   var TASKBAR_CLIMB = 4;
-  var NOT_A_HANDLE = `input, textarea, a, ${MINIMISE_SELECTOR}, ${CLOSE_SELECTOR}`;
+  var SIDE_BUTTON_ID = "aue-chat-side";
+  var SIDE_BUTTON_LEFT = "aue-chat-side-left";
   var FAILSAFE_MS = 5e3;
-  var SETTLE_MS3 = 120;
+  var SETTLE_MS4 = 120;
   var MAX_SETTLE_MS2 = 600;
   var SAFE_ID = /^[A-Za-z0-9_-]+$/;
   var earlyHide = null;
@@ -2092,7 +2881,7 @@
     }
   }
   function barSide() {
-    if (!isEnabled(INDEPENDENT_CHAT_TABS)) return "right";
+    if (!isEnabled(CHAT_SIDE_BUTTON)) return "right";
     try {
       return sessionStorage.getItem(SIDE_KEY) === "left" ? "left" : "right";
     } catch {
@@ -2117,6 +2906,7 @@
     const widened = already === "none" ? "translate" : `${already}, translate`;
     wrapper.style.setProperty("transition-property", widened, "important");
   }
+  var writtenOffsets = /* @__PURE__ */ new WeakMap();
   function setOffset(wrapper, x, instant = false) {
     const wanted = Math.abs(x) < 0.5 ? "" : `${Math.round(x * 10) / 10}px 0`;
     if (wrapper.style.translate === wanted) return;
@@ -2125,6 +2915,7 @@
     allowSmoothOffset(wrapper);
     if (wanted === "") wrapper.style.removeProperty("translate");
     else wrapper.style.setProperty("translate", wanted, "important");
+    writtenOffsets.set(wrapper, wrapper.style.translate);
     if (placeAtOnce) {
       void wrapper.offsetWidth;
       wrapper.classList.remove(INSTANT_CLASS);
@@ -2139,12 +2930,27 @@
     if (!box2 || !box2.id || NOT_A_CHAT.test(box2.id)) return null;
     return box2;
   }
-  function chatWindows() {
-    const found = [];
+  function isWindowBox(box2) {
+    if (NOT_A_CHAT.test(box2.id)) return false;
+    return wrapperOf(box2)?.style.transform.includes("translateX(") ?? false;
+  }
+  function chatBoxes() {
+    const found = /* @__PURE__ */ new Set();
+    const root = document.querySelector(CHAT_ROOT_SELECTOR) ?? document;
+    for (const box2 of root.querySelectorAll(CHAT_ID_SELECTOR)) {
+      if (isWindowBox(box2)) found.add(box2);
+    }
     for (const button of document.querySelectorAll(MINIMISE_SELECTOR)) {
       const box2 = boxOf(button);
-      const wrapper = box2 && wrapperOf(box2);
-      if (box2 && wrapper) found.push({ id: box2.id, wrapper });
+      if (box2) found.add(box2);
+    }
+    return [...found];
+  }
+  function chatWindows() {
+    const found = [];
+    for (const box2 of chatBoxes()) {
+      const wrapper = wrapperOf(box2);
+      if (wrapper) found.push({ id: box2.id, wrapper });
     }
     return found;
   }
@@ -2161,9 +2967,83 @@
     const bar = findTaskbar();
     if (!bar) return;
     if (side === "left") {
+      if (reversedBar === bar && bar.style.flexDirection !== "row-reverse") {
+        noteUndone(CHAT_SIDE_BUTTON.label, "the chat bar's direction", chatRoot());
+      }
       bar.style.setProperty("flex-direction", "row-reverse", "important");
+      reversedBar = bar;
     } else {
       bar.style.removeProperty("flex-direction");
+      reversedBar = null;
+    }
+    placeSideButton(bar, side);
+  }
+  var reversedBar = null;
+  var buttonBar = null;
+  function chatRoot() {
+    return document.querySelector(CHAT_ROOT_SELECTOR);
+  }
+  function nativeClasses() {
+    let closed = null;
+    const opened = /* @__PURE__ */ new Set();
+    for (const button of document.querySelectorAll(TASKBAR_SELECTOR)) {
+      if (/^\d+$/.test(button.id.slice(TASKBAR_PREFIX.length))) continue;
+      const classes = [...button.classList];
+      for (const name of classes) if (name.startsWith("opened")) opened.add(name);
+      const base = classes.filter((name) => !STATE_CLASS.test(name));
+      closed = closed ? closed.filter((name) => base.includes(name)) : base;
+    }
+    return closed && closed.length > 0 ? { closed, opened: [...opened] } : null;
+  }
+  var STATE_CLASS = /^(opened|message|unread|new)/i;
+  function sideButton() {
+    const existing = document.getElementById(SIDE_BUTTON_ID);
+    if (existing instanceof HTMLButtonElement) return existing;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = SIDE_BUTTON_ID;
+    button.innerHTML = `<svg viewBox="0 0 20 20" aria-hidden="true">
+<defs><linearGradient id="aue-arrow-fill" x1="0" y1="0" x2="0" y2="1">
+<stop class="aue-arrow-start" offset="0"/><stop class="aue-arrow-end" offset="1"/>
+</linearGradient></defs>
+<path fill="url(#aue-arrow-fill)" d="M2 10 9.5 2.5V7H18v6H9.5v4.5Z"/>
+</svg>`;
+    button.addEventListener("click", () => {
+      setBarSide(barSide() === "left" ? "right" : "left");
+      relayout2();
+      log("chat: bar moved to the", barSide());
+    });
+    return button;
+  }
+  function placeSideButton(bar, side) {
+    if (!isEnabled(CHAT_SIDE_BUTTON)) {
+      document.getElementById(SIDE_BUTTON_ID)?.remove();
+      return;
+    }
+    const button = sideButton();
+    if (button.parentElement !== bar) {
+      if (buttonBar === bar) {
+        noteUndone(CHAT_SIDE_BUTTON.label, "the left/right button's place in the chat bar", chatRoot());
+      }
+      bar.prepend(button);
+      buttonBar = bar;
+    }
+    const left = side === "left";
+    const native = nativeClasses();
+    const useNative = native !== null && (!left || native.opened.length > 0);
+    const classes = [
+      ...useNative ? native.closed : [],
+      ...useNative && left ? native.opened : [],
+      ...useNative ? ["aue-native"] : [],
+      ...left ? [SIDE_BUTTON_LEFT] : []
+    ].join(" ");
+    if (button.className !== classes) button.className = classes;
+    const label = left ? "Move chats to the right" : "Move chats to the left";
+    if (button.title !== label) {
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      const arrow = button.querySelector("svg");
+      if (arrow) arrow.style.transform = left ? "scaleX(-1)" : "";
     }
   }
   function windowRow() {
@@ -2211,6 +3091,14 @@
   function windowIdOf(item) {
     return item.querySelector("div[id]")?.id ?? "";
   }
+  function belongsTo(windowId, barId) {
+    if (windowId === barId || windowId === `public_${barId}`) return true;
+    return windowId.startsWith("private-") && windowId.slice(8).split(/[-_]/).includes(barId);
+  }
+  function windowIdFor(barId) {
+    const known = [...readSet(HIDDEN_KEY), ...chatBoxes().map((box2) => box2.id)];
+    return known.find((id) => belongsTo(id, barId)) ?? barId;
+  }
   function barOrder() {
     return [...document.querySelectorAll(TASKBAR_SELECTOR)].map(
       (button) => button.id.slice(TASKBAR_PREFIX.length)
@@ -2220,7 +3108,7 @@
     const id = windowIdOf(item);
     const panel = PANEL_ORDER.indexOf(id);
     if (panel >= 0) return panel;
-    const chat = bar.indexOf(id);
+    const chat = bar.findIndex((barId) => belongsTo(id, barId));
     if (chat >= 0) {
       const place = PANEL_ORDER.length + chat;
       lastSlots.set(item, place);
@@ -2244,7 +3132,7 @@
     }
     return 0;
   }
-  function relayout() {
+  function relayout2() {
     const side = barSide();
     layOutTaskbar(side);
     windowRow()?.classList.toggle(LEFT_CLASS, side === "left");
@@ -2313,6 +3201,40 @@
       log("layout", summary);
     }
   }
+  var BAR_ICON_STYLE_ID = "aue-chat-bar-icons";
+  function paintBarIcons(hidden) {
+    const buttons = [];
+    for (const button of document.querySelectorAll(TASKBAR_SELECTOR)) {
+      const barId = button.id.slice(TASKBAR_PREFIX.length);
+      if ([...hidden].some((id) => belongsTo(id, barId))) buttons.push(`#${CSS.escape(button.id)}`);
+    }
+    const each = (suffix) => buttons.map((button) => button + suffix).join(", ");
+    const css = buttons.length === 0 ? "" : `${each(':not([class*="message___"])')} {
+  background: linear-gradient(#666666, #333333) !important;
+  box-shadow: inset 0 0 4px rgba(255, 255, 255, 0.25), 0 -2px 4px rgba(0, 0, 0, 0.5) !important;
+}
+${each(':not([class*="message___"]):hover')} { background: linear-gradient(#888888, #444444) !important; }
+${each(' svg defs stop[id="start"]')} { stop-color: #cccccc !important; }
+${each(' svg defs stop[id="end"]')} { stop-color: #999999 !important; }
+${each(':hover svg defs stop[id="start"]')} { stop-color: #ffffff !important; }
+${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
+    let style = document.getElementById(BAR_ICON_STYLE_ID);
+    if (!style) {
+      if (css === "") return;
+      style = document.createElement("style");
+      style.id = BAR_ICON_STYLE_ID;
+      (document.head ?? document.documentElement).appendChild(style);
+    }
+    if (style.textContent !== css) style.textContent = css;
+  }
+  var wantHidden = /* @__PURE__ */ new WeakSet();
+  function setHidden(wrapper, on3) {
+    if (on3) wantHidden.add(wrapper);
+    else wantHidden.delete(wrapper);
+    if (wrapper.classList.contains(HIDDEN_CLASS) !== on3) {
+      wrapper.classList.toggle(HIDDEN_CLASS, on3);
+    }
+  }
   function hide(id) {
     const hidden = readSet(HIDDEN_KEY);
     hidden.add(id);
@@ -2338,21 +3260,21 @@
   function apply3() {
     if (!isEnabled(INDEPENDENT_CHAT_TABS)) {
       for (const hiddenWindow of document.querySelectorAll(`.${HIDDEN_CLASS}`)) {
-        hiddenWindow.classList.remove(HIDDEN_CLASS);
+        setHidden(hiddenWindow, false);
       }
-      relayout();
+      paintBarIcons(/* @__PURE__ */ new Set());
+      relayout2();
       return;
     }
     const hidden = readSet(HIDDEN_KEY);
     const known = readSet(KNOWN_KEY);
     const openedHere = focusedOnArrival;
     let changed = false;
-    let seen2 = 0;
-    for (const button of document.querySelectorAll(MINIMISE_SELECTOR)) {
-      const box2 = boxOf(button);
-      const wrapper = box2 && wrapperOf(box2);
-      if (!box2 || !wrapper) continue;
-      seen2 += 1;
+    let seen3 = 0;
+    for (const box2 of chatBoxes()) {
+      const wrapper = wrapperOf(box2);
+      if (!wrapper) continue;
+      seen3 += 1;
       if (pickedFromMenu(box2)) {
         if (hidden.delete(box2.id)) {
           changed = true;
@@ -2370,20 +3292,26 @@
           log("chat:", box2.id, startHidden ? "hidden as the tab is new" : "was opened in another tab, so hidden here");
         }
       }
-      wrapper.classList.toggle(HIDDEN_CLASS, hidden.has(box2.id));
+      setHidden(wrapper, hidden.has(box2.id));
     }
     if (changed) {
       writeSet(KNOWN_KEY, known);
       writeSet(HIDDEN_KEY, hidden);
     }
-    if (seen2 > 0) liftEarlyHide();
+    paintBarIcons(hidden);
+    if (seen3 > 0) liftEarlyHide();
     measureRow();
-    relayout();
+    relayout2();
   }
   function swallow(event) {
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
+  }
+  function everywhere(id) {
+    forget(id);
+    schedulePass();
+    log("chat:", id, "left to Torn, for every tab");
   }
   function onClick(event) {
     if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
@@ -2399,14 +3327,23 @@
     if (minimising) {
       const box2 = boxOf(minimising);
       if (!box2) return;
+      if (event.shiftKey) {
+        everywhere(box2.id);
+        return;
+      }
       swallow(event);
       hide(box2.id);
       return;
     }
     const tab = target.closest(TASKBAR_SELECTOR);
     if (tab) {
-      const id = tab.id.slice(TASKBAR_PREFIX.length);
-      if (!id) return;
+      const barId = tab.id.slice(TASKBAR_PREFIX.length);
+      if (!barId) return;
+      const id = windowIdFor(barId);
+      if (event.shiftKey) {
+        everywhere(id);
+        return;
+      }
       if (readSet(HIDDEN_KEY).has(id)) {
         swallow(event);
         show(id);
@@ -2423,44 +3360,6 @@
       hide(id);
     }
   }
-  var dragFrom = null;
-  function dropSelection() {
-    try {
-      getSelection()?.removeAllRanges();
-    } catch {
-    }
-  }
-  function onPointerDown(event) {
-    dragFrom = null;
-    if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    if (target.closest(NOT_A_HANDLE)) return;
-    const box2 = boxOf(target);
-    if (!box2) return;
-    const wrapper = wrapperOf(box2);
-    if (!wrapper || wrapper.parentElement !== windowRow()) return;
-    const depth = event.clientY - box2.getBoundingClientRect().top;
-    if (depth > HEADER_DEPTH) {
-      log("chat: grab", Math.round(depth), "px down, below the top strip");
-      return;
-    }
-    dragFrom = event.clientX;
-    log("chat: grabbed", box2.id, "- drag across the screen to move the bar");
-  }
-  function onPointerMove(event) {
-    if (dragFrom === null) return;
-    if (Math.abs(event.clientX - dragFrom) < DRAG_THRESHOLD) return;
-    const wanted = event.clientX < window.innerWidth / 2 ? "left" : "right";
-    if (wanted === barSide()) return;
-    setBarSide(wanted);
-    relayout();
-    dropSelection();
-    log("chat: bar moved to the", wanted);
-  }
-  function onPointerUp() {
-    dragFrom = null;
-  }
   var watchedItems = /* @__PURE__ */ new WeakSet();
   var watchedRows = /* @__PURE__ */ new WeakSet();
   var rowIsWatched = false;
@@ -2473,11 +3372,45 @@
     for (const item of items) {
       if (watchedItems.has(item)) continue;
       watchedItems.add(item);
-      new MutationObserver(queueRelayout).observe(item, {
+      new MutationObserver((records) => {
+        if (records.every(isOwnChange)) return;
+        catchUndoing(item);
+        queueRelayout();
+      }).observe(item, {
         attributes: true,
-        attributeFilter: ["style"],
+        attributeFilter: ["style", "class"],
+        attributeOldValue: true,
         childList: true
       });
+    }
+  }
+  var scratch = document.createElement("div");
+  function tornStyle(value) {
+    scratch.setAttribute("style", value ?? "");
+    scratch.style.removeProperty("translate");
+    scratch.style.removeProperty("transition-property");
+    return scratch.style.cssText;
+  }
+  function tornClasses(value) {
+    return (value ?? "").split(/\s+/).filter((name) => name !== "" && !name.startsWith("aue-")).join(" ");
+  }
+  function isOwnChange(record) {
+    if (record.type !== "attributes" || !(record.target instanceof Element)) return false;
+    const now = record.target.getAttribute(record.attributeName ?? "");
+    if (record.attributeName === "class") {
+      return tornClasses(record.oldValue) === tornClasses(now);
+    }
+    return tornStyle(record.oldValue) === tornStyle(now);
+  }
+  function catchUndoing(item) {
+    if (wantHidden.has(item) && !item.classList.contains(HIDDEN_CLASS)) {
+      item.classList.add(HIDDEN_CLASS);
+      noteUndone(INDEPENDENT_CHAT_TABS.label, "a chat this tab has hidden", chatRoot());
+    }
+    const written = writtenOffsets.get(item);
+    if (written !== void 0 && item.style.translate !== written) {
+      const feature = barSide() === "left" ? CHAT_SIDE_BUTTON : INDEPENDENT_CHAT_TABS;
+      noteUndone(feature.label, "where the chat windows sit", chatRoot());
     }
   }
   var layoutQueued = false;
@@ -2486,7 +3419,7 @@
     layoutQueued = true;
     queueMicrotask(() => {
       layoutQueued = false;
-      relayout();
+      relayout2();
     });
   }
   var passTimer = 0;
@@ -2500,7 +3433,7 @@
         passDeadline = 0;
         apply3();
       },
-      Math.max(0, Math.min(SETTLE_MS3, passDeadline - now))
+      Math.max(0, Math.min(SETTLE_MS4, passDeadline - now))
     );
   }
   function hideChatsEarly() {
@@ -2544,12 +3477,9 @@
   function installLocalChat() {
     addEventListener("click", onClick, true);
     addEventListener("click", onMenuClick, true);
-    addEventListener("pointerdown", onPointerDown, true);
-    addEventListener("pointermove", onPointerMove, true);
-    addEventListener("pointerup", onPointerUp, true);
-    addEventListener("pointercancel", onPointerUp, true);
     addEventListener("resize", schedulePass);
-    new MutationObserver(() => {
+    new MutationObserver((records) => {
+      if (onlyOurs(records)) return;
       focusedOnArrival = isTheActiveTab();
       if (!rowIsWatched) queueRelayout();
       schedulePass();
@@ -2572,7 +3502,7 @@
   var SCROLL_SPEED = 34;
   var HOLD_MS = 1500;
   var MANUAL_IDLE_MS = 45e3;
-  var seen = [];
+  var seen2 = [];
   var manualIndex = null;
   var manualAt = 0;
   var writing3 = false;
@@ -2632,7 +3562,7 @@
     return null;
   }
   function headlines(bar) {
-    return readHeadlines(bar) ?? seen;
+    return readHeadlines(bar) ?? seen2;
   }
   function liveHeadline(bar) {
     const slides = Array.from(bar.querySelectorAll(SLIDE_SELECTOR)).reverse();
@@ -2649,9 +3579,9 @@
     const html = headline?.innerHTML ?? "";
     if (!html) return;
     const id = headline?.textContent?.trim() ?? html;
-    if (seen.some((item) => item.id === id)) return;
+    if (seen2.some((item) => item.id === id)) return;
     const link = bar.querySelector(`${SLIDE_SELECTOR} a`);
-    seen.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
+    seen2.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
   }
   function liveIndex(bar, list) {
     const showing = compareText(liveHeadline(bar)?.innerHTML ?? "");
@@ -2844,7 +3774,9 @@
       clearTimeout(timer);
       timer = window.setTimeout(apply4, 120);
     };
-    new MutationObserver(schedule).observe(document.body, {
+    new MutationObserver((records) => {
+      if (!onlyOurs(records)) schedule();
+    }).observe(document.body, {
       childList: true,
       subtree: true
     });
@@ -3129,6 +4061,18 @@
   .aue-row:focus-within input:checked + .aue-slider::before {
     background: linear-gradient(180deg, #666666 0%, #444444 100%);
   }
+  .aue-row.aue-row-disabled {
+    opacity: 0.45;
+    background: none;
+  }
+  .aue-row-disabled .aue-switch {
+    pointer-events: none;
+  }
+  .aue-row-disabled .aue-slider {
+    border-color: #8c8c8c !important;
+    background: linear-gradient(180deg, #1c1c1c 0%, #0d0d0d 100%) !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55) !important;
+  }
 
   .aue-per-page {
     display: flex;
@@ -3360,10 +4304,10 @@
     display: block;
     margin: 4px auto;
   }
+  /* Not overflow: hidden, which would clip the User ID box's list of names. */
   .aue-send {
     display: block;
     margin: 0 0 10px;
-    overflow: hidden;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 12px;
     text-align: left;
@@ -3378,17 +4322,131 @@
   .aue-send-link:hover {
     text-decoration: underline;
   }
+  .aue-send {
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.2);
+  }
+  .aue-send-heading {
+    margin: 0 0 6px;
+  }
+  .aue-send-form,
+  .aue-send-confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  .aue-send-form[hidden],
+  .aue-send-confirm[hidden],
+  .aue-send-status[hidden] {
+    display: none;
+  }
+  .aue-send-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .aue-send-field input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 24px;
+    padding: 0 6px;
+    border: 1px solid rgba(128, 128, 128, 0.55);
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+  .aue-send-message {
+    flex: 1 1 200px;
+  }
+  .aue-send-user {
+    position: relative;
+    flex: 1 1 160px;
+  }
+  .aue-send-user .aue-suggest[hidden] {
+    display: none;
+  }
+  .aue-send-amount {
+    flex: 0 0 70px;
+  }
+  .aue-send-confirm {
+    align-items: center;
+  }
+  .aue-send-question {
+    flex: 1 1 100%;
+  }
   .aue-send-status {
-    padding: 6px 8px;
-    background: #111;
-    color: #ccc;
-    font-size: 11px;
+    margin: 6px 0 0;
   }
-  /* Invisible but full height: at no height, the items page never loads the
-     items past its first chunk, which it only does as its list is scrolled. */
-  .aue-send-frame-waiting {
-    visibility: hidden;
+  .aue-send-status.aue-send-failed {
+    color: #e0584f;
   }
+  /* Sits under the item's row on the items page, across its full width. */
+  /* Solid, so a highlighted row's colour does not show through it. */
+  .aue-display {
+    clear: both;
+    margin: 6px 0;
+    background: #2b2b2b;
+  }
+  /*
+   * The button is first in the row of actions, so the dark line Torn draws
+   * on the first slot's left edge moves onto it.
+   */
+  .actions-wrap:not(.aue-display-five) > li.aue-display-slot {
+    border-left: 2px solid #222;
+  }
+  .actions-wrap:not(.aue-display-five) > li.aue-display-slot + li {
+    border-left: 0 !important;
+  }
+  /*
+   * Torn's narrow layout: its bar's four quarters become five fifths, and
+   * the words beside the icons are hidden so five fit. Hidden the way screen
+   * readers still read them, so nothing beside them moves: the icon is the
+   * button, a separate element, and stays where it was.
+   */
+  .actions-wrap.aue-display-five > li.left {
+    width: 20% !important;
+  }
+  .actions-wrap.aue-display-five .opt-name,
+  .aue-display-option .opt-name {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    clip: rect(0 0 0 0) !important;
+    white-space: nowrap !important;
+  }
+  /* Sized and coloured like Torn's own Send and Trash icons beside it. */
+  .aue-display-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+  .aue-display-button svg {
+    width: 20px;
+    height: 20px;
+  }
+  /*
+   * On the path itself, as Torn's own button styles turned it white through
+   * color. Grey like Torn's icons at rest, and white on hover, as they go.
+   */
+  .actions-wrap .aue-display-button svg path {
+    fill: #7b7b7b !important;
+  }
+  .actions-wrap .aue-display-option:hover .aue-display-button svg path,
+  .actions-wrap .aue-display-button:focus-visible svg path {
+    fill: #fff !important;
+  }
+
   .aue-chat-hidden {
     display: none !important;
   }
@@ -3404,14 +4462,75 @@
   .aue-chat-instant {
     transition-duration: 0s !important;
   }
-  /* As when the send option worked: tall enough for the row and its form. */
-  .aue-send-frame {
-    display: block;
-    width: 100%;
-    height: 320px;
-    border: 0;
-    background: #111;
+  /*
+   * The left/right button, drawn with the same values as Torn's own chat bar
+   * buttons (.root___rnQAo and its .opened state) so it reads as one of them.
+   * Light grey while the chats are on the right, dark like an open chat while
+   * they are on the left. order puts it first in the bar whatever Torn adds,
+   * which is the inner end both ways round, as the bar reverses on the left.
+   *
+   * With .aue-native it also wears the classes of Torn's own bar buttons, so
+   * Torn's colours apply and follow any restyle; the gradients here are the
+   * fallback for when there is no Torn button to copy them from.
+   */
+  #aue-chat-side {
+    order: -1;
+    flex-shrink: 0;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+    margin: 0 4px 0 0;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
   }
+  /* The bar is reversed on the left, so the gap moves to the other side. */
+  #aue-chat-side.aue-chat-side-left {
+    margin: 0 0 0 4px;
+  }
+  #aue-chat-side:not(.aue-native) {
+    background: linear-gradient(#666666, #333333);
+    box-shadow:
+      inset 0 0 4px rgba(255, 255, 255, 0.25),
+      0 -2px 4px rgba(0, 0, 0, 0.5);
+  }
+  #aue-chat-side:not(.aue-native):hover,
+  #aue-chat-side:not(.aue-native):active {
+    background: linear-gradient(#888888, #444444);
+  }
+  #aue-chat-side.aue-chat-side-left:not(.aue-native) {
+    background: linear-gradient(#1f1f1f, #3d3d3d);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 -2px 4px rgba(0, 0, 0, 0.5);
+  }
+  #aue-chat-side.aue-chat-side-left:not(.aue-native):hover,
+  #aue-chat-side.aue-chat-side-left:not(.aue-native):active {
+    background: linear-gradient(#333333, #666666);
+  }
+  #aue-chat-side svg {
+    width: 20px;
+    height: 20px;
+    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.55));
+  }
+  /* Torn's classes can carry icon rules; the arrow keeps its own fill. */
+  #aue-chat-side svg path {
+    fill: url(#aue-arrow-fill);
+  }
+  #aue-chat-side .aue-arrow-start { stop-color: #cccccc; }
+  #aue-chat-side .aue-arrow-end { stop-color: #999999; }
+  #aue-chat-side:hover .aue-arrow-start,
+  #aue-chat-side.aue-chat-side-left .aue-arrow-start { stop-color: #ffffff; }
+  #aue-chat-side:hover .aue-arrow-end,
+  #aue-chat-side.aue-chat-side-left .aue-arrow-end { stop-color: #cccccc; }
   .aue-key-box {
     position: relative;
     display: inline-flex;
@@ -3545,6 +4664,7 @@
     width: 100%;
     height: 100%;
     background: center / contain no-repeat;
+    cursor: pointer;
   }
   /* Matches Torn's own status icon tooltips: grey, above the icon, arrow down. */
   #aue-city-shop-tip {
@@ -3605,9 +4725,91 @@
   #aue-city-shop-tip[hidden] {
     display: none;
   }
+  /* The tip is a single line for the count; the key message wraps. */
+  .aue-tip-message {
+    max-width: 220px;
+    white-space: normal;
+  }
+  .aue-tip-link {
+    color: #a9d1ff;
+    font-weight: bold;
+  }
+  /* The clash pop-up: bottom centre, above the chat bar, until clicked. */
+  #aue-clash {
+    position: fixed;
+    left: 50%;
+    bottom: 64px;
+    transform: translateX(-50%);
+    z-index: 2147483000;
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(520px, calc(100vw - 32px));
+    padding: 12px 16px;
+    border: 1px solid #ff8c1a;
+    border-radius: 6px;
+    background: #1e1e1e;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    font-weight: bold;
+    line-height: 18px;
+    color: #ff9a2e;
+    cursor: pointer;
+  }
+  .aue-clash-line + .aue-clash-line {
+    margin-top: 8px;
+  }
+  .aue-clash-feature {
+    color: #ffc070;
+  }
+  .aue-squiggles {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .aue-squiggle {
+    position: absolute;
+    width: 26px;
+    height: 9px;
+    margin-top: -4.5px;
+    transform-origin: 0 50%;
+    animation: aue-squiggle-out 1.2s linear infinite;
+  }
+  .aue-squiggle svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    animation: aue-squiggle-wriggle 0.24s steps(1) infinite;
+  }
+  .aue-squiggle path {
+    fill: none;
+    stroke: #ff8c1a;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  @keyframes aue-squiggle-out {
+    0% { transform: rotate(var(--aue-angle)) translateX(4px); opacity: 0; }
+    15% { opacity: 1; }
+    35% { opacity: 0.25; }
+    55% { opacity: 1; }
+    100% { transform: rotate(var(--aue-angle)) translateX(26px); opacity: 0; }
+  }
+  @keyframes aue-squiggle-wriggle {
+    50% { transform: scaleY(-1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .aue-squiggle,
+    .aue-squiggle svg {
+      animation: none;
+    }
+    .aue-squiggle {
+      transform: rotate(var(--aue-angle)) translateX(8px);
+    }
+  }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.20.26");
+    document.documentElement.setAttribute("data-aue", "0.22.12");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -3680,19 +4882,19 @@
     lookup.target = "_blank";
     lookup.rel = "noopener";
     heading.appendChild(lookup);
-    const field = document.createElement("span");
-    field.className = "aue-field";
-    row.appendChild(field);
+    const field2 = document.createElement("span");
+    field2.className = "aue-field";
+    row.appendChild(field2);
     const input = document.createElement("input");
     input.className = "aue-input";
     input.type = "text";
     input.placeholder = "name or ID";
     input.value = readSetting(RECIPIENT_LABEL, readSetting(RECIPIENT_SETTING, ""));
-    field.appendChild(input);
+    field2.appendChild(input);
     const list = document.createElement("div");
     list.className = "aue-suggest";
     list.hidden = true;
-    field.appendChild(list);
+    field2.appendChild(list);
     const refresh2 = () => {
       const id = readSetting(RECIPIENT_SETTING, "");
       lookup.href = `https://www.torn.com/profiles.php?XID=${id}`;
@@ -3767,16 +4969,16 @@
     generate.rel = "noopener";
     generate.textContent = "Generate key";
     heading.appendChild(generate);
-    const field = document.createElement("span");
-    field.className = "aue-field aue-key-field";
-    row.appendChild(field);
+    const field2 = document.createElement("span");
+    field2.className = "aue-field aue-key-field";
+    row.appendChild(field2);
     const note = document.createElement("span");
     note.className = "aue-note aue-key-note";
     note.textContent = "The custom key fetches City shop purchase logs and shop stock only.";
     row.appendChild(note);
     const box2 = document.createElement("span");
     box2.className = "aue-key-box";
-    field.appendChild(box2);
+    field2.appendChild(box2);
     const input = document.createElement("input");
     input.className = "aue-input aue-key-input";
     input.type = "password";
@@ -3799,10 +5001,10 @@
     check.type = "button";
     check.className = "torn-btn aue-key-check";
     check.textContent = "Check";
-    field.appendChild(check);
+    field2.appendChild(check);
     const result = document.createElement("span");
     result.className = "aue-key-result";
-    field.appendChild(result);
+    field2.appendChild(result);
     input.addEventListener("input", () => {
       result.textContent = "";
       result.className = "aue-key-result";
@@ -3851,6 +5053,10 @@
     input.type = "checkbox";
     input.checked = isEnabled(feature);
     input.addEventListener("change", () => setEnabled(feature, input.checked));
+    if (feature.desktopOnly && isMobileView()) {
+      input.disabled = true;
+      row.classList.add("aue-row-disabled");
+    }
     toggle.appendChild(input);
     const slider = document.createElement("span");
     slider.className = "aue-slider";
@@ -3951,7 +5157,7 @@
     row.appendChild(list);
     return row;
   }
-  function buildPanel() {
+  function buildPanel2() {
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
     const content = document.createElement("div");
@@ -3991,11 +5197,13 @@
       return;
     }
     injectStyles();
-    anchor.insertAdjacentElement("afterend", buildPanel());
+    anchor.insertAdjacentElement("afterend", buildPanel2());
   }
   function installPreferencesPanel() {
     placePanel();
-    new MutationObserver(() => placePanel()).observe(document.body, {
+    new MutationObserver((records) => {
+      if (!onlyOurs(records)) placePanel();
+    }).observe(document.body, {
       childList: true,
       subtree: true
     });
@@ -4005,7 +5213,6 @@
   var SEND_PROMPT = /who would you like to send/i;
   var TEXT_FIELD_SELECTOR = "input[type='text'], input[type='number'], input:not([type])";
   var USER_FIELD_SELECTOR = "input[name*='user' i], input[placeholder*='user' i], input[id*='user' i]";
-  var AMOUNT_FIELD_SELECTOR = "input[name*='amount' i], input[placeholder*='amount' i], input[id*='amount' i], input[type='number']";
   var FORM_MAX_LENGTH = 400;
   var REFILL_DELAYS_MS = [150, 400, 900];
   function defaultRecipient() {
@@ -4085,7 +5292,7 @@
 
   // src/autumns-ui-enhancer/itemSend.ts
   var ITEMS_PATH = "/item.php";
-  var SETTLE_MS4 = 120;
+  var SETTLE_MS5 = 120;
   var filled = /* @__PURE__ */ new WeakSet();
   function pass2() {
     if (!isEnabled(PREFERRED_RECIPIENT)) return;
@@ -4100,19 +5307,25 @@
   function installItemSend() {
     pass2();
     let timer = 0;
-    new MutationObserver(() => {
+    new MutationObserver((records) => {
+      if (onlyOurs(records)) return;
       clearTimeout(timer);
-      timer = window.setTimeout(pass2, SETTLE_MS4);
+      timer = window.setTimeout(pass2, SETTLE_MS5);
     }).observe(document.body, { childList: true, subtree: true });
   }
 
   // src/autumns-ui-enhancer/shopSend.ts
   var SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
-  var ITEMS_URL = "https://www.torn.com/item.php";
-  var ALL_TAB_SELECTOR = "a[href='#all-items']";
+  var SEND_URL = "https://www.torn.com/item.php";
+  var MESSAGE_MAX = 200;
   var ITEM_ATTR = "data-aue-item";
   var AMOUNT_ATTR = "data-aue-amount";
   var NAME_ATTR = "data-aue-name";
+  var MAX_ATTR = "data-aue-max";
+  var HELD_IN_FORM = /name="amount"[^>]*data-max="(\d+)"|data-max="(\d+)"[^>]*name="amount"/;
+  var SEARCH_DELAY_MS2 = 250;
+  var BLUR_MS2 = 150;
+  var PENDING_ATTR2 = "data-aue-pending";
   var PANEL_ATTR = "data-aue-panel";
   var MARKED_ATTR = "data-aue-send";
   var BOUGHT_TEXT = /\byou (?:bought|purchased|have bought)\b/i;
@@ -4120,82 +5333,16 @@
   var MESSAGE_MAX_LENGTH = 300;
   var ITEM_IMAGE = /\/items\/(\d+)\//;
   var ANCESTOR_LIMIT = 6;
-  var FRAME_READY_MS = 2e4;
-  var POLL_MS = 250;
-  var SETTLE_MS5 = 150;
-  var FORM_TRIES = 28;
-  var FORM_CLICK_EVERY = 3;
   var BOX_LIMIT = 8;
   var CONTENT_ROOT_SELECTOR2 = ".content-wrapper, #mainContainer";
-  var SEND_PANEL_MAX_LENGTH = 220;
-  var FORM_WATCH_MS = 500;
+  var COLUMN_SLACK_PX = 5;
   var CLOSE_LINK_ATTR = "data-aue-closes";
   var CLOSE_LIMIT = 4;
   var MESSAGE_CLOSE_SELECTOR = "button[aria-label='Close' i], .close-icon";
   var OPTION_TEXT = /your items|equip|use item|read|open|start|abroad/i;
-  var ROW_SELECTOR = "li, tr";
-  var SEND_TEXT = /^\s*send\s*$/i;
-  var CLICKABLE_SELECTOR = "button, a, li, span, div, [role='button']";
-  var SEND_SELECTORS = [
-    "[aria-label='Send' i]",
-    "[title='Send' i]",
-    "a[href*='send' i]",
-    "[class*='send' i]"
-  ];
-  var ROW_MAX_LENGTH = 300;
   var PLANE_PATH = "M2 21l21-9L2 3v7l15 2-15 2v7z";
-  var SVG_NS = "http://www.w3.org/2000/svg";
-  var QUIET_ATTR = "data-aue-quiet-list";
-  var SUGGESTIONS_SELECTOR = ".autocomplete-wrap";
-  var ENGAGED_ATTR = "data-aue-recipient-used";
-  var HOLD_PAGE_MS = 4e3;
-  var FRAME_MIN_HEIGHT = 50;
-  var FRAME_MAX_HEIGHT = 220;
-  var WAITING_CLASS = "aue-send-frame-waiting";
-  var ONLY_CLASS = "aue-send-only";
-  var HIDE_CLASS = "aue-send-hidden";
-  var KEEP_CLASS = "aue-send-kept";
-  var FRAME_CSS = `
-  .${ONLY_CLASS} .${HIDE_CLASS} {
-    display: none !important;
-  }
-  .${ONLY_CLASS} .${KEEP_CLASS} {
-    position: static !important;
-    transform: none !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border: 0 !important;
-    width: auto !important;
-    min-width: 0 !important;
-    height: auto !important;
-    min-height: 0 !important;
-    max-height: none !important;
-    overflow: visible !important;
-    background: transparent !important;
-    display: block !important;
-  }
-  .${ONLY_CLASS} body {
-    margin: 0 !important;
-    padding: 0 !important;
-  }
-  #sidebarroot,
-  #header-root,
-  .header-wrapper-top,
-  .header-wrapper-bottom,
-  #chatRoot,
-  #footer,
-  .footer,
-  .content-title,
-  .links-top-wrap,
-  .breadcrumbs,
-  .ad-wrapper {
-    display: none !important;
-  }
-  [${QUIET_ATTR}] {
-    display: none !important;
-  }
-  body { background: transparent !important; }
-`;
+  var SVG_NS2 = "http://www.w3.org/2000/svg";
+  var SETTLE_MS6 = 150;
   var panelCount = 0;
   function on2() {
     return isEnabled(PREFERRED_RECIPIENT);
@@ -4227,42 +5374,6 @@
     }
     return null;
   }
-  function findRow(doc, itemId) {
-    if (!itemId) return null;
-    const tagged = doc.querySelector(
-      `[data-item="${itemId}"], [data-itemid="${itemId}"]`
-    );
-    if (tagged) return tagged.closest(ROW_SELECTOR) ?? tagged;
-    const images = doc.querySelectorAll("img[src*='/items/']");
-    for (const image of images) {
-      const match = ITEM_IMAGE.exec(image.getAttribute("src") ?? "");
-      if (match && match[1] === itemId) {
-        return image.closest(ROW_SELECTOR) ?? image.parentElement;
-      }
-    }
-    return null;
-  }
-  function findSendControl(row) {
-    for (const scope of [row, row.nextElementSibling, row.parentElement]) {
-      if (!scope) continue;
-      let best = null;
-      const clickable = scope.querySelectorAll(CLICKABLE_SELECTOR);
-      for (const element of clickable) {
-        if (!SEND_TEXT.test(element.textContent ?? "")) continue;
-        if (!best || best.contains(element)) best = element;
-      }
-      if (best) return best;
-      for (const selector of SEND_SELECTORS) {
-        const control = scope.querySelector(selector);
-        if (control) return control;
-      }
-    }
-    return null;
-  }
-  function expandRow(row) {
-    const handle = row.querySelector("img[src*='/items/']") ?? row;
-    handle.click();
-  }
   function amountBought(message) {
     const match = BOUGHT_ITEM.exec(message.textContent ?? "");
     if (!match) return null;
@@ -4273,275 +5384,35 @@
     const match = BOUGHT_ITEM.exec(message.textContent ?? "");
     return match?.[2]?.replace(/\s+/g, " ").trim() ?? "";
   }
-  function findRowByName(doc, name) {
-    if (!name) return null;
-    const wanted = name.toLowerCase();
-    let best = null;
-    for (const row of doc.querySelectorAll(ROW_SELECTOR)) {
-      const text = (row.textContent ?? "").toLowerCase();
-      if (!text.includes(wanted) || text.length > ROW_MAX_LENGTH) continue;
-      if (!best || text.length < (best.textContent ?? "").length) best = row;
-    }
-    return best;
+  async function postSend(fields) {
+    return JSON.parse(await postTorn(SEND_URL, fields));
   }
-  function sendFormScope(row) {
-    if (row.querySelector(TEXT_FIELD_SELECTOR)) return row;
-    const next = row.nextElementSibling;
-    if (next?.querySelector(TEXT_FIELD_SELECTOR)) return next;
-    return row;
-  }
-  function isElement(value) {
-    return typeof value === "object" && value !== null && value.nodeType === Node.ELEMENT_NODE;
-  }
-  function quietSuggestions(scope) {
-    const doc = scope.ownerDocument;
-    if (doc.documentElement.hasAttribute(ENGAGED_ATTR)) return;
-    const input = scope.querySelector(USER_FIELD_SELECTOR);
-    if (!input) return;
-    const dropdown = (input.id ? doc.getElementById(`${input.id}-cont`) : null) ?? input.parentElement?.querySelector(SUGGESTIONS_SELECTOR) ?? null;
-    if (dropdown && !dropdown.hasAttribute(QUIET_ATTR)) dropdown.setAttribute(QUIET_ATTR, "");
-  }
-  function wakeSuggestions(doc) {
-    if (doc.documentElement.dataset.aueWakeWatched === "1") return;
-    doc.documentElement.dataset.aueWakeWatched = "1";
-    const wake = (event) => {
-      const target = event.target;
-      if (!event.isTrusted || !isElement(target) || !target.matches(USER_FIELD_SELECTOR)) return;
-      doc.documentElement.setAttribute(ENGAGED_ATTR, "");
-      for (const hidden of doc.querySelectorAll(`[${QUIET_ATTR}]`)) hidden.removeAttribute(QUIET_ATTR);
-    };
-    doc.addEventListener("pointerdown", wake, true);
-    doc.addEventListener("keydown", wake, true);
-  }
-  function fillSendForm(row, amount) {
-    const scope = sendFormScope(row);
-    const boxes = Array.from(
-      scope.querySelectorAll(TEXT_FIELD_SELECTOR)
-    ).filter((box2) => !box2.disabled && !box2.readOnly);
-    if (boxes.length === 0) return;
-    const recipient = recipientText();
-    const userBox = scope.querySelector(USER_FIELD_SELECTOR) ?? boxes[0];
-    const amountBox = scope.querySelector(AMOUNT_FIELD_SELECTOR) ?? (boxes[1] === userBox ? boxes[0] : boxes[1]);
-    if (recipient && userBox && userBox.value === "") {
-      fillField(userBox, recipient);
-      log("send: recipient", recipient);
-      wakeSuggestions(userBox.ownerDocument);
-      quietSuggestions(scope);
-    }
-    if (amount && amountBox && amountBox !== userBox) {
-      fillField(amountBox, amount);
-      log("send: amount", amount);
-    }
-  }
-  function isolateRow(doc, target, toTop = true) {
-    const keep = /* @__PURE__ */ new Set();
-    for (let node = target; node; node = node.parentElement) {
-      keep.add(node);
-    }
-    for (const node of keep) {
-      for (const sibling of Array.from(node.parentElement?.children ?? [])) {
-        if (!keep.has(sibling) && !sibling.classList.contains(HIDE_CLASS)) {
-          sibling.classList.add(HIDE_CLASS);
-        }
-      }
-      if (node !== target && !node.classList.contains(KEEP_CLASS)) node.classList.add(KEEP_CLASS);
-    }
-    if (!doc.documentElement.classList.contains(ONLY_CLASS)) {
-      doc.documentElement.classList.add(ONLY_CLASS);
-    }
-    if (toTop) doc.defaultView?.scrollTo(0, 0);
-  }
-  function findSendPanel(row) {
-    const scope = sendFormScope(row);
-    const user = scope.querySelector(USER_FIELD_SELECTOR) ?? scope.querySelector(TEXT_FIELD_SELECTOR);
-    if (!user) return null;
-    let best = user;
-    for (let node = user.parentElement; node && node !== row; ) {
-      if ((node.textContent ?? "").length > SEND_PANEL_MAX_LENGTH) break;
-      best = node;
-      node = node.parentElement;
-    }
-    return best;
-  }
-  function watchForm(frame, doc, form) {
-    const panel = frame.closest(".aue-send");
-    if (!panel) return;
-    const holder = form.parentElement;
-    let shown = form;
-    const keepHidden = () => {
-      if (!shown.isConnected && holder?.isConnected) {
-        shown = holder;
-        log("send: the form was replaced, showing what took its place");
-      }
-      if (!shown.isConnected) return;
-      isolateRow(doc, shown, false);
-      quietSuggestions(shown);
-      fitFrame(frame, shown);
-    };
-    const FrameObserver = doc.defaultView?.MutationObserver ?? MutationObserver;
-    const observer = new FrameObserver(keepHidden);
-    observer.observe(doc.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class"]
-    });
-    const timer = window.setInterval(() => {
-      if (!panel.isConnected || panel.hidden) {
-        clearInterval(timer);
-        observer.disconnect();
+  async function learnHeld(panel) {
+    if (panel.hasAttribute(MAX_ATTR)) return;
+    const itemId = panel.getAttribute(ITEM_ATTR) ?? "";
+    if (!itemId) return;
+    panel.setAttribute(MAX_ATTR, "");
+    try {
+      const html = await postTorn(SEND_URL, {
+        step: "actionForm",
+        action: "send",
+        name: panel.getAttribute(NAME_ATTR) ?? "",
+        type: "item",
+        id: itemId
+      });
+      const found = HELD_IN_FORM.exec(html);
+      const held = found?.[1] ?? found?.[2];
+      if (!held) {
+        log("send: Torn's send form gave no amount held");
         return;
       }
-      keepHidden();
-    }, FORM_WATCH_MS);
-  }
-  function fitFrame(frame, shown) {
-    const view = shown.ownerDocument.defaultView;
-    const scrolled = view?.scrollY ?? 0;
-    let bottom = 0;
-    for (const element of [shown, ...shown.querySelectorAll("*")]) {
-      const box2 = element.getBoundingClientRect();
-      if (box2.height > 0) bottom = Math.max(bottom, box2.bottom + scrolled);
+      panel.setAttribute(MAX_ATTR, held);
+      const amount = panel.querySelector(".aue-send-amount input");
+      if (amount) amount.value = cleanAmount(amount.value, held);
+      log("send: holding", held, "of item", itemId);
+    } catch (error) {
+      log("send: couldn't learn the amount held", error);
     }
-    const height = Math.min(FRAME_MAX_HEIGHT, Math.max(FRAME_MIN_HEIGHT, Math.ceil(bottom) + 6));
-    const wanted = `${height}px`;
-    if (frame.style.height !== wanted) frame.style.height = wanted;
-  }
-  function showFrame(frame, status) {
-    frame.classList.remove(WAITING_CLASS);
-    frame.inert = false;
-    status.hidden = true;
-  }
-  function failPanel(status, reason) {
-    status.hidden = false;
-    status.textContent = `${reason} `;
-    const link = document.createElement("a");
-    link.className = "aue-send-link";
-    link.href = ITEMS_URL;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.textContent = "Open items page";
-    status.appendChild(link);
-  }
-  function sendFormOpen(row) {
-    return sendFormScope(row).querySelector(TEXT_FIELD_SELECTOR) !== null;
-  }
-  var FRAME_CLOSE_SELECTOR = ".close-icon, a, button";
-  var CLOSE_TEXT = /^\s*close\s*$/i;
-  function watchFrameClicks(frame, doc) {
-    if (doc.documentElement.dataset.aueClicksWatched === "1") return;
-    doc.documentElement.dataset.aueClicksWatched = "1";
-    doc.addEventListener("click", (event) => {
-      const target = event.target;
-      if (!isElement(target)) return;
-      const control = target.closest(FRAME_CLOSE_SELECTOR);
-      const isClose = control !== null && (control.matches(".close-icon") || CLOSE_TEXT.test(control.textContent ?? "") || /^close$/i.test(control.getAttribute("aria-label") ?? ""));
-      if (isClose) {
-        const panel = frame.closest(".aue-send");
-        setTimeout(() => panel && closePanel(panel), 0);
-        log("send: Torn's Close pressed, putting the panel away");
-        return;
-      }
-      const link = target.closest("a[href]");
-      const href = link?.getAttribute("href") ?? "";
-      if (!link || href === "" || href.startsWith("#") || href.startsWith("javascript:")) return;
-      if (link.target !== "_blank" && link.target !== "_top") {
-        link.target = "_top";
-        log("send: a link in the frame will open in the whole window", href);
-      }
-    }, true);
-  }
-  function openSendForm(frame, doc, item, status) {
-    let polls = 0;
-    const step = () => {
-      const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
-      if (row && sendFormOpen(row)) {
-        fillSendForm(row, item.amount);
-        const form = findSendPanel(row) ?? row;
-        isolateRow(doc, form);
-        showFrame(frame, status);
-        fitFrame(frame, form);
-        watchForm(frame, doc, form);
-        log("send: the form is open for", item.itemId);
-        return;
-      }
-      if (row && polls % FORM_CLICK_EVERY === 0) {
-        const control = findSendControl(row);
-        if (control) control.click();
-        else expandRow(row);
-      }
-      polls += 1;
-      if (polls < FORM_TRIES) {
-        setTimeout(step, POLL_MS);
-        return;
-      }
-      failPanel(status, `Couldn't open the send form for ${item.name}.`);
-      log("send: the form never opened for", item.itemId);
-    };
-    step();
-  }
-  function styleFrame(doc) {
-    if (doc.getElementById("aue-send-frame-styles")) return;
-    const style = doc.createElement("style");
-    style.id = "aue-send-frame-styles";
-    style.textContent = FRAME_CSS;
-    (doc.head ?? doc.documentElement).appendChild(style);
-  }
-  function showAllItems(doc) {
-    const tab = doc.querySelector(ALL_TAB_SELECTOR);
-    const selected = tab?.closest("[role='tab']")?.getAttribute("aria-selected") === "true";
-    if (!tab || selected || tab.dataset.aueClicked === "1") return;
-    tab.dataset.aueClicked = "1";
-    tab.addEventListener("click", (event) => event.preventDefault(), { once: true });
-    tab.click();
-    log("send: switched the items page to All");
-  }
-  function openInFrame(frame, item, status) {
-    const started = Date.now();
-    const attempt = () => {
-      let doc = null;
-      try {
-        doc = frame.contentDocument;
-      } catch {
-        doc = null;
-      }
-      const expired = Date.now() - started >= FRAME_READY_MS;
-      if (!doc || !doc.body) {
-        if (!expired) {
-          setTimeout(attempt, POLL_MS);
-          return;
-        }
-        failPanel(status, "Torn would not show your items here.");
-        log("send: the items page never loaded in the frame");
-        return;
-      }
-      styleFrame(doc);
-      const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
-      if (!row) {
-        showAllItems(doc);
-        const view = doc.defaultView;
-        view?.scrollTo(0, doc.documentElement.scrollHeight);
-        if (!expired) {
-          setTimeout(attempt, POLL_MS);
-          return;
-        }
-        failPanel(status, `Couldn't find ${item.name} in your items.`);
-        log("send: item", item.itemId, item.name, "not found on the items page");
-        return;
-      }
-      watchFrameClicks(frame, doc);
-      openSendForm(frame, doc, item, status);
-      log("send: found item", item.itemId, "in your items");
-    };
-    attempt();
-  }
-  function buildFrame(item, status) {
-    const frame = document.createElement("iframe");
-    frame.className = `aue-send-frame ${WAITING_CLASS}`;
-    frame.inert = true;
-    frame.src = ITEMS_URL;
-    frame.addEventListener("load", () => openInFrame(frame, item, status));
-    return frame;
   }
   function buildTrigger(panelId) {
     const trigger = document.createElement("button");
@@ -4550,17 +5421,17 @@
     trigger.title = "Send item";
     trigger.setAttribute("aria-label", "Send item");
     trigger.setAttribute(PANEL_ATTR, panelId);
-    const svg = document.createElementNS(SVG_NS, "svg");
+    const svg = document.createElementNS(SVG_NS2, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
-    const path = document.createElementNS(SVG_NS, "path");
+    const path = document.createElementNS(SVG_NS2, "path");
     path.setAttribute("d", PLANE_PATH);
     path.setAttribute("fill", "currentColor");
     svg.appendChild(path);
     trigger.appendChild(svg);
     return trigger;
   }
-  function buildPanel2(panelId, itemId, name, amount) {
+  function buildPanel3(panelId, itemId, name, amount) {
     const panel = document.createElement("div");
     panel.className = "aue-send";
     panel.id = panelId;
@@ -4568,52 +5439,167 @@
     panel.setAttribute(ITEM_ATTR, itemId);
     panel.setAttribute(NAME_ATTR, name);
     if (amount) panel.setAttribute(AMOUNT_ATTR, amount);
+    const heading = document.createElement("div");
+    heading.className = "aue-send-heading";
+    heading.append("Who would you like to send your ");
+    const item = document.createElement("b");
+    item.textContent = name || "item";
+    heading.append(item, " to?");
+    const form = document.createElement("div");
+    form.className = "aue-send-form";
+    const message = field("Message", "aue-send-message", "");
+    message.querySelector("input")?.setAttribute("maxlength", String(MESSAGE_MAX));
+    const user = field("User ID", "aue-send-user", recipientText());
+    const suggestions = document.createElement("div");
+    suggestions.className = "aue-suggest";
+    suggestions.hidden = true;
+    user.appendChild(suggestions);
+    const count = field("Amount", "aue-send-amount", amount ?? "1");
+    count.querySelector("input")?.setAttribute("inputmode", "numeric");
+    const send = tornButton("SEND", "aue-send-go");
+    form.append(message, user, count, send);
+    const confirm = document.createElement("div");
+    confirm.className = "aue-send-confirm";
+    confirm.hidden = true;
+    const question = document.createElement("div");
+    question.className = "aue-send-question";
+    const yes = tornButton("YES", "aue-send-yes");
+    const no = tornButton("NO", "aue-send-no");
+    confirm.append(question, yes, no);
     const status = document.createElement("div");
     status.className = "aue-send-status";
-    panel.appendChild(status);
+    status.hidden = true;
+    panel.append(heading, form, confirm, status);
     return panel;
   }
-  function openPanel(panel) {
-    const status = panel.querySelector(".aue-send-status");
-    const itemId = panel.getAttribute(ITEM_ATTR) ?? "";
-    const name = panel.getAttribute(NAME_ATTR) ?? "";
-    if (!status || !itemId && !name) return;
-    panel.hidden = false;
-    status.hidden = false;
-    status.textContent = name ? `Opening the send form for ${name}...` : "Opening the send form...";
-    if (!panel.querySelector("iframe")) {
-      holdPage();
-      const amount = panel.getAttribute(AMOUNT_ATTR);
-      panel.appendChild(buildFrame({ itemId, name, amount }, status));
-    }
-    log("send: opened item", itemId);
+  function valueOf(panel, className) {
+    return panel.querySelector(`.${className} input`)?.value.trim() ?? "";
   }
-  function holdPage() {
-    const x = scrollX;
-    const y = scrollY;
-    const until = Date.now() + HOLD_PAGE_MS;
-    const events = ["wheel", "touchstart", "keydown", "mousedown"];
-    const stop = () => {
-      removeEventListener("scroll", restore);
-      for (const type of events) removeEventListener(type, stop, true);
-    };
-    const restore = () => {
-      if (Date.now() > until) {
-        stop();
+  function say2(panel, html, failed) {
+    const status = panel.querySelector(".aue-send-status");
+    if (!status) return;
+    showReply(status, html);
+    status.classList.toggle("aue-send-failed", failed);
+    status.hidden = false;
+  }
+  function part(panel, className) {
+    return panel.querySelector(`.${className}`);
+  }
+  async function askToSend(panel) {
+    const send = part(panel, "aue-send-go");
+    if (!send || send.disabled) return;
+    const itemId = panel.getAttribute(ITEM_ATTR) ?? "";
+    const user = valueOf(panel, "aue-send-user");
+    const amount = valueOf(panel, "aue-send-amount");
+    const tag = valueOf(panel, "aue-send-message");
+    if (!itemId) {
+      say2(panel, "Couldn't tell which item this is, so it can't be sent from here.", true);
+      return;
+    }
+    if (!user) {
+      say2(panel, "Who should it go to?", true);
+      return;
+    }
+    send.disabled = true;
+    try {
+      const reply = await postSend({ step: "sendItemAction", tag, userID: user, amount, itemID: itemId });
+      log("send: check answered", reply);
+      if (!reply.success || !reply.confirm || reply.itemID === void 0 || reply.userID === void 0) {
+        say2(panel, reply.text || "Torn wouldn't send that.", true);
         return;
       }
-      if (scrollX !== x || scrollY !== y) {
-        scrollTo(x, y);
-        log("send: kept the shop page from jumping");
+      panel.setAttribute(
+        PENDING_ATTR2,
+        JSON.stringify({
+          step: "sendItemAction",
+          confirm: "1",
+          XID: String(reply.itemID),
+          userID: String(reply.userID),
+          tag,
+          amount
+        })
+      );
+      const question = part(panel, "aue-send-question");
+      if (question) showReply(question, reply.text ?? "Send it?");
+      part(panel, "aue-send-form")?.setAttribute("hidden", "");
+      part(panel, "aue-send-status")?.setAttribute("hidden", "");
+      part(panel, "aue-send-confirm")?.removeAttribute("hidden");
+      part(panel, "aue-send-yes")?.focus();
+    } catch (error) {
+      say2(panel, "Couldn't reach Torn. Try again.", true);
+      log("send: check failed", error);
+    } finally {
+      send.disabled = false;
+    }
+  }
+  async function confirmSend(panel) {
+    const yes = part(panel, "aue-send-yes");
+    const raw = panel.getAttribute(PENDING_ATTR2);
+    if (!yes || yes.disabled || !raw) return;
+    const fields = JSON.parse(raw);
+    yes.disabled = true;
+    try {
+      const reply = await postSend(fields);
+      log("send: confirmation answered", reply);
+      panel.removeAttribute(PENDING_ATTR2);
+      part(panel, "aue-send-confirm")?.setAttribute("hidden", "");
+      if (reply.success) {
+        say2(panel, reply.text || "Sent.", false);
+        const held = Number(panel.getAttribute(MAX_ATTR));
+        if (held > 0) panel.setAttribute(MAX_ATTR, String(Math.max(0, held - Number(fields.amount))));
+      } else {
+        part(panel, "aue-send-form")?.removeAttribute("hidden");
+        say2(panel, reply.text || "Torn wouldn't send that.", true);
       }
-    };
-    addEventListener("scroll", restore);
-    for (const type of events) addEventListener(type, stop, true);
-    setTimeout(stop, HOLD_PAGE_MS);
+    } catch (error) {
+      say2(panel, "Couldn't reach Torn. Try again.", true);
+      log("send: confirmation failed", error);
+    } finally {
+      yes.disabled = false;
+    }
+  }
+  function cancelSend(panel) {
+    panel.removeAttribute(PENDING_ATTR2);
+    part(panel, "aue-send-confirm")?.setAttribute("hidden", "");
+    part(panel, "aue-send-form")?.removeAttribute("hidden");
+  }
+  function offerUsers(panel, users) {
+    const list = part(panel, "aue-suggest");
+    if (!list) return;
+    list.replaceChildren();
+    for (const user of users) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "aue-suggest-option";
+      option.dataset.aueUser = `${user.name} [${user.id}]`;
+      const dot = document.createElement("span");
+      dot.className = user.online ? "aue-dot aue-dot-on" : "aue-dot";
+      option.append(dot, `${user.name} [${user.id}]`);
+      list.appendChild(option);
+    }
+    list.hidden = users.length === 0;
+  }
+  var searchTimer = 0;
+  function onUserTyped(panel, input) {
+    const typed = input.value.trim();
+    clearTimeout(searchTimer);
+    if (typed.length < MIN_QUERY || /^\d+$/.test(typed) || /\[\d+\]$/.test(typed)) {
+      part(panel, "aue-suggest")?.setAttribute("hidden", "");
+      return;
+    }
+    searchTimer = window.setTimeout(() => {
+      void searchUsers(typed).then((users) => {
+        if (input.value.trim() === typed) offerUsers(panel, users);
+      });
+    }, SEARCH_DELAY_MS2);
+  }
+  function openPanel(panel) {
+    void learnHeld(panel);
+    panel.hidden = false;
+    log("send: opened item", panel.getAttribute(ITEM_ATTR));
   }
   function closePanel(panel) {
     panel.hidden = true;
-    panel.querySelector("iframe")?.remove();
   }
   function dropPanel(panelId) {
     document.getElementById(panelId)?.remove();
@@ -4645,12 +5631,22 @@
         if (trigger) {
           event.preventDefault();
           event.stopPropagation();
-          const panel = document.getElementById(
-            trigger.getAttribute(PANEL_ATTR) ?? ""
-          );
-          if (!panel) return;
-          if (panel.hidden) openPanel(panel);
-          else closePanel(panel);
+          const panelId = trigger.getAttribute(PANEL_ATTR) ?? "";
+          const message = document.querySelector(`[${MARKED_ATTR}="${panelId}"]`);
+          const panel2 = document.getElementById(panelId) ?? (message && ensurePanel(message, panelId));
+          if (!panel2) {
+            log("send: no panel to open for", panelId);
+            return;
+          }
+          if (panel2.hidden) openPanel(panel2);
+          else closePanel(panel2);
+          return;
+        }
+        const panel = target.closest(".aue-send");
+        if (panel) {
+          if (target.closest(".aue-send-go")) void askToSend(panel);
+          else if (target.closest(".aue-send-yes")) void confirmSend(panel);
+          else if (target.closest(".aue-send-no")) cancelSend(panel);
           return;
         }
         const dismissing = target.closest(`[${CLOSE_LINK_ATTR}]`);
@@ -4658,7 +5654,67 @@
       },
       true
     );
+    document.addEventListener(
+      "mousedown",
+      (event) => {
+        const target = event.target;
+        const option = target instanceof Element ? target.closest(".aue-send .aue-suggest-option") : null;
+        const panel = option?.closest(".aue-send");
+        if (!option || !panel) return;
+        event.preventDefault();
+        const input = panel.querySelector(".aue-send-user input");
+        if (input) input.value = option.dataset.aueUser ?? "";
+        part(panel, "aue-suggest")?.setAttribute("hidden", "");
+      },
+      true
+    );
+    document.addEventListener(
+      "beforeinput",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) || !target.closest(".aue-send-amount")) return;
+        if (event.data && /\D/.test(event.data)) event.preventDefault();
+      },
+      true
+    );
+    document.addEventListener(
+      "input",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const panel = target.closest(".aue-send");
+        if (!panel) return;
+        if (target.closest(".aue-send-user")) onUserTyped(panel, target);
+        if (target.closest(".aue-send-amount")) {
+          const cleaned = cleanAmount(target.value, panel.getAttribute(MAX_ATTR) ?? "");
+          if (cleaned !== target.value) target.value = cleaned;
+        }
+      },
+      true
+    );
+    document.addEventListener(
+      "focusout",
+      (event) => {
+        const target = event.target;
+        if (!(target instanceof Element) || !target.closest(".aue-send-user")) return;
+        const panel = target.closest(".aue-send");
+        if (panel) setTimeout(() => part(panel, "aue-suggest")?.setAttribute("hidden", ""), BLUR_MS2);
+      },
+      true
+    );
     document.addEventListener("keydown", (event) => {
+      const target = event.target;
+      if (event.key === "Enter" && target instanceof HTMLInputElement && target.closest(".aue-send-form")) {
+        event.preventDefault();
+        const panel = target.closest(".aue-send");
+        const list = panel && part(panel, "aue-suggest");
+        const options = list && !list.hidden ? list.querySelectorAll(".aue-suggest-option") : [];
+        if (target.closest(".aue-send-user") && options.length === 1 && list) {
+          target.value = options[0]?.dataset.aueUser ?? target.value;
+          list.hidden = true;
+        }
+        return;
+      }
       if (event.key !== "Escape") return;
       for (const panel of document.querySelectorAll(".aue-send")) {
         if (!panel.hidden) closePanel(panel);
@@ -4685,6 +5741,23 @@
     log("send: aeroplane placed", row ? "in Torn's row" : "on its own");
   }
   function purchaseBox(message) {
+    const shop = shopBox(message);
+    let node = message;
+    for (let depth = 0; node && depth < CLOSE_LIMIT; depth += 1) {
+      if (node.querySelector(MESSAGE_CLOSE_SELECTOR)) {
+        return itemsInOneColumn(shop, node) ? node : shop;
+      }
+      node = node.parentElement;
+    }
+    return shop;
+  }
+  function itemsInOneColumn(shop, messageBox) {
+    const pictures = [...shop.querySelectorAll("img[src*='/items/']")].filter((picture) => !messageBox.contains(picture)).slice(0, 2).map((picture) => picture.getBoundingClientRect());
+    const [first, second] = pictures;
+    if (!first || !second) return false;
+    return Math.abs(first.left - second.left) < COLUMN_SLACK_PX;
+  }
+  function shopBox(message) {
     let box2 = message;
     for (let depth = 0; depth < BOX_LIMIT; depth += 1) {
       const parent = box2.parentElement;
@@ -4705,22 +5778,29 @@
   function offerSend(message) {
     const name = nameBought(message);
     const itemId = itemIdFor(message) ?? stockItemId(name);
-    if (!itemId && !name) {
+    if (!itemId) {
       message.setAttribute(MARKED_ATTR, "none");
-      log("send: neither an item id nor a name in", message.textContent);
+      log("send: no item id for", name || message.textContent);
       return;
     }
-    if (!itemId) log("send: no item id near the message, going by the name", name);
     panelCount += 1;
     const panelId = `aue-send-${panelCount}`;
     message.setAttribute(MARKED_ATTR, panelId);
-    const panel = buildPanel2(panelId, itemId, name, amountBought(message));
-    const box2 = purchaseBox(message);
-    box2.insertAdjacentElement("afterend", panel);
+    ensurePanel(message, panelId);
     ensureTrigger(message, panelId);
     log("send: offering item", itemId);
   }
-  function scan(root) {
+  function ensurePanel(message, panelId) {
+    const existing = document.getElementById(panelId);
+    if (existing) return existing;
+    const name = nameBought(message);
+    const itemId = itemIdFor(message) ?? stockItemId(name);
+    if (!itemId) return null;
+    const panel = buildPanel3(panelId, itemId, name, amountBought(message));
+    purchaseBox(message).insertAdjacentElement("afterend", panel);
+    return panel;
+  }
+  function scan2(root) {
     const found = [];
     if (isPurchaseMessage(root)) found.push(root);
     for (const element of root.querySelectorAll("*")) {
@@ -4732,19 +5812,23 @@
       }
       const marked = message.getAttribute(MARKED_ATTR);
       if (!marked) offerSend(message);
-      else if (marked !== "none") ensureTrigger(message, marked);
+      else if (marked !== "none") {
+        ensurePanel(message, marked);
+        ensureTrigger(message, marked);
+      }
     }
   }
   function installShopSend() {
     if (!on2()) return;
     installClicks();
-    scan(document.body);
+    scan2(document.body);
     let timer = 0;
-    new MutationObserver(() => {
+    new MutationObserver((records) => {
+      if (onlyOurs(records)) return;
       clearTimeout(timer);
       timer = window.setTimeout(() => {
-        if (on2()) scan(document.body);
-      }, SETTLE_MS5);
+        if (on2()) scan2(document.body);
+      }, SETTLE_MS6);
     }).observe(document.body, { childList: true, subtree: true });
   }
 
@@ -4945,6 +6029,7 @@
   var PREFERENCES_PATH = "/preferences.php";
   var GAME_HOST = "www.torn.com";
   var onGame = location.hostname === GAME_HOST;
+  var firstCopy = claimPage();
   function start(name, install) {
     try {
       install();
@@ -4952,7 +6037,8 @@
       log("failed to start", name, error);
     }
   }
-  if (onGame) {
+  if (!firstCopy) {
+  } else if (onGame) {
     start("page jump block", installPageJumpBlock);
     start("request capture", installRequestCapture);
     start("chat pre-hide", hideChatsEarly);
@@ -4961,6 +6047,8 @@
   }
   function onReady() {
     start("styles", injectStyles);
+    start("clash check", () => installClashCheck(firstCopy && onGame));
+    if (!firstCopy) return;
     if (!onGame) {
       start("list sort", installListSort);
       return;
@@ -4972,7 +6060,10 @@
       start("preferences panel", installPreferencesPanel);
       return;
     }
-    if (location.pathname === ITEMS_PATH) start("item send", installItemSend);
+    if (location.pathname === ITEMS_PATH) {
+      start("item send", installItemSend);
+      start("display case", installDisplayCase);
+    }
     if (SHOP_PATHS.includes(location.pathname)) start("shop send", installShopSend);
     start("list display", installListDisplay);
     start("list sort", installListSort);

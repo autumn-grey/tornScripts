@@ -1,6 +1,7 @@
 // Column sorting for Torn's paged lists and the wiki's tables.
 
 import { log } from "./debug";
+import { onlyOurs } from "./ownChanges";
 import { type ListTarget, findTarget, rowsOf } from "./listDisplay";
 import { LIST_SORTING, isEnabled } from "./settings";
 
@@ -302,7 +303,9 @@ export function installListSort(): void {
     clearTimeout(timer);
     timer = window.setTimeout(pass, SETTLE_MS);
   };
-  new MutationObserver(schedule).observe(document.body, {
+  new MutationObserver((records) => {
+    if (!onlyOurs(records)) schedule();
+  }).observe(document.body, {
     childList: true,
     subtree: true,
   });

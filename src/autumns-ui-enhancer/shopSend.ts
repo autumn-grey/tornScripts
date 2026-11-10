@@ -1,34 +1,42 @@
-// A send option after a shop purchase, hosting Torn's own item page send form.
+// A send option after a shop purchase: a small form that sends the item with
+// Torn's own send requests.
 //
-// Parked from 0.18.6 to 0.20.7. It broke because the items page opens on the
-// category last used, so the bought item was often not on it. The frame now
-// switches to All, and keeps hiding the rest of the list as more rows load.
+// It used to host the items page in a hidden frame and press its buttons, which
+// broke whenever that page changed and sent requests nobody had clicked for.
+// Now each request is one of the player's clicks, the same two Torn's own form
+// takes: Send asks Torn to check the send, Yes confirms it.
 
 import { readStock } from "./cityStock";
 import { log } from "./debug";
+import { onlyOurs } from "./ownChanges";
+import { cleanAmount, field, postTorn, showReply, tornButton } from "./tornForms";
 import { isLogEntry } from "./purchaseText";
-import {
-  AMOUNT_FIELD_SELECTOR,
-  TEXT_FIELD_SELECTOR,
-  USER_FIELD_SELECTOR,
-  fillField,
-  recipientText,
-} from "./recipient";
+import { recipientText } from "./recipient";
+import { FoundUser, MIN_QUERY, searchUsers } from "./userSearch";
 import { PREFERRED_RECIPIENT, isEnabled } from "./settings";
 
 /** The shop pages this feature runs on. */
 export const SHOP_PATHS = ["/shops.php", "/bigalgunshop.php"];
 
-// Do not open the frame at item.php#all-items. A "#" address makes the browser
-// scroll to that spot, in the page around the frame as well, and that was the
-// shop page jumping when the plane was clicked. The All tab is clicked instead.
-const ITEMS_URL = "https://www.torn.com/item.php";
-/** The items page's "All" tab: <a href="#all-items" class="all-category-icon ...">. */
-const ALL_TAB_SELECTOR = "a[href='#all-items']";
+/** Where Torn's item send form posts, both for the check and the confirmation. */
+const SEND_URL = "https://www.torn.com/item.php";
+/** The longest message Torn's send form allows. */
+const MESSAGE_MAX = 200;
+
 /** Where a panel keeps what was bought. */
 const ITEM_ATTR = "data-aue-item";
 const AMOUNT_ATTR = "data-aue-amount";
 const NAME_ATTR = "data-aue-name";
+/** Where a panel keeps how many of the item are held; empty while it is being asked. */
+const MAX_ATTR = "data-aue-max";
+/** The amount held, in Torn's send form: <input ... name="amount" data-max="67">. */
+const HELD_IN_FORM = /name="amount"[^>]*data-max="(\d+)"|data-max="(\d+)"[^>]*name="amount"/;
+/** How long typing in the User ID box settles before Torn is asked for names. */
+const SEARCH_DELAY_MS = 250;
+/** How long a suggestion stays clickable after the box loses focus. */
+const BLUR_MS = 150;
+/** Where a panel keeps what Torn agreed to, waiting for Yes, as JSON. */
+const PENDING_ATTR = "data-aue-pending";
 /** Ties an aeroplane to the panel it opens. */
 const PANEL_ATTR = "data-aue-panel";
 /** Marks a purchase message that has already been given a send option. */
@@ -48,24 +56,12 @@ const MESSAGE_MAX_LENGTH = 300;
 const ITEM_IMAGE = /\/items\/(\d+)\//;
 /** How far up from a message the item row is looked for. */
 const ANCESTOR_LIMIT = 6;
-/** How long the items page is given to show the bought item. */
-const FRAME_READY_MS = 20000;
-const POLL_MS = 250;
-/** Settles a burst of Torn's own rendering before the page is read again. */
-const SETTLE_MS = 150;
-/** How many polls a row's send form is given to appear. */
-const FORM_TRIES = 28;
-/** Polls between one press of a row's send control and the next. */
-const FORM_CLICK_EVERY = 3;
-
 /** How high above a purchase message the shop's own block is looked for. */
 const BOX_LIMIT = 8;
 /** As high as that walk goes: past this it is out of the page's content. */
 const CONTENT_ROOT_SELECTOR = ".content-wrapper, #mainContainer";
-/** Longer than this is the item's row rather than its send form. */
-const SEND_PANEL_MAX_LENGTH = 220;
-/** How often an open panel checks that its form is still there. */
-const FORM_WATCH_MS = 500;
+/** Item pictures closer than this side to side are taken to be in one column. */
+const COLUMN_SLACK_PX = 5;
 /** Ties a dismiss button to the panel it ends. */
 const CLOSE_LINK_ATTR = "data-aue-closes";
 /** How high above a message its own dismiss button is looked for. */
@@ -74,85 +70,11 @@ const CLOSE_LIMIT = 4;
 const MESSAGE_CLOSE_SELECTOR = "button[aria-label='Close' i], .close-icon";
 /** The options Torn offers beside a purchase message. */
 const OPTION_TEXT = /your items|equip|use item|read|open|start|abroad/i;
-/** The row for one item on the items page. */
-const ROW_SELECTOR = "li, tr";
-/** The label Torn puts on the control that opens a send form. */
-const SEND_TEXT = /^\s*send\s*$/i;
-/** Anything on the items page that can be clicked. */
-const CLICKABLE_SELECTOR = "button, a, li, span, div, [role='button']";
-/** The control that opens a row's send form. */
-const SEND_SELECTORS = [
-  "[aria-label='Send' i]",
-  "[title='Send' i]",
-  "a[href*='send' i]",
-  "[class*='send' i]",
-];
-/** Longer than this is a list rather than one item's row. */
-const ROW_MAX_LENGTH = 300;
 /** Torn's send aeroplane. */
 const PLANE_PATH = "M2 21l21-9L2 3v7l15 2-15 2v7z";
 const SVG_NS = "http://www.w3.org/2000/svg";
-/** Marks Torn's name suggestions, hidden until the player clicks the recipient box. */
-const QUIET_ATTR = "data-aue-quiet-list";
-/** The recipient box's drop-down of suggested names. */
-const SUGGESTIONS_SELECTOR = ".autocomplete-wrap";
-/** Put on the framed page once the player has used the recipient box. */
-const ENGAGED_ATTR = "data-aue-recipient-used";
-/** How long after the plane is clicked the shop page is held where it was. */
-const HOLD_PAGE_MS = 4000;
-/** The frame's height is kept between these, fitted to what it shows. */
-const FRAME_MIN_HEIGHT = 50;
-const FRAME_MAX_HEIGHT = 220;
-/** Put on the frame until its send form is ready to look at. */
-const WAITING_CLASS = "aue-send-frame-waiting";
-/** Put on the framed page while only the bought item is on show. */
-const ONLY_CLASS = "aue-send-only";
-/** Put on everything the framed page is hiding. */
-const HIDE_CLASS = "aue-send-hidden";
-/** Put on the wrappers the send form is left sitting in. */
-const KEEP_CLASS = "aue-send-kept";
-/** The stylesheet the framed items page is given. */
-const FRAME_CSS = `
-  .${ONLY_CLASS} .${HIDE_CLASS} {
-    display: none !important;
-  }
-  .${ONLY_CLASS} .${KEEP_CLASS} {
-    position: static !important;
-    transform: none !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border: 0 !important;
-    width: auto !important;
-    min-width: 0 !important;
-    height: auto !important;
-    min-height: 0 !important;
-    max-height: none !important;
-    overflow: visible !important;
-    background: transparent !important;
-    display: block !important;
-  }
-  .${ONLY_CLASS} body {
-    margin: 0 !important;
-    padding: 0 !important;
-  }
-  #sidebarroot,
-  #header-root,
-  .header-wrapper-top,
-  .header-wrapper-bottom,
-  #chatRoot,
-  #footer,
-  .footer,
-  .content-title,
-  .links-top-wrap,
-  .breadcrumbs,
-  .ad-wrapper {
-    display: none !important;
-  }
-  [${QUIET_ATTR}] {
-    display: none !important;
-  }
-  body { background: transparent !important; }
-`;
+/** Settles a burst of Torn's own rendering before the page is read again. */
+const SETTLE_MS = 150;
 
 /** How many panels this page has made. */
 let panelCount = 0;
@@ -201,54 +123,6 @@ function findOptionRow(message: Element): Element | null {
   return null;
 }
 
-/** Returns the row for an item on the items page. */
-function findRow(doc: Document, itemId: string): Element | null {
-  // No id means the caller goes by the name instead.
-  if (!itemId) return null;
-  const tagged = doc.querySelector(
-    `[data-item="${itemId}"], [data-itemid="${itemId}"]`,
-  );
-  if (tagged) return tagged.closest(ROW_SELECTOR) ?? tagged;
-
-  const images = doc.querySelectorAll<HTMLImageElement>("img[src*='/items/']");
-  for (const image of images) {
-    const match = ITEM_IMAGE.exec(image.getAttribute("src") ?? "");
-    if (match && match[1] === itemId) {
-      return image.closest(ROW_SELECTOR) ?? image.parentElement;
-    }
-  }
-  return null;
-}
-
-/** Returns the control that opens a row's send form. */
-function findSendControl(row: Element): HTMLElement | null {
-  for (const scope of [row, row.nextElementSibling, row.parentElement]) {
-    if (!scope) continue;
-
-    let best: HTMLElement | null = null;
-    const clickable = scope.querySelectorAll<HTMLElement>(CLICKABLE_SELECTOR);
-    for (const element of clickable) {
-      if (!SEND_TEXT.test(element.textContent ?? "")) continue;
-      if (!best || best.contains(element)) best = element;
-    }
-    if (best) return best;
-
-    for (const selector of SEND_SELECTORS) {
-      const control = scope.querySelector<HTMLElement>(selector);
-      if (control) return control;
-    }
-  }
-  return null;
-}
-
-/** Opens a row's own actions, which is where its send control lives. */
-function expandRow(row: Element): void {
-  const handle =
-    row.querySelector<HTMLElement>("img[src*='/items/']") ??
-    (row as HTMLElement);
-  handle.click();
-}
-
 /** Returns the quantity a purchase message reports. */
 function amountBought(message: Element): string | null {
   const match = BOUGHT_ITEM.exec(message.textContent ?? "");
@@ -264,433 +138,61 @@ function nameBought(message: Element): string {
   return match?.[2]?.replace(/\s+/g, " ").trim() ?? "";
 }
 
-/** Returns the row for an item on the items page, found by its name. */
-function findRowByName(doc: Document, name: string): Element | null {
-  if (!name) return null;
-  const wanted = name.toLowerCase();
-  let best: Element | null = null;
-  for (const row of doc.querySelectorAll(ROW_SELECTOR)) {
-    const text = (row.textContent ?? "").toLowerCase();
-    if (!text.includes(wanted) || text.length > ROW_MAX_LENGTH) continue;
-    if (!best || text.length < (best.textContent ?? "").length) best = row;
-  }
-  return best;
+/**
+ * Torn's reply to a send request.
+ *
+ * The check answers {success, confirm, text, itemID, userID, ...}, where
+ * itemID is no longer the kind of item but the one copy in the inventory that
+ * would go, and userID is the recipient as a number. The confirmation answers
+ * {success, text, ...}. Either can come back with success false and a text
+ * saying why.
+ */
+interface SendReply {
+  success?: boolean;
+  confirm?: boolean;
+  text?: string;
+  itemID?: number | string;
+  userID?: number | string;
 }
 
-/** Returns the element holding a row's send form. */
-function sendFormScope(row: Element): Element {
-  if (row.querySelector(TEXT_FIELD_SELECTOR)) return row;
-  const next = row.nextElementSibling;
-  if (next?.querySelector(TEXT_FIELD_SELECTOR)) return next;
-  return row;
+/** Sends one of Torn's item send requests and returns its reply. */
+async function postSend(fields: Record<string, string>): Promise<SendReply> {
+  return JSON.parse(await postTorn(SEND_URL, fields)) as SendReply;
 }
 
 /**
- * Whether something is an element, for nodes in the framed page as well.
+ * Learns how many of the item the player holds, for the Amount box's limit.
  *
- * Not instanceof Element: the frame has its own Element, so a node from it
- * is never an instance of this page's, and every click in the frame was
- * ignored that way.
+ * Asks for Torn's own send form for the item, the request its items page
+ * makes when Send is pressed there, and reads the amount box's data-max. Run
+ * when the plane is clicked, once per panel.
  */
-function isElement(value: unknown): value is Element {
-  return typeof value === "object" && value !== null && (value as Node).nodeType === Node.ELEMENT_NODE;
-}
-
-/**
- * Hides the recipient box's suggestion list until the player clicks the box.
- *
- * Typing the name in makes Torn search and open the list, and a click
- * elsewhere did not close it. Hiding it leaves Torn's own state alone, so
- * the list works as normal once the player uses the box. Never closed by
- * picking a suggestion, which is the player's to do.
- */
-function quietSuggestions(scope: Element): void {
-  const doc = scope.ownerDocument;
-  if (doc.documentElement.hasAttribute(ENGAGED_ATTR)) return;
-  // Looked up afresh each time, as Torn's redraws can replace the box.
-  const input = scope.querySelector<HTMLInputElement>(USER_FIELD_SELECTOR);
-  if (!input) return;
-  // A jQuery autocomplete: the box is <input id="ac-search-0"> and its
-  // drop-down, tabs and all, is <div class="autocomplete-wrap"
-  // id="ac-search-0-cont"> right beside it.
-  const dropdown =
-    (input.id ? doc.getElementById(`${input.id}-cont`) : null) ??
-    input.parentElement?.querySelector(SUGGESTIONS_SELECTOR) ??
-    null;
-  if (dropdown && !dropdown.hasAttribute(QUIET_ATTR)) dropdown.setAttribute(QUIET_ATTR, "");
-}
-
-/**
- * Shows the suggestion list again once the player uses the recipient box.
- *
- * Only on the player's own click or key press. Not on focus: Torn moves the
- * cursor into the box itself a moment after the form opens, which brought
- * the list straight back.
- */
-function wakeSuggestions(doc: Document): void {
-  if (doc.documentElement.dataset.aueWakeWatched === "1") return;
-  doc.documentElement.dataset.aueWakeWatched = "1";
-  const wake = (event: Event): void => {
-    const target = event.target;
-    if (!event.isTrusted || !isElement(target) || !target.matches(USER_FIELD_SELECTOR)) return;
-    doc.documentElement.setAttribute(ENGAGED_ATTR, "");
-    for (const hidden of doc.querySelectorAll(`[${QUIET_ATTR}]`)) hidden.removeAttribute(QUIET_ATTR);
-  };
-  doc.addEventListener("pointerdown", wake, true);
-  doc.addEventListener("keydown", wake, true);
-}
-
-/** Fills in the recipient and the quantity on a row's send form. */
-function fillSendForm(row: Element, amount: string | null): void {
-  const scope = sendFormScope(row);
-  const boxes = Array.from(
-    scope.querySelectorAll<HTMLInputElement>(TEXT_FIELD_SELECTOR),
-  ).filter((box) => !box.disabled && !box.readOnly);
-  if (boxes.length === 0) return;
-
-  const recipient = recipientText();
-  const userBox =
-    scope.querySelector<HTMLInputElement>(USER_FIELD_SELECTOR) ?? boxes[0];
-  const amountBox =
-    scope.querySelector<HTMLInputElement>(AMOUNT_FIELD_SELECTOR) ??
-    (boxes[1] === userBox ? boxes[0] : boxes[1]);
-
-  if (recipient && userBox && userBox.value === "") {
-    fillField(userBox, recipient);
-    log("send: recipient", recipient);
-    // Typing the name opens Torn's suggestions; they stay hidden until the
-    // player clicks the box. The form watcher keeps them hidden as they load.
-    wakeSuggestions(userBox.ownerDocument);
-    quietSuggestions(scope);
-  }
-  if (amount && amountBox && amountBox !== userBox) {
-    fillField(amountBox, amount);
-    log("send: amount", amount);
-  }
-}
-
-/** Shows nothing on the framed page but one element. */
-function isolateRow(doc: Document, target: Element, toTop = true): void {
-  const keep = new Set<Element>();
-  for (let node: Element | null = target; node; node = node.parentElement) {
-    keep.add(node);
-  }
-
-  // Only what is missing is added: this runs on every change Torn makes, and
-  // rewriting a class that is already there would count as one.
-  for (const node of keep) {
-    for (const sibling of Array.from(node.parentElement?.children ?? [])) {
-      if (!keep.has(sibling) && !sibling.classList.contains(HIDE_CLASS)) {
-        sibling.classList.add(HIDE_CLASS);
-      }
-    }
-    if (node !== target && !node.classList.contains(KEEP_CLASS)) node.classList.add(KEEP_CLASS);
-  }
-  if (!doc.documentElement.classList.contains(ONLY_CLASS)) {
-    doc.documentElement.classList.add(ONLY_CLASS);
-  }
-  if (toTop) doc.defaultView?.scrollTo(0, 0);
-}
-
-/** Returns the send form on its own, without the row it belongs to. */
-function findSendPanel(row: Element): Element | null {
-  const scope = sendFormScope(row);
-  const user =
-    scope.querySelector<HTMLInputElement>(USER_FIELD_SELECTOR) ??
-    scope.querySelector<HTMLInputElement>(TEXT_FIELD_SELECTOR);
-  if (!user) return null;
-
-  let best: Element = user;
-  for (let node = user.parentElement; node && node !== row; ) {
-    if ((node.textContent ?? "").length > SEND_PANEL_MAX_LENGTH) break;
-    best = node;
-    node = node.parentElement;
-  }
-  return best;
-}
-
-/**
- * Keeps only the form on show while the panel is open, sized to fit.
- *
- * Do not close the panel when the form goes: pressing Send swaps it for
- * Torn's "are you sure" step, and closing then was why nothing was sent.
- * Whatever takes the form's place, in the element that held it, is shown
- * instead, and the panel stays until it is put away.
- */
-function watchForm(frame: HTMLIFrameElement, doc: Document, form: Element): void {
-  const panel = frame.closest<HTMLElement>(".aue-send");
-  if (!panel) return;
-  const holder = form.parentElement;
-  let shown = form;
-
-  /** Puts the hiding back over whatever Torn has just changed. */
-  const keepHidden = (): void => {
-    if (!shown.isConnected && holder?.isConnected) {
-      shown = holder;
-      log("send: the form was replaced, showing what took its place");
-    }
-    if (!shown.isConnected) return;
-    // The list goes on loading rows after the form is shown, and those
-    // arrive without the class that hides them.
-    isolateRow(doc, shown, false);
-    quietSuggestions(shown);
-    fitFrame(frame, shown);
-  };
-
-  // On every change, not on a timer: an observer's answer lands before the
-  // browser draws the next frame, where a timer let the list flash up first.
-  const FrameObserver = doc.defaultView?.MutationObserver ?? MutationObserver;
-  const observer = new FrameObserver(keepHidden);
-  observer.observe(doc.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-
-  const timer = window.setInterval(() => {
-    if (!panel.isConnected || panel.hidden) {
-      clearInterval(timer);
-      observer.disconnect();
+async function learnHeld(panel: HTMLElement): Promise<void> {
+  if (panel.hasAttribute(MAX_ATTR)) return;
+  const itemId = panel.getAttribute(ITEM_ATTR) ?? "";
+  if (!itemId) return;
+  panel.setAttribute(MAX_ATTR, "");
+  try {
+    const html = await postTorn(SEND_URL, {
+      step: "actionForm",
+      action: "send",
+      name: panel.getAttribute(NAME_ATTR) ?? "",
+      type: "item",
+      id: itemId,
+    });
+    const found = HELD_IN_FORM.exec(html);
+    const held = found?.[1] ?? found?.[2];
+    if (!held) {
+      log("send: Torn's send form gave no amount held");
       return;
     }
-    keepHidden();
-  }, FORM_WATCH_MS);
-}
-
-/**
- * Sizes the frame to what the framed page is showing.
- *
- * Measured from the shown element and everything in it, not from the page:
- * a page is never shorter than the frame it is in, so it could not shrink,
- * and the suggestion list under the recipient box hangs outside its parent.
- */
-function fitFrame(frame: HTMLIFrameElement, shown: Element): void {
-  const view = shown.ownerDocument.defaultView;
-  const scrolled = view?.scrollY ?? 0;
-  let bottom = 0;
-  for (const element of [shown, ...shown.querySelectorAll("*")]) {
-    const box = element.getBoundingClientRect();
-    if (box.height > 0) bottom = Math.max(bottom, box.bottom + scrolled);
+    panel.setAttribute(MAX_ATTR, held);
+    const amount = panel.querySelector<HTMLInputElement>(".aue-send-amount input");
+    if (amount) amount.value = cleanAmount(amount.value, held);
+    log("send: holding", held, "of item", itemId);
+  } catch (error) {
+    log("send: couldn't learn the amount held", error);
   }
-  const height = Math.min(FRAME_MAX_HEIGHT, Math.max(FRAME_MIN_HEIGHT, Math.ceil(bottom) + 6));
-  const wanted = `${height}px`;
-  if (frame.style.height !== wanted) frame.style.height = wanted;
-}
-
-interface FramedItem {
-  itemId: string;
-  name: string;
-  amount: string | null;
-}
-
-/** Shows the frame, now that there is something worth looking at in it. */
-function showFrame(frame: HTMLIFrameElement, status: HTMLElement): void {
-  frame.classList.remove(WAITING_CLASS);
-  frame.inert = false;
-  status.hidden = true;
-}
-
-/** Says why a panel has nothing to show, and offers the items page instead. */
-function failPanel(status: HTMLElement, reason: string): void {
-  status.hidden = false;
-  status.textContent = `${reason} `;
-
-  const link = document.createElement("a");
-  link.className = "aue-send-link";
-  link.href = ITEMS_URL;
-  link.target = "_blank";
-  link.rel = "noopener";
-  link.textContent = "Open items page";
-  status.appendChild(link);
-}
-
-/** Whether a row already shows its send form. */
-function sendFormOpen(row: Element): boolean {
-  return sendFormScope(row).querySelector(TEXT_FIELD_SELECTOR) !== null;
-}
-
-/** Opens the bought item's send form and fills it in, then shows the frame. */
-/** Torn's own Close on the send form, and on the "You sent ..." line after it. */
-const FRAME_CLOSE_SELECTOR = ".close-icon, a, button";
-const CLOSE_TEXT = /^\s*close\s*$/i;
-
-/**
- * Makes the framed page's clicks behave as they would on the items page itself.
- *
- * Torn's Close only closes its own box inside the frame, which left the
- * panel open on the rest of the page, so it puts the panel away too. And a
- * link that goes somewhere, such as the recipient's profile after a send,
- * opens in the whole window rather than inside the frame. Links that are
- * only buttons ("#", or handled by Torn's own script) are left alone.
- */
-function watchFrameClicks(frame: HTMLIFrameElement, doc: Document): void {
-  if (doc.documentElement.dataset.aueClicksWatched === "1") return;
-  doc.documentElement.dataset.aueClicksWatched = "1";
-
-  // Capture phase, on the way in: Torn's own handlers stop these clicks from
-  // going any further, so listening on the way back out heard nothing.
-  doc.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!isElement(target)) return;
-
-    const control = target.closest(FRAME_CLOSE_SELECTOR);
-    const isClose =
-      control !== null &&
-      (control.matches(".close-icon") ||
-        CLOSE_TEXT.test(control.textContent ?? "") ||
-        /^close$/i.test(control.getAttribute("aria-label") ?? ""));
-    if (isClose) {
-      const panel = frame.closest<HTMLElement>(".aue-send");
-      // After Torn has had the click, so its own state is tidied first.
-      setTimeout(() => panel && closePanel(panel), 0);
-      log("send: Torn's Close pressed, putting the panel away");
-      return;
-    }
-
-    // Pointed at the whole window rather than followed by hand, so the
-    // browser opens it there whatever Torn's own handlers do with the click.
-    const link = target.closest<HTMLAnchorElement>("a[href]");
-    const href = link?.getAttribute("href") ?? "";
-    if (!link || href === "" || href.startsWith("#") || href.startsWith("javascript:")) return;
-    if (link.target !== "_blank" && link.target !== "_top") {
-      link.target = "_top";
-      log("send: a link in the frame will open in the whole window", href);
-    }
-  }, true);
-}
-
-function openSendForm(
-  frame: HTMLIFrameElement,
-  doc: Document,
-  item: FramedItem,
-  status: HTMLElement,
-): void {
-  let polls = 0;
-
-  const step = (): void => {
-    const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
-    if (row && sendFormOpen(row)) {
-      fillSendForm(row, item.amount);
-      const form = findSendPanel(row) ?? row;
-      isolateRow(doc, form);
-      showFrame(frame, status);
-      fitFrame(frame, form);
-      watchForm(frame, doc, form);
-      log("send: the form is open for", item.itemId);
-      return;
-    }
-
-    if (row && polls % FORM_CLICK_EVERY === 0) {
-      const control = findSendControl(row);
-      if (control) control.click();
-      else expandRow(row);
-    }
-
-    polls += 1;
-    if (polls < FORM_TRIES) {
-      setTimeout(step, POLL_MS);
-      return;
-    }
-    failPanel(status, `Couldn't open the send form for ${item.name}.`);
-    log("send: the form never opened for", item.itemId);
-  };
-
-  step();
-}
-
-/** Puts this script's stylesheet on the framed items page. */
-function styleFrame(doc: Document): void {
-  if (doc.getElementById("aue-send-frame-styles")) return;
-  const style = doc.createElement("style");
-  style.id = "aue-send-frame-styles";
-  style.textContent = FRAME_CSS;
-  (doc.head ?? doc.documentElement).appendChild(style);
-}
-
-/**
- * Switches the framed items page to its "All" tab, once.
- *
- * The items page opens on whichever category was used last, and only that
- * category's items are on the page. This is what broke the send option a
- * day after it was written: it worked while Jewelry happened to be open.
- */
-function showAllItems(doc: Document): void {
-  const tab = doc.querySelector<HTMLElement>(ALL_TAB_SELECTOR);
-  const selected = tab?.closest("[role='tab']")?.getAttribute("aria-selected") === "true";
-  if (!tab || selected || tab.dataset.aueClicked === "1") return;
-  tab.dataset.aueClicked = "1";
-  // The tab is a "#all-items" link; followed, it would scroll the shop page
-  // round the frame. Its own click handler still runs and switches the tab.
-  tab.addEventListener("click", (event) => event.preventDefault(), { once: true });
-  tab.click();
-  log("send: switched the items page to All");
-}
-
-/** Brings the bought item's send form into view inside the frame. */
-function openInFrame(
-  frame: HTMLIFrameElement,
-  item: FramedItem,
-  status: HTMLElement,
-): void {
-  const started = Date.now();
-
-  const attempt = (): void => {
-    let doc: Document | null = null;
-    try {
-      doc = frame.contentDocument;
-    } catch {
-      doc = null;
-    }
-    const expired = Date.now() - started >= FRAME_READY_MS;
-
-    if (!doc || !doc.body) {
-      if (!expired) {
-        setTimeout(attempt, POLL_MS);
-        return;
-      }
-      failPanel(status, "Torn would not show your items here.");
-      log("send: the items page never loaded in the frame");
-      return;
-    }
-
-    styleFrame(doc);
-    const row = findRow(doc, item.itemId) ?? findRowByName(doc, item.name);
-    // Do not type into a search box to find it: the first "search..." box on
-    // the items page is the header's player search, not a filter of items.
-    if (!row) {
-      showAllItems(doc);
-      // The list loads more of itself as it is scrolled, so it is taken to
-      // the bottom until the item turns up.
-      const view = doc.defaultView;
-      view?.scrollTo(0, doc.documentElement.scrollHeight);
-      if (!expired) {
-        setTimeout(attempt, POLL_MS);
-        return;
-      }
-      failPanel(status, `Couldn't find ${item.name} in your items.`);
-      log("send: item", item.itemId, item.name, "not found on the items page");
-      return;
-    }
-
-    watchFrameClicks(frame, doc);
-    openSendForm(frame, doc, item, status);
-    log("send: found item", item.itemId, "in your items");
-  };
-
-  attempt();
-}
-
-/** Returns the frame the bought item's send form is taken from. */
-function buildFrame(item: FramedItem, status: HTMLElement): HTMLIFrameElement {
-  const frame = document.createElement("iframe");
-  frame.className = `aue-send-frame ${WAITING_CLASS}`;
-  // Inert until the form is shown: the items page takes the focus as it
-  // loads, and the browser scrolled the shop page to it, which was the jump.
-  frame.inert = true;
-  frame.src = ITEMS_URL;
-  frame.addEventListener("load", () => openInFrame(frame, item, status));
-  return frame;
 }
 
 /** Returns the aeroplane that opens a panel. */
@@ -714,7 +216,7 @@ function buildTrigger(panelId: string): HTMLElement {
   return trigger;
 }
 
-/** Returns the panel holding the framed send form. */
+/** Returns the panel holding the send form for one purchase. */
 function buildPanel(
   panelId: string,
   itemId: string,
@@ -729,71 +231,202 @@ function buildPanel(
   panel.setAttribute(NAME_ATTR, name);
   if (amount) panel.setAttribute(AMOUNT_ATTR, amount);
 
+  const heading = document.createElement("div");
+  heading.className = "aue-send-heading";
+  heading.append("Who would you like to send your ");
+  const item = document.createElement("b");
+  item.textContent = name || "item";
+  heading.append(item, " to?");
+
+  const form = document.createElement("div");
+  form.className = "aue-send-form";
+  const message = field("Message", "aue-send-message", "");
+  message.querySelector("input")?.setAttribute("maxlength", String(MESSAGE_MAX));
+  const user = field("User ID", "aue-send-user", recipientText());
+  const suggestions = document.createElement("div");
+  suggestions.className = "aue-suggest";
+  suggestions.hidden = true;
+  user.appendChild(suggestions);
+  const count = field("Amount", "aue-send-amount", amount ?? "1");
+  count.querySelector("input")?.setAttribute("inputmode", "numeric");
+  const send = tornButton("SEND", "aue-send-go");
+  form.append(message, user, count, send);
+
+  const confirm = document.createElement("div");
+  confirm.className = "aue-send-confirm";
+  confirm.hidden = true;
+  const question = document.createElement("div");
+  question.className = "aue-send-question";
+  const yes = tornButton("YES", "aue-send-yes");
+  const no = tornButton("NO", "aue-send-no");
+  confirm.append(question, yes, no);
+
   const status = document.createElement("div");
   status.className = "aue-send-status";
-  panel.appendChild(status);
+  status.hidden = true;
 
+  panel.append(heading, form, confirm, status);
   return panel;
 }
 
-/** Shows the framed send form for the item a panel was built for. */
-function openPanel(panel: HTMLElement): void {
-  const status = panel.querySelector<HTMLElement>(".aue-send-status");
-  const itemId = panel.getAttribute(ITEM_ATTR) ?? "";
-  const name = panel.getAttribute(NAME_ATTR) ?? "";
-  if (!status || (!itemId && !name)) return;
+/** Returns the value typed into one of a panel's boxes. */
+function valueOf(panel: HTMLElement, className: string): string {
+  return panel.querySelector<HTMLInputElement>(`.${className} input`)?.value.trim() ?? "";
+}
 
-  panel.hidden = false;
+/** Shows a line under the form, as a problem or as news. */
+function say(panel: HTMLElement, html: string, failed: boolean): void {
+  const status = panel.querySelector<HTMLElement>(".aue-send-status");
+  if (!status) return;
+  showReply(status, html);
+  status.classList.toggle("aue-send-failed", failed);
   status.hidden = false;
-  status.textContent = name
-    ? `Opening the send form for ${name}...`
-    : "Opening the send form...";
-  if (!panel.querySelector("iframe")) {
-    holdPage();
-    const amount = panel.getAttribute(AMOUNT_ATTR);
-    panel.appendChild(buildFrame({ itemId, name, amount }, status));
-  }
-  log("send: opened item", itemId);
+}
+
+/** Returns a part of a panel by its class. */
+function part<T extends HTMLElement = HTMLElement>(panel: HTMLElement, className: string): T | null {
+  return panel.querySelector<T>(`.${className}`);
 }
 
 /**
- * Keeps the shop page where it is while the framed items page loads.
+ * Asks Torn whether a panel's send is possible, and shows its question.
  *
- * Something inside the frame taking the focus as it loads makes the browser
- * scroll the shop page to it, which is the jump on clicking the plane. Any
- * scroll of the player's own - wheel, touch, keys, the scrollbar - ends the
- * hold at once, so it never fights them.
+ * Torn's answer names the one copy of the item that would go, which is what
+ * Yes then sends. Nothing is asked of Torn without a click, and each click
+ * asks once.
  */
-function holdPage(): void {
-  const x = scrollX;
-  const y = scrollY;
-  const until = Date.now() + HOLD_PAGE_MS;
-  const events = ["wheel", "touchstart", "keydown", "mousedown"] as const;
+async function askToSend(panel: HTMLElement): Promise<void> {
+  const send = part<HTMLButtonElement>(panel, "aue-send-go");
+  if (!send || send.disabled) return;
+  const itemId = panel.getAttribute(ITEM_ATTR) ?? "";
+  const user = valueOf(panel, "aue-send-user");
+  const amount = valueOf(panel, "aue-send-amount");
+  const tag = valueOf(panel, "aue-send-message");
+  if (!itemId) {
+    say(panel, "Couldn't tell which item this is, so it can't be sent from here.", true);
+    return;
+  }
+  if (!user) {
+    say(panel, "Who should it go to?", true);
+    return;
+  }
 
-  const stop = (): void => {
-    removeEventListener("scroll", restore);
-    for (const type of events) removeEventListener(type, stop, true);
-  };
-  const restore = (): void => {
-    if (Date.now() > until) {
-      stop();
+  send.disabled = true;
+  try {
+    const reply = await postSend({ step: "sendItemAction", tag, userID: user, amount, itemID: itemId });
+    log("send: check answered", reply);
+    if (!reply.success || !reply.confirm || reply.itemID === undefined || reply.userID === undefined) {
+      say(panel, reply.text || "Torn wouldn't send that.", true);
       return;
     }
-    if (scrollX !== x || scrollY !== y) {
-      scrollTo(x, y);
-      log("send: kept the shop page from jumping");
-    }
-  };
+    panel.setAttribute(
+      PENDING_ATTR,
+      JSON.stringify({
+        step: "sendItemAction",
+        confirm: "1",
+        XID: String(reply.itemID),
+        userID: String(reply.userID),
+        tag,
+        amount,
+      }),
+    );
+    const question = part(panel, "aue-send-question");
+    if (question) showReply(question, reply.text ?? "Send it?");
+    part(panel, "aue-send-form")?.setAttribute("hidden", "");
+    part(panel, "aue-send-status")?.setAttribute("hidden", "");
+    part(panel, "aue-send-confirm")?.removeAttribute("hidden");
+    part(panel, "aue-send-yes")?.focus();
+  } catch (error) {
+    say(panel, "Couldn't reach Torn. Try again.", true);
+    log("send: check failed", error);
+  } finally {
+    send.disabled = false;
+  }
+}
 
-  addEventListener("scroll", restore);
-  for (const type of events) addEventListener(type, stop, true);
-  setTimeout(stop, HOLD_PAGE_MS);
+/** Sends what Torn agreed to, on Yes. */
+async function confirmSend(panel: HTMLElement): Promise<void> {
+  const yes = part<HTMLButtonElement>(panel, "aue-send-yes");
+  const raw = panel.getAttribute(PENDING_ATTR);
+  if (!yes || yes.disabled || !raw) return;
+  const fields = JSON.parse(raw) as Record<string, string>;
+
+  yes.disabled = true;
+  try {
+    const reply = await postSend(fields);
+    log("send: confirmation answered", reply);
+    panel.removeAttribute(PENDING_ATTR);
+    part(panel, "aue-send-confirm")?.setAttribute("hidden", "");
+    if (reply.success) {
+      say(panel, reply.text || "Sent.", false);
+      // What went is no longer held, so the limit comes down with it.
+      const held = Number(panel.getAttribute(MAX_ATTR));
+      if (held > 0) panel.setAttribute(MAX_ATTR, String(Math.max(0, held - Number(fields.amount))));
+    } else {
+      part(panel, "aue-send-form")?.removeAttribute("hidden");
+      say(panel, reply.text || "Torn wouldn't send that.", true);
+    }
+  } catch (error) {
+    say(panel, "Couldn't reach Torn. Try again.", true);
+    log("send: confirmation failed", error);
+  } finally {
+    yes.disabled = false;
+  }
+}
+
+/** Drops what Torn agreed to, on No, and goes back to the form. */
+function cancelSend(panel: HTMLElement): void {
+  panel.removeAttribute(PENDING_ATTR);
+  part(panel, "aue-send-confirm")?.setAttribute("hidden", "");
+  part(panel, "aue-send-form")?.removeAttribute("hidden");
+}
+
+/** Offers the names Torn found for what was typed in a panel's User ID box. */
+function offerUsers(panel: HTMLElement, users: FoundUser[]): void {
+  const list = part(panel, "aue-suggest");
+  if (!list) return;
+  list.replaceChildren();
+  for (const user of users) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "aue-suggest-option";
+    option.dataset.aueUser = `${user.name} [${user.id}]`;
+    const dot = document.createElement("span");
+    dot.className = user.online ? "aue-dot aue-dot-on" : "aue-dot";
+    option.append(dot, `${user.name} [${user.id}]`);
+    list.appendChild(option);
+  }
+  list.hidden = users.length === 0;
+}
+
+let searchTimer = 0;
+
+/** Looks up names as they are typed in a User ID box, the way Torn's own box does. */
+function onUserTyped(panel: HTMLElement, input: HTMLInputElement): void {
+  const typed = input.value.trim();
+  clearTimeout(searchTimer);
+  // An ID, or a name already picked, needs no list.
+  if (typed.length < MIN_QUERY || /^\d+$/.test(typed) || /\[\d+\]$/.test(typed)) {
+    part(panel, "aue-suggest")?.setAttribute("hidden", "");
+    return;
+  }
+  searchTimer = window.setTimeout(() => {
+    void searchUsers(typed).then((users) => {
+      if (input.value.trim() === typed) offerUsers(panel, users);
+    });
+  }, SEARCH_DELAY_MS);
+}
+
+/** Opens a panel. */
+function openPanel(panel: HTMLElement): void {
+  void learnHeld(panel);
+  panel.hidden = false;
+  log("send: opened item", panel.getAttribute(ITEM_ATTR));
 }
 
 /** Puts a panel away. */
 function closePanel(panel: HTMLElement): void {
   panel.hidden = true;
-  panel.querySelector("iframe")?.remove();
 }
 
 // Do not bind to the buttons: Torn clones them, which drops their listeners.
@@ -822,7 +455,7 @@ function linkClose(message: Element, panelId: string): void {
   }
 }
 
-/** Works the send panels from one listener on the page. */
+/** Works the aeroplanes and dismiss buttons from one listener on the page. */
 function installClicks(): void {
   document.addEventListener(
     "click",
@@ -834,12 +467,27 @@ function installClicks(): void {
       if (trigger) {
         event.preventDefault();
         event.stopPropagation();
-        const panel = document.getElementById(
-          trigger.getAttribute(PANEL_ATTR) ?? "",
-        );
-        if (!panel) return;
+        const panelId = trigger.getAttribute(PANEL_ATTR) ?? "";
+        // A panel Torn's redraw took is put back before the settled scan would.
+        const message = document.querySelector(`[${MARKED_ATTR}="${panelId}"]`);
+        const panel =
+          document.getElementById(panelId) ?? (message && ensurePanel(message, panelId));
+        if (!panel) {
+          log("send: no panel to open for", panelId);
+          return;
+        }
         if (panel.hidden) openPanel(panel);
         else closePanel(panel);
+        return;
+      }
+
+      // The panel's own buttons are worked from here too: Torn copies the
+      // shop's markup as it redraws, and a copy carries no listeners.
+      const panel = target.closest<HTMLElement>(".aue-send");
+      if (panel) {
+        if (target.closest(".aue-send-go")) void askToSend(panel);
+        else if (target.closest(".aue-send-yes")) void confirmSend(panel);
+        else if (target.closest(".aue-send-no")) cancelSend(panel);
         return;
       }
 
@@ -849,7 +497,77 @@ function installClicks(): void {
     true,
   );
 
+  // Mousedown, not click: the box losing focus would hide the list first.
+  document.addEventListener(
+    "mousedown",
+    (event) => {
+      const target = event.target;
+      const option = target instanceof Element ? target.closest<HTMLElement>(".aue-send .aue-suggest-option") : null;
+      const panel = option?.closest<HTMLElement>(".aue-send");
+      if (!option || !panel) return;
+      event.preventDefault();
+      const input = panel.querySelector<HTMLInputElement>(".aue-send-user input");
+      if (input) input.value = option.dataset.aueUser ?? "";
+      part(panel, "aue-suggest")?.setAttribute("hidden", "");
+    },
+    true,
+  );
+
+  // Anything but digits is refused as it is typed or pasted, before it lands.
+  document.addEventListener(
+    "beforeinput",
+    (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || !target.closest(".aue-send-amount")) return;
+      if (event.data && /\D/.test(event.data)) event.preventDefault();
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "input",
+    (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      const panel = target.closest<HTMLElement>(".aue-send");
+      if (!panel) return;
+      if (target.closest(".aue-send-user")) onUserTyped(panel, target);
+      if (target.closest(".aue-send-amount")) {
+        // Catches what beforeinput cannot, such as a drop, and pulls a number
+        // above what is held back down to it.
+        const cleaned = cleanAmount(target.value, panel.getAttribute(MAX_ATTR) ?? "");
+        if (cleaned !== target.value) target.value = cleaned;
+      }
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "focusout",
+    (event) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest(".aue-send-user")) return;
+      const panel = target.closest<HTMLElement>(".aue-send");
+      if (panel) setTimeout(() => part(panel, "aue-suggest")?.setAttribute("hidden", ""), BLUR_MS);
+    },
+    true,
+  );
+
   document.addEventListener("keydown", (event) => {
+    // Enter never sends, so a slip of the key cannot give an item away. In
+    // the User ID box it takes the one name left in the list, if only one is.
+    const target = event.target;
+    if (event.key === "Enter" && target instanceof HTMLInputElement && target.closest(".aue-send-form")) {
+      event.preventDefault();
+      const panel = target.closest<HTMLElement>(".aue-send");
+      const list = panel && part(panel, "aue-suggest");
+      const options = list && !list.hidden ? list.querySelectorAll<HTMLElement>(".aue-suggest-option") : [];
+      if (target.closest(".aue-send-user") && options.length === 1 && list) {
+        target.value = options[0]?.dataset.aueUser ?? target.value;
+        list.hidden = true;
+      }
+      return;
+    }
     if (event.key !== "Escape") return;
     for (const panel of document.querySelectorAll<HTMLElement>(".aue-send")) {
       if (!panel.hidden) closePanel(panel);
@@ -881,8 +599,41 @@ function ensureTrigger(message: Element, panelId: string): void {
   log("send: aeroplane placed", row ? "in Torn's row" : "on its own");
 }
 
-/** Returns the shop's own block that a purchase message sits in. */
+/**
+ * Returns the block the panel goes after.
+ *
+ * With the items in a grid, the shop's whole block: the message's own box
+ * there does not show what is put after it. With the items stacked in one
+ * column, the message sits inside that list, so the shop's block would put
+ * the panel below every item, and the message's own box, the one holding
+ * Torn's dismiss button, is used. Decided by the shop's layout rather than
+ * the window's width, as the shop changes layout at a width of its own.
+ */
 function purchaseBox(message: Element): Element {
+  const shop = shopBox(message);
+  let node: Element | null = message;
+  for (let depth = 0; node && depth < CLOSE_LIMIT; depth += 1) {
+    if (node.querySelector(MESSAGE_CLOSE_SELECTOR)) {
+      return itemsInOneColumn(shop, node) ? node : shop;
+    }
+    node = node.parentElement;
+  }
+  return shop;
+}
+
+/** Whether a shop shows its items stacked in one column, judged from two item pictures outside the message. */
+function itemsInOneColumn(shop: Element, messageBox: Element): boolean {
+  const pictures = [...shop.querySelectorAll("img[src*='/items/']")]
+    .filter((picture) => !messageBox.contains(picture))
+    .slice(0, 2)
+    .map((picture) => picture.getBoundingClientRect());
+  const [first, second] = pictures;
+  if (!first || !second) return false;
+  return Math.abs(first.left - second.left) < COLUMN_SLACK_PX;
+}
+
+/** Returns the shop's own block that a purchase message sits in. */
+function shopBox(message: Element): Element {
   let box: Element = message;
   for (let depth = 0; depth < BOX_LIMIT; depth += 1) {
     const parent = box.parentElement;
@@ -905,26 +656,40 @@ function stockItemId(name: string): string {
 
 /** Puts a send option beside a purchase message. */
 function offerSend(message: Element): void {
-  // The items page is searched by name as well as by id, so a message with
-  // only a name is still enough. Needing the id is what stopped the option
-  // appearing once Torn moved the message away from the item's picture.
+  // Torn's send request needs the kind of item by number. The message's own
+  // picture usually gives it; failing that, the shop stock does, by name.
   const name = nameBought(message);
   const itemId = itemIdFor(message) ?? stockItemId(name);
-  if (!itemId && !name) {
+  if (!itemId) {
     message.setAttribute(MARKED_ATTR, "none");
-    log("send: neither an item id nor a name in", message.textContent);
+    log("send: no item id for", name || message.textContent);
     return;
   }
-  if (!itemId) log("send: no item id near the message, going by the name", name);
 
   panelCount += 1;
   const panelId = `aue-send-${panelCount}`;
   message.setAttribute(MARKED_ATTR, panelId);
-  const panel = buildPanel(panelId, itemId, name, amountBought(message));
-  const box = purchaseBox(message);
-  box.insertAdjacentElement("afterend", panel);
+  ensurePanel(message, panelId);
   ensureTrigger(message, panelId);
   log("send: offering item", itemId);
+}
+
+/**
+ * Puts a message's panel under it, building it again if it has gone.
+ *
+ * On mobile the panel sits inside Torn's item list, and Torn throws away what
+ * it did not draw whenever it redraws that list. A panel lost that way comes
+ * back closed, at its form.
+ */
+function ensurePanel(message: Element, panelId: string): HTMLElement | null {
+  const existing = document.getElementById(panelId);
+  if (existing) return existing;
+  const name = nameBought(message);
+  const itemId = itemIdFor(message) ?? stockItemId(name);
+  if (!itemId) return null;
+  const panel = buildPanel(panelId, itemId, name, amountBought(message));
+  purchaseBox(message).insertAdjacentElement("afterend", panel);
+  return panel;
 }
 
 /** Offers a send option beside the innermost purchase message in a subtree. */
@@ -940,7 +705,10 @@ function scan(root: Element): void {
     }
     const marked = message.getAttribute(MARKED_ATTR);
     if (!marked) offerSend(message);
-    else if (marked !== "none") ensureTrigger(message, marked);
+    else if (marked !== "none") {
+      ensurePanel(message, marked);
+      ensureTrigger(message, marked);
+    }
   }
 }
 
@@ -951,7 +719,8 @@ export function installShopSend(): void {
   scan(document.body);
 
   let timer = 0;
-  new MutationObserver(() => {
+  new MutationObserver((records) => {
+    if (onlyOurs(records)) return;
     clearTimeout(timer);
     timer = window.setTimeout(() => {
       if (on()) scan(document.body);

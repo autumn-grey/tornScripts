@@ -97,9 +97,7 @@ export async function fetchCityShops(key: string): Promise<CityShop[]> {
     error?: { error?: string };
   };
   if (body.error) throw new Error(body.error.error ?? "API error");
-  const shops = parseShops(body);
-  log("city shop: stock", shops);
-  return shops;
+  return parseShops(body);
 }
 
 /** Returns the stored stock and when it was fetched, or null when there is none. */
@@ -119,6 +117,8 @@ export async function loadStock(key: string, maxAgeMs: number): Promise<CityShop
   if (stored && Date.now() - stored.fetchedAt < maxAgeMs) return stored.shops;
   try {
     const shops = await fetchCityShops(key);
+    // Fetched every 30 seconds, so only a change is worth a line in the log.
+    if (JSON.stringify(shops) !== JSON.stringify(stored?.shops)) log("city shop: stock changed", shops);
     writeSetting(STOCK_STATE_SETTING, JSON.stringify({ fetchedAt: Date.now(), shops }));
     return shops;
   } catch (error) {

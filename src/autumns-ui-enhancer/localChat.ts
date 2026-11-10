@@ -15,9 +15,19 @@
 // Written after reading Deviyl's Torn Chat Hider, which is where the idea of
 // a second, local hide kept in sessionStorage comes from.
 
+import { noteUndone } from "./clash";
 import { log } from "./debug";
-import { INDEPENDENT_CHAT_TABS, isEnabled } from "./settings";
+import { onlyOurs } from "./ownChanges";
+import { CHAT_SIDE_BUTTON, INDEPENDENT_CHAT_TABS, isEnabled } from "./settings";
 
+/** Everything chat lives inside. */
+const CHAT_ROOT_SELECTOR = "#chatRoot";
+/**
+ * The ids Torn gives its chat windows, the same prefixes TornW3B matches on.
+ * Steadier than the minimise control's wording, which is the second net.
+ */
+const CHAT_ID_SELECTOR =
+  'div[id^="public_"], div[id^="private-"], div[id^="faction"], div[id^="company"], div#staff';
 /** Torn's minimise control. The label carries the chat's name after it. */
 const MINIMISE_SELECTOR = 'svg[aria-label^="Minimize"]';
 /** Torn's close control, which this feature never interferes with. */
@@ -59,14 +69,12 @@ const PEOPLE_PANEL_SELECTOR = "#people_panel";
 /** How long after a click in that list the chat it opens is waited for. */
 const MENU_OPEN_MS = 3000;
 
-/** The strip at the top of a chat window that can be taken hold of. */
-const HEADER_DEPTH = 34;
-/** How far a grab travels before it is a drag and not a slipped click. */
-const DRAG_THRESHOLD = 24;
 /** How far above a button the row that holds the whole bar is looked for. */
 const TASKBAR_CLIMB = 4;
-/** Controls a grab must not start on, since they already do something. */
-const NOT_A_HANDLE = `input, textarea, a, ${MINIMISE_SELECTOR}, ${CLOSE_SELECTOR}`;
+/** The button in the bar that moves the chats from one side to the other. */
+const SIDE_BUTTON_ID = "aue-chat-side";
+/** Marks the button as showing the chats on the left. */
+const SIDE_BUTTON_LEFT = "aue-chat-side-left";
 
 /** How long the pre-hide may last before it lifts whatever else happens. */
 const FAILSAFE_MS = 5000;
@@ -187,7 +195,8 @@ function tabIsNew(): boolean {
 
 /** Returns which side of the screen this tab keeps its chats on. */
 function barSide(): "left" | "right" {
-  if (!isEnabled(INDEPENDENT_CHAT_TABS)) return "right";
+  // Off, or on mobile, puts the chats back where Torn keeps them.
+  if (!isEnabled(CHAT_SIDE_BUTTON)) return "right";
   try {
     return sessionStorage.getItem(SIDE_KEY) === "left" ? "left" : "right";
   } catch {
@@ -228,6 +237,9 @@ function allowSmoothOffset(wrapper: HTMLElement): void {
   wrapper.style.setProperty("transition-property", widened, "important");
 }
 
+/** The offset last written to each window, so one changed by someone else is noticed. */
+const writtenOffsets = new WeakMap<HTMLElement, string>();
+
 /**
  * Puts our own offset on a window, over the top of Torn's.
  *
@@ -254,6 +266,8 @@ function setOffset(wrapper: HTMLElement, x: number, instant = false): void {
   allowSmoothOffset(wrapper);
   if (wanted === "") wrapper.style.removeProperty("translate");
   else wrapper.style.setProperty("translate", wanted, "important");
+  // Read back rather than kept as written, since the browser may tidy the value.
+  writtenOffsets.set(wrapper, wrapper.style.translate);
 
   if (placeAtOnce) {
     // Reading a size here makes the browser take the new position as the
@@ -282,13 +296,39 @@ interface ChatWindow {
   wrapper: HTMLElement;
 }
 
+/**
+ * Whether an element with a chat-like id is a window's box.
+ *
+ * A message or panel inside a chat could carry a matching id too. A window's
+ * box sits in a row item, and row items are the only things Torn gives an
+ * inline translateX.
+ */
+function isWindowBox(box: HTMLElement): boolean {
+  if (NOT_A_CHAT.test(box.id)) return false;
+  return wrapperOf(box)?.style.transform.includes("translateX(") ?? false;
+}
+
+/** Returns every chat box Torn has on the page, found by id and by minimise control. */
+function chatBoxes(): HTMLElement[] {
+  const found = new Set<HTMLElement>();
+  const root = document.querySelector(CHAT_ROOT_SELECTOR) ?? document;
+  for (const box of root.querySelectorAll<HTMLElement>(CHAT_ID_SELECTOR)) {
+    if (isWindowBox(box)) found.add(box);
+  }
+  // Catches a window Torn has not positioned yet, and any new kind of chat.
+  for (const button of document.querySelectorAll(MINIMISE_SELECTOR)) {
+    const box = boxOf(button);
+    if (box) found.add(box);
+  }
+  return [...found];
+}
+
 /** Returns every chat window Torn currently has on the page. */
 function chatWindows(): ChatWindow[] {
   const found: ChatWindow[] = [];
-  for (const button of document.querySelectorAll(MINIMISE_SELECTOR)) {
-    const box = boxOf(button);
-    const wrapper = box && wrapperOf(box);
-    if (box && wrapper) found.push({ id: box.id, wrapper });
+  for (const box of chatBoxes()) {
+    const wrapper = wrapperOf(box);
+    if (wrapper) found.push({ id: box.id, wrapper });
   }
   return found;
 }
@@ -323,9 +363,117 @@ function layOutTaskbar(side: "left" | "right"): void {
   const bar = findTaskbar();
   if (!bar) return;
   if (side === "left") {
+    if (reversedBar === bar && bar.style.flexDirection !== "row-reverse") {
+      noteUndone(CHAT_SIDE_BUTTON.label, "the chat bar's direction", chatRoot());
+    }
     bar.style.setProperty("flex-direction", "row-reverse", "important");
+    reversedBar = bar;
   } else {
     bar.style.removeProperty("flex-direction");
+    reversedBar = null;
+  }
+  placeSideButton(bar, side);
+}
+
+/** The bar last turned round, so a reversal undone by someone else is noticed. */
+let reversedBar: HTMLElement | null = null;
+/** The bar the left/right button was last put in, for the same reason. */
+let buttonBar: HTMLElement | null = null;
+
+/** Returns the element all of chat lives in, where other scripts' marks are looked for. */
+function chatRoot(): Element | null {
+  return document.querySelector(CHAT_ROOT_SELECTOR);
+}
+
+/**
+ * Returns the classes of Torn's own round-icon bar buttons, closed and open.
+ *
+ * Worn by the left/right button so Torn's colours apply to it and follow any
+ * restyle. Taken from the icon buttons, never a private chat's name tab, whose
+ * classes give it a different shape. Null when there is nothing to copy.
+ */
+function nativeClasses(): { closed: string[]; opened: string[] } | null {
+  let closed: string[] | null = null;
+  const opened = new Set<string>();
+  for (const button of document.querySelectorAll<HTMLElement>(TASKBAR_SELECTOR)) {
+    // Private chats are listed by the person's numeric id.
+    if (/^\d+$/.test(button.id.slice(TASKBAR_PREFIX.length))) continue;
+    const classes = [...button.classList];
+    for (const name of classes) if (name.startsWith("opened")) opened.add(name);
+    // Only what every icon button shares: a chat with unread messages carries
+    // a class that turns it green, and copying that turned this green too.
+    const base = classes.filter((name) => !STATE_CLASS.test(name));
+    closed = closed ? closed.filter((name) => base.includes(name)) : base;
+  }
+  return closed && closed.length > 0 ? { closed, opened: [...opened] } : null;
+}
+
+/** Classes on a bar button that say what state its chat is in, never copied as they stand. */
+const STATE_CLASS = /^(opened|message|unread|new)/i;
+
+/** Returns the left/right button, made on first use. */
+function sideButton(): HTMLButtonElement {
+  const existing = document.getElementById(SIDE_BUTTON_ID);
+  if (existing instanceof HTMLButtonElement) return existing;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = SIDE_BUTTON_ID;
+  // Coloured through CSS classes on the stops, the way Torn colours its own icons.
+  button.innerHTML = `<svg viewBox="0 0 20 20" aria-hidden="true">
+<defs><linearGradient id="aue-arrow-fill" x1="0" y1="0" x2="0" y2="1">
+<stop class="aue-arrow-start" offset="0"/><stop class="aue-arrow-end" offset="1"/>
+</linearGradient></defs>
+<path fill="url(#aue-arrow-fill)" d="M2 10 9.5 2.5V7H18v6H9.5v4.5Z"/>
+</svg>`;
+  button.addEventListener("click", () => {
+    setBarSide(barSide() === "left" ? "right" : "left");
+    relayout();
+    log("chat: bar moved to the", barSide());
+  });
+  return button;
+}
+
+/**
+ * Keeps the left/right button in the bar, pointing the way the chats would go.
+ *
+ * Its place in the DOM does not matter: its stylesheet rule gives it
+ * `order: -1`, so the browser draws it first in the bar whatever Torn adds
+ * or moves, and nothing here ever has to put it back in line.
+ */
+function placeSideButton(bar: HTMLElement, side: "left" | "right"): void {
+  if (!isEnabled(CHAT_SIDE_BUTTON)) {
+    document.getElementById(SIDE_BUTTON_ID)?.remove();
+    return;
+  }
+  const button = sideButton();
+  if (button.parentElement !== bar) {
+    // Torn swapping in a new bar is ordinary; the same bar losing it is not.
+    if (buttonBar === bar) {
+      noteUndone(CHAT_SIDE_BUTTON.label, "the left/right button's place in the chat bar", chatRoot());
+    }
+    bar.prepend(button);
+    buttonBar = bar;
+  }
+
+  // Only written when it changes, since the row is watched and a write wakes it.
+  const left = side === "left";
+  const native = nativeClasses();
+  // With no open button to copy from, the open look would come out closed.
+  const useNative = native !== null && (!left || native.opened.length > 0);
+  const classes = [
+    ...(useNative ? native.closed : []),
+    ...(useNative && left ? native.opened : []),
+    ...(useNative ? ["aue-native"] : []),
+    ...(left ? [SIDE_BUTTON_LEFT] : []),
+  ].join(" ");
+  if (button.className !== classes) button.className = classes;
+  const label = left ? "Move chats to the right" : "Move chats to the left";
+  if (button.title !== label) {
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    const arrow = button.querySelector("svg");
+    if (arrow) arrow.style.transform = left ? "scaleX(-1)" : "";
   }
 }
 
@@ -441,6 +589,24 @@ function windowIdOf(item: HTMLElement): string {
   return item.querySelector<HTMLElement>("div[id]")?.id ?? "";
 }
 
+/**
+ * Whether a chat window belongs to a bar button.
+ *
+ * The two ids differ for all but faction and company: the bar says "trade"
+ * for the window "public_trade", and gives a private chat the person's
+ * numeric id where the window has a "private-" id built from both players'.
+ */
+function belongsTo(windowId: string, barId: string): boolean {
+  if (windowId === barId || windowId === `public_${barId}`) return true;
+  return windowId.startsWith("private-") && windowId.slice(8).split(/[-_]/).includes(barId);
+}
+
+/** Returns the id of the window a bar button stands for, or the button's own id when none is known. */
+function windowIdFor(barId: string): string {
+  const known = [...readSet(HIDDEN_KEY), ...chatBoxes().map((box) => box.id)];
+  return known.find((id) => belongsTo(id, barId)) ?? barId;
+}
+
 /** Returns the chats in the order the bottom bar lists them. */
 function barOrder(): string[] {
   return [...document.querySelectorAll<HTMLElement>(TASKBAR_SELECTOR)].map(
@@ -464,7 +630,7 @@ function slotOf(item: HTMLElement, bar: string[]): number {
   const panel = PANEL_ORDER.indexOf(id);
   if (panel >= 0) return panel;
 
-  const chat = bar.indexOf(id);
+  const chat = bar.findIndex((barId) => belongsTo(id, barId));
   if (chat >= 0) {
     const place = PANEL_ORDER.length + chat;
     lastSlots.set(item, place);
@@ -650,6 +816,59 @@ function relayout(): void {
   }
 }
 
+/** The stylesheet giving hidden chats' bar buttons the closed look. */
+const BAR_ICON_STYLE_ID = "aue-chat-bar-icons";
+
+/**
+ * Gives the bar buttons of chats hidden in this tab Torn's closed look.
+ *
+ * Torn still has them open, so it draws them dark. Done with a stylesheet
+ * naming the buttons by id rather than a class on them, because Torn
+ * rewrites their classes whenever it redraws them. The values are Torn's
+ * own closed ones; a button with unread messages keeps its colour.
+ */
+function paintBarIcons(hidden: Set<string>): void {
+  const buttons: string[] = [];
+  for (const button of document.querySelectorAll<HTMLElement>(TASKBAR_SELECTOR)) {
+    const barId = button.id.slice(TASKBAR_PREFIX.length);
+    if ([...hidden].some((id) => belongsTo(id, barId))) buttons.push(`#${CSS.escape(button.id)}`);
+  }
+  const each = (suffix: string): string => buttons.map((button) => button + suffix).join(", ");
+  const css =
+    buttons.length === 0
+      ? ""
+      : `${each(':not([class*="message___"])')} {
+  background: linear-gradient(#666666, #333333) !important;
+  box-shadow: inset 0 0 4px rgba(255, 255, 255, 0.25), 0 -2px 4px rgba(0, 0, 0, 0.5) !important;
+}
+${each(':not([class*="message___"]):hover')} { background: linear-gradient(#888888, #444444) !important; }
+${each(' svg defs stop[id="start"]')} { stop-color: #cccccc !important; }
+${each(' svg defs stop[id="end"]')} { stop-color: #999999 !important; }
+${each(':hover svg defs stop[id="start"]')} { stop-color: #ffffff !important; }
+${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
+
+  let style = document.getElementById(BAR_ICON_STYLE_ID);
+  if (!style) {
+    if (css === "") return;
+    style = document.createElement("style");
+    style.id = BAR_ICON_STYLE_ID;
+    (document.head ?? document.documentElement).appendChild(style);
+  }
+  if (style.textContent !== css) style.textContent = css;
+}
+
+/** The windows this tab wants hidden, so one shown again by someone else is noticed. */
+const wantHidden = new WeakSet<HTMLElement>();
+
+/** Hides or shows a window here, and remembers which was wanted. */
+function setHidden(wrapper: HTMLElement, on: boolean): void {
+  if (on) wantHidden.add(wrapper);
+  else wantHidden.delete(wrapper);
+  if (wrapper.classList.contains(HIDDEN_CLASS) !== on) {
+    wrapper.classList.toggle(HIDDEN_CLASS, on);
+  }
+}
+
 /** Takes a chat out of this tab, and remembers that it is out. */
 function hide(id: string): void {
   const hidden = readSet(HIDDEN_KEY);
@@ -690,9 +909,10 @@ function forget(id: string): void {
  */
 function apply(): void {
   if (!isEnabled(INDEPENDENT_CHAT_TABS)) {
-    for (const hiddenWindow of document.querySelectorAll(`.${HIDDEN_CLASS}`)) {
-      hiddenWindow.classList.remove(HIDDEN_CLASS);
+    for (const hiddenWindow of document.querySelectorAll<HTMLElement>(`.${HIDDEN_CLASS}`)) {
+      setHidden(hiddenWindow, false);
     }
+    paintBarIcons(new Set());
     relayout();
     return;
   }
@@ -703,10 +923,9 @@ function apply(): void {
   let changed = false;
   let seen = 0;
 
-  for (const button of document.querySelectorAll(MINIMISE_SELECTOR)) {
-    const box = boxOf(button);
-    const wrapper = box && wrapperOf(box);
-    if (!box || !wrapper) continue;
+  for (const box of chatBoxes()) {
+    const wrapper = wrapperOf(box);
+    if (!wrapper) continue;
     seen += 1;
 
     if (pickedFromMenu(box)) {
@@ -729,13 +948,14 @@ function apply(): void {
       }
     }
 
-    wrapper.classList.toggle(HIDDEN_CLASS, hidden.has(box.id));
+    setHidden(wrapper, hidden.has(box.id));
   }
 
   if (changed) {
     writeSet(KNOWN_KEY, known);
     writeSet(HIDDEN_KEY, hidden);
   }
+  paintBarIcons(hidden);
 
   // The class is on now, so the stylesheet that stood in for it can go.
   if (seen > 0) liftEarlyHide();
@@ -751,6 +971,19 @@ function swallow(event: Event): void {
   event.preventDefault();
   event.stopPropagation();
   event.stopImmediatePropagation();
+}
+
+/**
+ * Lets a Shift-click through to Torn, so it minimises or opens in every tab.
+ *
+ * Public chats have no close button, so without this Torn could never be
+ * told one is closed. The tab's own hiding is dropped, leaving Torn's state
+ * as the only one.
+ */
+function everywhere(id: string): void {
+  forget(id);
+  schedulePass();
+  log("chat:", id, "left to Torn, for every tab");
 }
 
 /** Takes over the controls that would otherwise change the account's state. */
@@ -772,6 +1005,10 @@ function onClick(event: MouseEvent): void {
   if (minimising) {
     const box = boxOf(minimising);
     if (!box) return;
+    if (event.shiftKey) {
+      everywhere(box.id);
+      return;
+    }
     swallow(event);
     hide(box.id);
     return;
@@ -779,8 +1016,13 @@ function onClick(event: MouseEvent): void {
 
   const tab = target.closest(TASKBAR_SELECTOR);
   if (tab) {
-    const id = tab.id.slice(TASKBAR_PREFIX.length);
-    if (!id) return;
+    const barId = tab.id.slice(TASKBAR_PREFIX.length);
+    if (!barId) return;
+    const id = windowIdFor(barId);
+    if (event.shiftKey) {
+      everywhere(id);
+      return;
+    }
 
     // Hidden by us: ours to put back, and Torn must not hear about it.
     if (readSet(HIDDEN_KEY).has(id)) {
@@ -809,78 +1051,6 @@ function onClick(event: MouseEvent): void {
   }
 }
 
-/** The window being dragged, and where the grab started. */
-let dragFrom: number | null = null;
-
-/** Clears text a drag swept over on its way across the screen. */
-function dropSelection(): void {
-  try {
-    getSelection()?.removeAllRanges();
-  } catch {}
-}
-
-/**
- * Starts a drag, but only from a window's top edge.
- *
- * Anywhere else in a chat is for reading and selecting text, and a drag
- * begun there would fight with both. The top strip is where a window is
- * taken hold of in every other program, so it is where it is taken hold of
- * here.
- */
-function onPointerDown(event: PointerEvent): void {
-  dragFrom = null;
-  if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
-
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  if (target.closest(NOT_A_HANDLE)) return;
-
-  const box = boxOf(target);
-  if (!box) return;
-
-  // Any click on the page has some element with an id above it, so a box
-  // is no proof of a chat. One in the row is.
-  const wrapper = wrapperOf(box);
-  if (!wrapper || wrapper.parentElement !== windowRow()) return;
-
-  const depth = event.clientY - box.getBoundingClientRect().top;
-  if (depth > HEADER_DEPTH) {
-    log("chat: grab", Math.round(depth), "px down, below the top strip");
-    return;
-  }
-
-  dragFrom = event.clientX;
-  log("chat: grabbed", box.id, "- drag across the screen to move the bar");
-}
-
-/**
- * Moves the bar once a drag crosses the middle of the screen.
- *
- * The bar follows as soon as the pointer is past halfway rather than waiting
- * to be let go, so it is clear what the drag is doing while it is happening.
- *
- * Nothing here cancels the browser's own handling. A title bar is a line of
- * text as well as a handle, and refusing the default is what stops it being
- * selected. A drag short of the middle is therefore an ordinary selection,
- * and one that does move the bar clears up after itself below.
- */
-function onPointerMove(event: PointerEvent): void {
-  if (dragFrom === null) return;
-  if (Math.abs(event.clientX - dragFrom) < DRAG_THRESHOLD) return;
-
-  const wanted = event.clientX < window.innerWidth / 2 ? "left" : "right";
-  if (wanted === barSide()) return;
-  setBarSide(wanted);
-  relayout();
-  dropSelection();
-  log("chat: bar moved to the", wanted);
-}
-
-/** Ends a drag, whatever came of it. */
-function onPointerUp(): void {
-  dragFrom = null;
-}
-
 /** Windows already being watched, and rows already being watched. */
 const watchedItems = new WeakSet<Element>();
 const watchedRows = new WeakSet<Element>();
@@ -903,11 +1073,70 @@ function watchRow(row: Element, items: Element[]): void {
   for (const item of items) {
     if (watchedItems.has(item)) continue;
     watchedItems.add(item);
-    new MutationObserver(queueRelayout).observe(item, {
+    new MutationObserver((records) => {
+      if (records.every(isOwnChange)) return;
+      catchUndoing(item as HTMLElement);
+      queueRelayout();
+    }).observe(item, {
       attributes: true,
-      attributeFilter: ["style"],
+      attributeFilter: ["style", "class"],
+      attributeOldValue: true,
       childList: true,
     });
+  }
+}
+
+/** A detached element, used only to parse style attributes. */
+const scratch = document.createElement("div");
+
+/** Returns a style attribute with the properties this script writes taken out. */
+function tornStyle(value: string | null): string {
+  scratch.setAttribute("style", value ?? "");
+  scratch.style.removeProperty("translate");
+  scratch.style.removeProperty("transition-property");
+  return scratch.style.cssText;
+}
+
+/** Returns a class attribute with this script's own classes taken out. */
+function tornClasses(value: string | null): string {
+  return (value ?? "")
+    .split(/\s+/)
+    .filter((name) => name !== "" && !name.startsWith("aue-"))
+    .join(" ");
+}
+
+/**
+ * Whether a change to a window touched only what this script writes.
+ *
+ * Those changes come from relayout itself, so answering them would only run
+ * it again to reach the same answer. Compared with the attribute as it is now,
+ * so a batch where Torn moved the window too is still seen as Torn's.
+ */
+function isOwnChange(record: MutationRecord): boolean {
+  if (record.type !== "attributes" || !(record.target instanceof Element)) return false;
+  const now = record.target.getAttribute(record.attributeName ?? "");
+  if (record.attributeName === "class") {
+    return tornClasses(record.oldValue) === tornClasses(now);
+  }
+  return tornStyle(record.oldValue) === tornStyle(now);
+}
+
+/**
+ * Notices a window's hiding or offset taken off by something other than us.
+ *
+ * Puts the hiding back at once, since a chat this tab hid should not show.
+ * The offset is put back by the relayout that follows. Each is counted, as
+ * the same thing undone over and over is another script fighting this one.
+ */
+function catchUndoing(item: HTMLElement): void {
+  if (wantHidden.has(item) && !item.classList.contains(HIDDEN_CLASS)) {
+    item.classList.add(HIDDEN_CLASS);
+    noteUndone(INDEPENDENT_CHAT_TABS.label, "a chat this tab has hidden", chatRoot());
+  }
+  const written = writtenOffsets.get(item);
+  if (written !== undefined && item.style.translate !== written) {
+    const feature = barSide() === "left" ? CHAT_SIDE_BUTTON : INDEPENDENT_CHAT_TABS;
+    noteUndone(feature.label, "where the chat windows sit", chatRoot());
   }
 }
 
@@ -1034,18 +1263,16 @@ function onMenuClick(event: MouseEvent): void {
 export function installLocalChat(): void {
   addEventListener("click", onClick, true);
   addEventListener("click", onMenuClick, true);
-  addEventListener("pointerdown", onPointerDown, true);
-  addEventListener("pointermove", onPointerMove, true);
-  addEventListener("pointerup", onPointerUp, true);
-  addEventListener("pointercancel", onPointerUp, true);
   // A narrower window moves the right-hand edge, and with it every sum above.
+  // Crossing into the mobile layout also takes the button and the left side away.
   addEventListener("resize", schedulePass);
 
   // Torn's pages never stop changing - messages arriving, timers counting
   // down - and a pass measures windows, which forces the browser to lay the
   // page out. Running one per mutation would do that many times a second,
   // so a burst is allowed to settle first.
-  new MutationObserver(() => {
+  new MutationObserver((records) => {
+    if (onlyOurs(records)) return;
     focusedOnArrival = isTheActiveTab();
     // Until the row has been found there is nothing watching it, and the
     // settled pass is too far off: the first windows would be drawn where

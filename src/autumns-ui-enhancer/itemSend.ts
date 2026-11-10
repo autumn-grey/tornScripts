@@ -1,6 +1,7 @@
 // The stored recipient, filled into send forms on the items page.
 
 import { log } from "./debug";
+import { onlyOurs } from "./ownChanges";
 import { PREFERRED_RECIPIENT, isEnabled } from "./settings";
 import { fillRecipient, findSendForms } from "./recipient";
 
@@ -29,7 +30,8 @@ export function installItemSend(): void {
   pass();
 
   let timer = 0;
-  new MutationObserver(() => {
+  new MutationObserver((records) => {
+    if (onlyOurs(records)) return;
     clearTimeout(timer);
     timer = window.setTimeout(pass, SETTLE_MS);
   }).observe(document.body, { childList: true, subtree: true });

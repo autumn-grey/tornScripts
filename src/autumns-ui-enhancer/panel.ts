@@ -13,10 +13,12 @@ import {
   RECIPIENT_SETTING,
   STOCK_LIST_OPEN_SETTING,
   isEnabled,
+  isMobileView,
   readSetting,
   setEnabled,
   writeSetting,
 } from "./settings";
+import { onlyOurs } from "./ownChanges";
 import { PANEL_ID, injectStyles } from "./styles";
 import { FoundUser, MIN_QUERY, searchUsers } from "./userSearch";
 
@@ -271,6 +273,11 @@ function buildSwitchRow(feature: Feature): HTMLElement {
   input.type = "checkbox";
   input.checked = isEnabled(feature);
   input.addEventListener("change", () => setEnabled(feature, input.checked));
+  // Shown off and locked rather than hidden, so mobile users can see it exists.
+  if (feature.desktopOnly && isMobileView()) {
+    input.disabled = true;
+    row.classList.add("aue-row-disabled");
+  }
   toggle.appendChild(input);
 
   const slider = document.createElement("span");
@@ -459,7 +466,9 @@ function placePanel(): void {
 /** Adds this script's switches to the preferences page. */
 export function installPreferencesPanel(): void {
   placePanel();
-  new MutationObserver(() => placePanel()).observe(document.body, {
+  new MutationObserver((records) => {
+    if (!onlyOurs(records)) placePanel();
+  }).observe(document.body, {
     childList: true,
     subtree: true,
   });

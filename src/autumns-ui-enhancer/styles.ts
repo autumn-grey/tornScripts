@@ -165,6 +165,18 @@ const CSS = `
   .aue-row:focus-within input:checked + .aue-slider::before {
     background: linear-gradient(180deg, #666666 0%, #444444 100%);
   }
+  .aue-row.aue-row-disabled {
+    opacity: 0.45;
+    background: none;
+  }
+  .aue-row-disabled .aue-switch {
+    pointer-events: none;
+  }
+  .aue-row-disabled .aue-slider {
+    border-color: #8c8c8c !important;
+    background: linear-gradient(180deg, #1c1c1c 0%, #0d0d0d 100%) !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55) !important;
+  }
 
   .aue-per-page {
     display: flex;
@@ -396,10 +408,10 @@ const CSS = `
     display: block;
     margin: 4px auto;
   }
+  /* Not overflow: hidden, which would clip the User ID box's list of names. */
   .aue-send {
     display: block;
     margin: 0 0 10px;
-    overflow: hidden;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 12px;
     text-align: left;
@@ -414,17 +426,131 @@ const CSS = `
   .aue-send-link:hover {
     text-decoration: underline;
   }
+  .aue-send {
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.2);
+  }
+  .aue-send-heading {
+    margin: 0 0 6px;
+  }
+  .aue-send-form,
+  .aue-send-confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  .aue-send-form[hidden],
+  .aue-send-confirm[hidden],
+  .aue-send-status[hidden] {
+    display: none;
+  }
+  .aue-send-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .aue-send-field input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 24px;
+    padding: 0 6px;
+    border: 1px solid rgba(128, 128, 128, 0.55);
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+  .aue-send-message {
+    flex: 1 1 200px;
+  }
+  .aue-send-user {
+    position: relative;
+    flex: 1 1 160px;
+  }
+  .aue-send-user .aue-suggest[hidden] {
+    display: none;
+  }
+  .aue-send-amount {
+    flex: 0 0 70px;
+  }
+  .aue-send-confirm {
+    align-items: center;
+  }
+  .aue-send-question {
+    flex: 1 1 100%;
+  }
   .aue-send-status {
-    padding: 6px 8px;
-    background: #111;
-    color: #ccc;
-    font-size: 11px;
+    margin: 6px 0 0;
   }
-  /* Invisible but full height: at no height, the items page never loads the
-     items past its first chunk, which it only does as its list is scrolled. */
-  .aue-send-frame-waiting {
-    visibility: hidden;
+  .aue-send-status.aue-send-failed {
+    color: #e0584f;
   }
+  /* Sits under the item's row on the items page, across its full width. */
+  /* Solid, so a highlighted row's colour does not show through it. */
+  .aue-display {
+    clear: both;
+    margin: 6px 0;
+    background: #2b2b2b;
+  }
+  /*
+   * The button is first in the row of actions, so the dark line Torn draws
+   * on the first slot's left edge moves onto it.
+   */
+  .actions-wrap:not(.aue-display-five) > li.aue-display-slot {
+    border-left: 2px solid #222;
+  }
+  .actions-wrap:not(.aue-display-five) > li.aue-display-slot + li {
+    border-left: 0 !important;
+  }
+  /*
+   * Torn's narrow layout: its bar's four quarters become five fifths, and
+   * the words beside the icons are hidden so five fit. Hidden the way screen
+   * readers still read them, so nothing beside them moves: the icon is the
+   * button, a separate element, and stays where it was.
+   */
+  .actions-wrap.aue-display-five > li.left {
+    width: 20% !important;
+  }
+  .actions-wrap.aue-display-five .opt-name,
+  .aue-display-option .opt-name {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    clip: rect(0 0 0 0) !important;
+    white-space: nowrap !important;
+  }
+  /* Sized and coloured like Torn's own Send and Trash icons beside it. */
+  .aue-display-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+  .aue-display-button svg {
+    width: 20px;
+    height: 20px;
+  }
+  /*
+   * On the path itself, as Torn's own button styles turned it white through
+   * color. Grey like Torn's icons at rest, and white on hover, as they go.
+   */
+  .actions-wrap .aue-display-button svg path {
+    fill: #7b7b7b !important;
+  }
+  .actions-wrap .aue-display-option:hover .aue-display-button svg path,
+  .actions-wrap .aue-display-button:focus-visible svg path {
+    fill: #fff !important;
+  }
+
   .aue-chat-hidden {
     display: none !important;
   }
@@ -440,14 +566,75 @@ const CSS = `
   .aue-chat-instant {
     transition-duration: 0s !important;
   }
-  /* As when the send option worked: tall enough for the row and its form. */
-  .aue-send-frame {
-    display: block;
-    width: 100%;
-    height: 320px;
-    border: 0;
-    background: #111;
+  /*
+   * The left/right button, drawn with the same values as Torn's own chat bar
+   * buttons (.root___rnQAo and its .opened state) so it reads as one of them.
+   * Light grey while the chats are on the right, dark like an open chat while
+   * they are on the left. order puts it first in the bar whatever Torn adds,
+   * which is the inner end both ways round, as the bar reverses on the left.
+   *
+   * With .aue-native it also wears the classes of Torn's own bar buttons, so
+   * Torn's colours apply and follow any restyle; the gradients here are the
+   * fallback for when there is no Torn button to copy them from.
+   */
+  #aue-chat-side {
+    order: -1;
+    flex-shrink: 0;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+    margin: 0 4px 0 0;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
   }
+  /* The bar is reversed on the left, so the gap moves to the other side. */
+  #aue-chat-side.aue-chat-side-left {
+    margin: 0 0 0 4px;
+  }
+  #aue-chat-side:not(.aue-native) {
+    background: linear-gradient(#666666, #333333);
+    box-shadow:
+      inset 0 0 4px rgba(255, 255, 255, 0.25),
+      0 -2px 4px rgba(0, 0, 0, 0.5);
+  }
+  #aue-chat-side:not(.aue-native):hover,
+  #aue-chat-side:not(.aue-native):active {
+    background: linear-gradient(#888888, #444444);
+  }
+  #aue-chat-side.aue-chat-side-left:not(.aue-native) {
+    background: linear-gradient(#1f1f1f, #3d3d3d);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 -2px 4px rgba(0, 0, 0, 0.5);
+  }
+  #aue-chat-side.aue-chat-side-left:not(.aue-native):hover,
+  #aue-chat-side.aue-chat-side-left:not(.aue-native):active {
+    background: linear-gradient(#333333, #666666);
+  }
+  #aue-chat-side svg {
+    width: 20px;
+    height: 20px;
+    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.55));
+  }
+  /* Torn's classes can carry icon rules; the arrow keeps its own fill. */
+  #aue-chat-side svg path {
+    fill: url(#aue-arrow-fill);
+  }
+  #aue-chat-side .aue-arrow-start { stop-color: #cccccc; }
+  #aue-chat-side .aue-arrow-end { stop-color: #999999; }
+  #aue-chat-side:hover .aue-arrow-start,
+  #aue-chat-side.aue-chat-side-left .aue-arrow-start { stop-color: #ffffff; }
+  #aue-chat-side:hover .aue-arrow-end,
+  #aue-chat-side.aue-chat-side-left .aue-arrow-end { stop-color: #cccccc; }
   .aue-key-box {
     position: relative;
     display: inline-flex;
@@ -581,6 +768,7 @@ const CSS = `
     width: 100%;
     height: 100%;
     background: center / contain no-repeat;
+    cursor: pointer;
   }
   /* Matches Torn's own status icon tooltips: grey, above the icon, arrow down. */
   #aue-city-shop-tip {
@@ -640,6 +828,88 @@ const CSS = `
   }
   #aue-city-shop-tip[hidden] {
     display: none;
+  }
+  /* The tip is a single line for the count; the key message wraps. */
+  .aue-tip-message {
+    max-width: 220px;
+    white-space: normal;
+  }
+  .aue-tip-link {
+    color: #a9d1ff;
+    font-weight: bold;
+  }
+  /* The clash pop-up: bottom centre, above the chat bar, until clicked. */
+  #aue-clash {
+    position: fixed;
+    left: 50%;
+    bottom: 64px;
+    transform: translateX(-50%);
+    z-index: 2147483000;
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(520px, calc(100vw - 32px));
+    padding: 12px 16px;
+    border: 1px solid #ff8c1a;
+    border-radius: 6px;
+    background: #1e1e1e;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    font-weight: bold;
+    line-height: 18px;
+    color: #ff9a2e;
+    cursor: pointer;
+  }
+  .aue-clash-line + .aue-clash-line {
+    margin-top: 8px;
+  }
+  .aue-clash-feature {
+    color: #ffc070;
+  }
+  .aue-squiggles {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .aue-squiggle {
+    position: absolute;
+    width: 26px;
+    height: 9px;
+    margin-top: -4.5px;
+    transform-origin: 0 50%;
+    animation: aue-squiggle-out 1.2s linear infinite;
+  }
+  .aue-squiggle svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    animation: aue-squiggle-wriggle 0.24s steps(1) infinite;
+  }
+  .aue-squiggle path {
+    fill: none;
+    stroke: #ff8c1a;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  @keyframes aue-squiggle-out {
+    0% { transform: rotate(var(--aue-angle)) translateX(4px); opacity: 0; }
+    15% { opacity: 1; }
+    35% { opacity: 0.25; }
+    55% { opacity: 1; }
+    100% { transform: rotate(var(--aue-angle)) translateX(26px); opacity: 0; }
+  }
+  @keyframes aue-squiggle-wriggle {
+    50% { transform: scaleY(-1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .aue-squiggle,
+    .aue-squiggle svg {
+      animation: none;
+    }
+    .aue-squiggle {
+      transform: rotate(var(--aue-angle)) translateX(8px);
+    }
   }
 `;
 

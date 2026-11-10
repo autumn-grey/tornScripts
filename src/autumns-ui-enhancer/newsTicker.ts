@@ -1,6 +1,7 @@
 // Scrolling headlines and stepping arrows for Torn's news ticker.
 
 import { log } from "./debug";
+import { onlyOurs } from "./ownChanges";
 import { NEWS_TICKER, isEnabled } from "./settings";
 
 /** The strip the ticker lives in; everything else is found inside it. */
@@ -401,7 +402,9 @@ export function installNewsTicker(): void {
     clearTimeout(timer);
     timer = window.setTimeout(apply, 120);
   };
-  new MutationObserver(schedule).observe(document.body, {
+  new MutationObserver((records) => {
+    if (!onlyOurs(records)) schedule();
+  }).observe(document.body, {
     childList: true,
     subtree: true,
   });

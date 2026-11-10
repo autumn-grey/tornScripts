@@ -1,6 +1,6 @@
 // City Shop Alert: while fewer than 100 city shop items have been bought today,
 // lights up the City link in the side menu. A shop icon among the status icons
-// gives the count in its tooltip, links to the City, and turns green at 100.
+// gives the count in its tooltip, opens the watched stock, and turns green at 100.
 //
 // The count comes from the "Item shop buy" log since midnight TCT. The
 // cityitemsbought personal stat was tried first and lags behind purchases.
@@ -14,11 +14,13 @@ import {
   readStock,
 } from "./cityStock";
 import { log } from "./debug";
+import { onlyOurs } from "./ownChanges";
 import { isLogEntry } from "./purchaseText";
 import {
   API_KEY_SETTING,
   CITY_SHOP_ALERT,
   CITY_SHOP_STOCK,
+  PANEL_OPEN_SETTING,
   isEnabled,
   readSetting,
   writeSetting,
@@ -67,8 +69,9 @@ function bagIcon(top: string, bottom: string, handle: string): string {
 const BAG_OPEN = bagIcon("#f2cd92", "#c38d55", "#e9c48c");
 /** The bag once all of today's buys are used. */
 const BAG_DONE = bagIcon("#a8e67a", "#4f9a2e", "#93d665");
+/** The bag while the count or the stock check is on with no API key to use. */
+const BAG_NO_KEY = bagIcon("#f28a7e", "#b8392c", "#ec7a6d");
 
-const CITY_URL = "https://www.torn.com/city.php";
 const LOG_URL = "https://api.torn.com/v2/user/log";
 // The log type for a city shop purchase, "Item shop buy", from torn/logtypes.
 // Abroad purchases are a separate type (4201) and are not counted.
@@ -78,6 +81,11 @@ const DAY_S = 86_400;
 
 /** How long a fetched count is used before it is fetched again. */
 const REFRESH_MS = 2 * 60_000;
+/** How often the watched stock is fetched, as shelves empty faster than the count moves. */
+const STOCK_REFRESH_MS = 30_000;
+// A timer firing a moment early would find the stock not quite stale and skip
+// a round, so anything within this of the limit counts as stale.
+const STOCK_SLACK_MS = 2_000;
 /** How long after a purchase the log is read, giving Torn time to write it. */
 const AFTER_BUY_MS = 1_500;
 /** The least time between two fetches, so a burst of purchases is one call. */
@@ -89,6 +97,8 @@ const PURCHASE_TEXT = /\byou bought\s+(?:([\d,]+)\s*x\b|an?\s)/i;
 const STATE_SETTING = "CITY_SHOP_STATE";
 
 const SHOPS_PATH = "/shops.php";
+/** Where this script's settings panel is, and so where the API key goes. */
+const SETTINGS_URL = "/preferences.php";
 const ICON_ID = "aue-city-shop-icon";
 const TIP_ID = "aue-city-shop-tip";
 const STOCK_ID = "aue-city-shop-stock";
@@ -204,7 +214,7 @@ async function refreshStock(force: boolean): Promise<void> {
   if (!key || !isEnabled(CITY_SHOP_STOCK) || readCheckedItems().size === 0) return;
   if (document.hidden) return;
   // A purchase takes stock off the shelf, so it asks again then.
-  await loadStock(key, force ? 0 : REFRESH_MS);
+  await loadStock(key, force ? 0 : STOCK_REFRESH_MS - STOCK_SLACK_MS);
 }
 
 /** Brings the count up to date, asking the API only when the stored one is stale or forced. */
@@ -376,10 +386,38 @@ function watchedStock(): CityShop[] {
     .filter((shop) => shop.items.length > 0);
 }
 
-/** Fills the hover box with the count. */
+/** Whether the purchase count or the stock check is on but has no API key to fetch with. */
+function needsKey(): boolean {
+  const wanted = isEnabled(CITY_SHOP_ALERT) || isEnabled(CITY_SHOP_STOCK);
+  return wanted && readSetting(API_KEY_SETTING, "").trim() === "";
+}
+
+/** Opens the settings panel on the preferences page, where the key is entered. */
+function openSettings(): void {
+  writeSetting(PANEL_OPEN_SETTING, "1");
+  location.assign(SETTINGS_URL);
+}
+
+/** Fills the hover box with the count, or with what the stock check is missing. */
 function fillTip(tip: HTMLElement): void {
   const title = document.createElement("b");
   title.textContent = "City Shops";
+  if (needsKey()) {
+    // The count needs the key too, so without one there is nothing to show
+    // but the way to fix it. The icon itself is what "click here" means.
+    const message = document.createElement("div");
+    message.className = "aue-tip-message";
+    const here = document.createElement("span");
+    here.className = "aue-tip-link";
+    here.textContent = "click here";
+    message.append(
+      "This feature requires an API key. Please ",
+      here,
+      " to open Autumn's UI Enhancer settings.",
+    );
+    tip.replaceChildren(title, message);
+    return;
+  }
   const count = document.createElement("div");
   count.textContent = `${bought ?? 0}/${DAILY_LIMIT} items bought today`;
   tip.replaceChildren(title, count);
@@ -477,9 +515,18 @@ function buildIcon(): HTMLElement {
   const item = document.createElement("li");
   item.id = ICON_ID;
 
+  // No href: on mobile a tap that reached the City left before the stock list
+  // could open. The shop links inside the list do the navigating instead.
   const link = document.createElement("a");
-  link.href = CITY_URL;
+  link.setAttribute("role", "button");
+  link.tabIndex = 0;
   link.setAttribute("aria-label", "City shops");
+  link.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      link.click();
+    }
+  });
   item.appendChild(link);
 
   let touch = false;
@@ -491,18 +538,19 @@ function buildIcon(): HTMLElement {
     if (event.pointerType !== "touch") hideTip();
   });
   link.addEventListener("click", (event) => {
-    // With nothing to list, the icon is a plain link to the City.
-    if (watchedStock().length === 0) {
-      if (touch && box(TIP_ID).hidden) {
-        event.preventDefault();
-        showTip(link);
-      }
-      return;
-    }
     event.preventDefault();
     // On a touch screen the first tap shows the count, the second the list.
     if (touch && box(TIP_ID).hidden && box(STOCK_ID).hidden) {
       showTip(link);
+      return;
+    }
+    if (needsKey()) {
+      openSettings();
+      return;
+    }
+    // With nothing to list, a second tap just puts the count away.
+    if (watchedStock().length === 0) {
+      if (touch) hideTip();
       return;
     }
     if (box(STOCK_ID).hidden) openStock(link);
@@ -541,18 +589,21 @@ function placeIcon(): void {
 
 /** Brings the City link and the icon in line with the count. */
 function apply(): void {
-  const known = isEnabled(CITY_SHOP_ALERT) && bought !== null;
+  const missingKey = needsKey();
+  const known = isEnabled(CITY_SHOP_ALERT) && bought !== null && !missingKey;
   const left = known && (bought ?? 0) < DAILY_LIMIT;
   setCityLit(left);
-  if (known) {
+  // Without a key the icon still shows, so the message saying so has somewhere to be.
+  if (known || missingKey) {
     placeIcon();
     // The icon stays once the day's buys are used, but turns green.
     const link = document.querySelector<HTMLElement>(`#${ICON_ID} a`);
-    const state = left ? "open" : "done";
+    const state = missingKey ? "nokey" : left ? "open" : "done";
     // Compared by a flag: browsers rewrite a style's url() text when read back.
     if (link && link.dataset.bag !== state) {
       link.dataset.bag = state;
-      link.style.backgroundImage = `url("${left ? BAG_OPEN : BAG_DONE}")`;
+      const bag = missingKey ? BAG_NO_KEY : left ? BAG_OPEN : BAG_DONE;
+      link.style.backgroundImage = `url("${bag}")`;
     }
     const tip = document.getElementById(TIP_ID);
     if (tip && !tip.hidden) refill(tip, fillTip);
@@ -567,7 +618,8 @@ function apply(): void {
 
 /** Shows when today's city shop allowance has not been used up. */
 export function installCityShopAlert(): void {
-  if (!isEnabled(CITY_SHOP_ALERT)) return;
+  // The stock check on its own still needs the icon, if only to ask for a key.
+  if (!isEnabled(CITY_SHOP_ALERT) && !isEnabled(CITY_SHOP_STOCK)) return;
 
   update = (force = false): void =>
     void Promise.all([refresh(force), refreshStock(force)]).then(apply);
@@ -591,7 +643,8 @@ export function installCityShopAlert(): void {
       }
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
   }
-  setInterval(() => update(), REFRESH_MS);
+  // Ticks at the stock's pace; the count still only asks once its own REFRESH_MS is up.
+  setInterval(() => update(), STOCK_REFRESH_MS);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) update();
   });
@@ -607,10 +660,10 @@ export function installCityShopAlert(): void {
     if (event.key === "Escape") closeStock();
   });
 
-  // Torn redraws the side menu, taking the icon and the class with it. Our
-  // own changes land here too, but apply() leaves a correct page untouched.
+  // Torn redraws the side menu, taking the icon and the class with it.
   let timer = 0;
-  new MutationObserver(() => {
+  new MutationObserver((records) => {
+    if (onlyOurs(records)) return;
     clearTimeout(timer);
     timer = window.setTimeout(apply, 120);
   }).observe(document.body, { childList: true, subtree: true });
