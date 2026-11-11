@@ -1,0 +1,20 @@
+{
+  "name": "Autumn's Keno",
+  "version": "1.0.3",
+  "description": "Records every Keno round you play, with your picks and the numbers drawn, to your own Google Sheet so every device shares one history. Shades the board by how often each number comes up or wins, and outlines the ten most drawn.",
+  "match": [
+    "https://www.torn.com/page.php?sid=keno*"
+  ],
+  "grant": [
+    "GM_xmlhttpRequest",
+    "GM_getValue",
+    "GM_setValue",
+    "unsafeWindow"
+  ],
+  "connect": [
+    "script.google.com",
+    "script.googleusercontent.com"
+  ],
+  "run-at": "document-idle",
+  "noframes": true
+}
