@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Doodles
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.19
+// @version      1.0.22
 // @description  Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script
 // @author       AutumnGrey
 // @license      MIT
@@ -796,11 +796,16 @@ ${RESERVED}`.repeat(reserve)}`;
       else finish();
     });
   }
+  function compact() {
+    return inPda() || isMobileView();
+  }
+  var wantFull = false;
   function activate(id) {
     if (active !== id && full) exitFull();
     if (active !== id) refit(id);
     active = id;
     toolsOpen = true;
+    if (compact()) wantFull = true;
     undoStack = [];
     redoStack = [];
     setStatus("");
@@ -816,6 +821,7 @@ ${RESERVED}`.repeat(reserve)}`;
   function deactivate() {
     release();
     toolsOpen = false;
+    wantFull = false;
   }
   function activeCanvas() {
     return active ? frames.get(active)?.canvas ?? null : null;
@@ -828,7 +834,7 @@ ${RESERVED}`.repeat(reserve)}`;
     const canvas = activeCanvas();
     if (!canvas) return;
     if (inPda() || typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-      showPicture(canvas);
+      if (!sharePicture(canvas)) showPicture(canvas, inPda() ? "Press and hold to save" : void 0);
       return;
     }
     const png = new Promise(
@@ -838,6 +844,19 @@ ${RESERVED}`.repeat(reserve)}`;
       log("notes draw: copy failed", error);
       showPicture(canvas);
     });
+  }
+  function sharePicture(canvas) {
+    const file = new File([dataUrlToBlob(canvas.toDataURL("image/png"))], "doodle.png", {
+      type: "image/png"
+    });
+    const files = [file];
+    if (typeof navigator.share !== "function" || !navigator.canShare?.({ files })) return false;
+    navigator.share({ files }).catch((error) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      log("notes draw: share failed", error);
+      showPicture(canvas, inPda() ? "Press and hold to save" : void 0);
+    });
+    return true;
   }
   function inPda() {
     return "flutter_inappwebview" in window;
@@ -1210,12 +1229,18 @@ ${RESERVED}`.repeat(reserve)}`;
     cover.id = FULL_ID;
     const stage = document.createElement("div");
     stage.className = "doodle-stage";
-    const back = iconButton("Exit full screen", ICONS.expand, exitFull, "doodle-full-exit");
+    const back = iconButton("Exit full screen", ICONS.expand, leaveFull, "doodle-full-exit");
     stage.append(canvas, back);
-    cover.append(toolbar(), stage);
+    const bar = toolbar();
+    bar.hidden = false;
+    cover.append(bar, stage);
     document.body.appendChild(cover);
     syncToolbar();
     fitFull();
+  }
+  function leaveFull() {
+    exitFull();
+    if (compact()) deactivate();
   }
   function exitFull() {
     if (!full) return;
@@ -1286,6 +1311,7 @@ ${brush}
       event.preventDefault();
       event.stopPropagation();
       if (toolsOpen) deactivate();
+      else if (compact()) newDrawing();
       else toolsOpen = true;
     };
     icon.addEventListener("click", toggle);
@@ -1491,9 +1517,17 @@ ${brush}
     placeDropLine(container, drag?.moving ? drag.target : null, originX, originY, space.width);
     if (active && !shown.has(active)) release();
     scrollToNew(container);
+    if (wantFull && active && activeCanvas()) {
+      wantFull = false;
+      enterFull();
+    }
+    if (compact() && toolsOpen && !active && !full) deactivate();
     const bar = toolbar();
-    if (full) return;
-    setHidden(bar, !toolsOpen);
+    if (full) {
+      setHidden(bar, false);
+      return;
+    }
+    setHidden(bar, !toolsOpen || compact());
     const panel = document.querySelector(SELECTORS.panel);
     if (toolsOpen && panel) {
       const place = panel.getBoundingClientRect();
@@ -1627,7 +1661,7 @@ ${key}`);
         }
         if (event.key === "Escape" && active) {
           if (document.getElementById(CONFIRM_ID)) document.getElementById(CONFIRM_ID)?.remove();
-          else if (full) exitFull();
+          else if (full) leaveFull();
           else deactivate();
           return;
         }

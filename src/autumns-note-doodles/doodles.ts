@@ -14,7 +14,7 @@
 // deleted with Backspace comes back with Ctrl+Z, as it would in Word.
 
 import { log } from "./debug";
-import { isMobileView, readPicture, writePicture } from "./storage";
+import { dataUrlToBlob, isMobileView, readPicture, writePicture } from "./storage";
 
 // Every selector this feature matches on, from the live Notes window.
 const SELECTORS = {
@@ -826,12 +826,25 @@ function wireCanvas(id: string, element: HTMLElement, canvas: HTMLCanvasElement)
   });
 }
 
-/** Opens a drawing for drawing on, with the toolbar above Notes. */
+/**
+ * Whether drawing happens in full screen only: in Torn PDA, and Torn's phone
+ * layout. There the toolbar above Notes covered Notes' own buttons, the
+ * palette among them, leaving no way to put the tools away.
+ */
+function compact(): boolean {
+  return inPda() || isMobileView();
+}
+
+/** Set when a drawing is opened on a phone, to go full screen once its canvas exists. */
+let wantFull = false;
+
+/** Opens a drawing for drawing on: with the toolbar above Notes, or full screen on a phone. */
 function activate(id: string): void {
   if (active !== id && full) exitFull();
   if (active !== id) refit(id);
   active = id;
   toolsOpen = true;
+  if (compact()) wantFull = true;
   undoStack = [];
   redoStack = [];
   setStatus("");
@@ -851,6 +864,7 @@ function release(): void {
 function deactivate(): void {
   release();
   toolsOpen = false;
+  wantFull = false;
 }
 
 /** Returns the open drawing's canvas. */
@@ -868,11 +882,15 @@ function setStatus(text: string): void {
 function copyPicture(): void {
   const canvas = activeCanvas();
   if (!canvas) return;
-  // Torn PDA's web view will not let a page put a picture on the clipboard,
-  // but its own press-and-hold menu on a picture copies one fine. So there,
-  // and wherever the clipboard refuses, the drawing is shown as a picture.
+  // Torn PDA's web view will not let a page put a picture on the clipboard.
+  // Its press-and-hold menu copies a picture's address, not the picture,
+  // and this one's address is the whole drawing as text, too long for chat.
+  // The phone's own share menu takes the picture itself, so that is tried
+  // first, and the picture shown only where sharing is not offered.
   if (inPda() || typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-    showPicture(canvas);
+    // In PDA the press-and-hold copy is the one that gives the long text, so
+    // the picture is offered for saving, to copy from the phone's gallery.
+    if (!sharePicture(canvas)) showPicture(canvas, inPda() ? "Press and hold to save" : undefined);
     return;
   }
   // The blob is handed over as a promise so the write still counts as part
@@ -887,6 +905,29 @@ function copyPicture(): void {
       log("notes draw: copy failed", error);
       showPicture(canvas);
     });
+}
+
+/**
+ * Hands the drawing to the phone's share menu as a PNG file. Returns false
+ * when the phone offers no way to share a file from here.
+ *
+ * The file is made without waiting on anything, as share() must be called
+ * while the tap that asked for it still counts, and Safari stops counting
+ * at the first wait.
+ */
+function sharePicture(canvas: HTMLCanvasElement): boolean {
+  const file = new File([dataUrlToBlob(canvas.toDataURL("image/png"))], "doodle.png", {
+    type: "image/png",
+  });
+  const files = [file];
+  if (typeof navigator.share !== "function" || !navigator.canShare?.({ files })) return false;
+  navigator.share({ files }).catch((error: unknown) => {
+    // Closing the share menu without choosing is not a failure.
+    if (error instanceof DOMException && error.name === "AbortError") return;
+    log("notes draw: share failed", error);
+    showPicture(canvas, inPda() ? "Press and hold to save" : undefined);
+  });
+  return true;
 }
 
 /** Whether this is Torn PDA, whose web view carries its bridge to the app. */
@@ -1349,12 +1390,20 @@ function enterFull(): void {
   stage.className = "doodle-stage";
   // The way back sits just off the drawing's top right corner, the same
   // symbol that brought it here.
-  const back = iconButton("Exit full screen", ICONS.expand, exitFull, "doodle-full-exit");
+  const back = iconButton("Exit full screen", ICONS.expand, leaveFull, "doodle-full-exit");
   stage.append(canvas, back);
-  cover.append(toolbar(), stage);
+  const bar = toolbar();
+  bar.hidden = false;
+  cover.append(bar, stage);
   document.body.appendChild(cover);
   syncToolbar();
   fitFull();
+}
+
+/** Leaves full screen as the reader asked to, which on a phone puts the tools away too. */
+function leaveFull(): void {
+  exitFull();
+  if (compact()) deactivate();
 }
 
 /** Puts the drawing back in its note. */
@@ -1448,6 +1497,8 @@ ${brush}
     event.preventDefault();
     event.stopPropagation();
     if (toolsOpen) deactivate();
+    // On a phone the tools only exist in full screen, so the palette starts a drawing there.
+    else if (compact()) newDrawing();
     else toolsOpen = true;
   };
   icon.addEventListener("click", toggle);
@@ -1743,10 +1794,23 @@ function sync(): void {
   // A drawing whose marker was deleted, or is in another note, is put away.
   if (active && !shown.has(active)) release();
   scrollToNew(container);
+  if (wantFull && active && activeCanvas()) {
+    wantFull = false;
+    enterFull();
+  }
+  // On a phone the tools have nowhere to be but full screen; with nothing
+  // open there (it was binned, or its making undone), they go away.
+  if (compact() && toolsOpen && !active && !full) deactivate();
 
   const bar = toolbar();
-  if (full) return;
-  setHidden(bar, !toolsOpen);
+  // In full screen the toolbar always shows. It is the same one that sits
+  // above Notes, which on a phone is kept hidden, and it went into full
+  // screen still hidden, leaving no tools at all.
+  if (full) {
+    setHidden(bar, false);
+    return;
+  }
+  setHidden(bar, !toolsOpen || compact());
   const panel = document.querySelector(SELECTORS.panel);
   if (toolsOpen && panel) {
     const place = panel.getBoundingClientRect();
@@ -1936,7 +2000,7 @@ export function installDoodles(): void {
       }
       if (event.key === "Escape" && active) {
         if (document.getElementById(CONFIRM_ID)) document.getElementById(CONFIRM_ID)?.remove();
-        else if (full) exitFull();
+        else if (full) leaveFull();
         else deactivate();
         return;
       }

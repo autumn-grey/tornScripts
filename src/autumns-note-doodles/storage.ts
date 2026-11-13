@@ -119,7 +119,7 @@ export async function moveOldPictures(): Promise<number> {
 }
 
 /** Returns the picture in a data URL as a blob, without a request. */
-function dataUrlToBlob(text: string): Blob {
+export function dataUrlToBlob(text: string): Blob {
   const [head = "", body = ""] = text.split(",", 2);
   const type = /data:([^;,]+)/.exec(head)?.[1] ?? "image/png";
   const bytes = atob(body);
