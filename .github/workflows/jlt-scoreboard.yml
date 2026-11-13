@@ -1,0 +1,28 @@
+# Posts the faction's JLT Autumn 2026 scoreboard to Discord at 11:00 Sydney time each day.
+name: JLT scoreboard
+
+on:
+  schedule:
+    # 11:00 in Sydney is 00:00 UTC under daylight saving and 01:00 UTC outside it.
+    # Both fire; the script posts only from the one that matches today's offset.
+    - cron: '0 0 * * *'
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: discord/jlt-scoreboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: node index.mjs
+        env:
+          TORN_API_KEY: ${{ secrets.TORN_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SCHEDULE: ${{ github.event.schedule }}

@@ -1,0 +1,13 @@
+{
+  "name": "jlt-scoreboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@expo-google-fonts/fjalla-one": "0.4.1",
+    "@expo-google-fonts/roboto-condensed": "0.4.2",
+    "@resvg/resvg-js": "2.6.2"
+  }
+}
