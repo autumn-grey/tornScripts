@@ -6,14 +6,20 @@
  * renders that to PNG with resvg. Run by .github/workflows/jlt-scoreboard.yml.
  * The sheet link, title and header picture come from settings.json.
  *
+ * It posts only when the results differ from the last post, then deletes that last post,
+ * so the channel holds one current board. state.json remembers the last post's message ID
+ * and a fingerprint of its data; the workflow commits it back after each post.
+ *
  * Environment:
  *   TORN_API_KEY         key of any faction member (public access is enough)
  *   DISCORD_WEBHOOK_URL  where the PNG is posted
- *   TEST_IDS            comma-separated Torn IDs to use in place of the faction (local testing)
+ *   FORCE                set to post even when nothing has changed
+ *   TEST_IDS             comma-separated Torn IDs to use in place of the faction (local testing)
  *   OUT_FILE             also write the PNG here
- *   DRY_RUN              set to skip the Discord post
+ *   DRY_RUN              set to skip the Discord post and leave state.json alone
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Resvg } from '@resvg/resvg-js';
 
@@ -24,6 +30,7 @@ const SHEET_ID = SETTINGS.sheetLink.match(/\/d\/([\w-]+)/)?.[1];
 if (!SHEET_ID) throw new Error(`settings.json: no sheet ID in sheetLink "${SETTINGS.sheetLink}".`);
 const TITLE = SETTINGS.title;
 const HEADER_FILE = here(SETTINGS.headerPicture);
+const STATE_FILE = here('state.json');
 
 // Only tabs whose top cell is a league name count. CW and DETAILS are not leagues.
 const LEAGUE_NAME = /^L\d+-[A-Z]+$/;
@@ -258,15 +265,33 @@ function toPng(svg) {
   return resvg.render().asPng();
 }
 
-/** Posts the PNG to the Discord webhook. */
-async function postToDiscord(png) {
+/** Returns the webhook URL, throwing if it is not set. */
+function webhookUrl() {
   const url = process.env.DISCORD_WEBHOOK_URL;
   if (!url) throw new Error('DISCORD_WEBHOOK_URL is not set.');
+  return url.replace(/\/$/, '');
+}
+
+/** Posts the PNG to the Discord webhook and returns the new message's ID. */
+async function postToDiscord(png) {
   const form = new FormData();
   form.append('payload_json', JSON.stringify({ attachments: [{ id: 0, filename: 'jlt-scoreboard.png' }] }));
   form.append('files[0]', new Blob([png], { type: 'image/png' }), 'jlt-scoreboard.png');
-  const res = await fetch(url, { method: 'POST', body: form });
+  // Without wait=true Discord answers 204 with no body, so there would be no message ID to keep.
+  const res = await fetch(`${webhookUrl()}?wait=true`, { method: 'POST', body: form });
   if (!res.ok) throw new Error(`Discord ${res.status}: ${await res.text()}`);
+  return (await res.json()).id;
+}
+
+/** Deletes an earlier webhook message; one already removed by hand is not an error. */
+async function deleteFromDiscord(id) {
+  const res = await fetch(`${webhookUrl()}/messages/${id}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) console.warn(`Could not delete message ${id}: Discord ${res.status}`);
+}
+
+/** Reads state.json, or an empty state before the first tracked post. */
+function readState() {
+  return existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : {};
 }
 
 async function main() {
@@ -280,12 +305,26 @@ async function main() {
   console.log(`${leagues.length} leagues read, ${rows.length} faction drivers found.`);
   if (!rows.length) throw new Error('No faction members found in the sheet.');
 
+  // Everything shown on the board except the date, so a day with no new races matches the day before.
+  const fingerprint = createHash('sha256').update(JSON.stringify({ rows, tracks, SETTINGS })).digest('hex');
+  const state = readState();
+  if (fingerprint === state.fingerprint && !process.env.FORCE) {
+    console.log('Results unchanged since the last post; not posting.');
+    return;
+  }
+
   const updated = 'Updated ' + new Intl.DateTimeFormat('en-AU', {
     timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric',
   }).format(new Date());
   const png = toPng(drawSvg(rows, tracks, updated));
   if (process.env.OUT_FILE) writeFileSync(process.env.OUT_FILE, png);
-  if (!process.env.DRY_RUN) await postToDiscord(png);
+  if (process.env.DRY_RUN) return;
+
+  // Post first, so a failed post never leaves the channel with no board at all.
+  const messageId = await postToDiscord(png);
+  if (state.messageId) await deleteFromDiscord(state.messageId);
+  writeFileSync(STATE_FILE, JSON.stringify({ messageId, fingerprint }, null, 2) + '\n');
+  console.log(`Posted message ${messageId}.`);
 }
 
 main().catch((err) => {

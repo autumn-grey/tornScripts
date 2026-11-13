@@ -1,10 +1,22 @@
-# Posts the faction's tournament scoreboard to Discord at 00:00 UTC each day.
+# Posts the faction's tournament scoreboard to Discord at 00:00 UTC each day, when the results have changed.
 name: JLT scoreboard
 
 on:
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch:
+    inputs:
+      force:
+        description: Post even if nothing has changed
+        type: boolean
+        default: false
+
+# The run commits state.json, which records the last post so the next run can delete it.
+permissions:
+  contents: write
+
+# Two runs at once would both delete the same old post and one board would be orphaned.
+concurrency: jlt-scoreboard
 
 jobs:
   post:
@@ -22,3 +34,13 @@ jobs:
         env:
           TORN_API_KEY: ${{ secrets.TORN_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          FORCE: ${{ inputs.force && '1' || '' }}
+      - name: Save state
+        run: |
+          git add state.json 2>/dev/null || exit 0
+          git diff --cached --quiet && exit 0
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Record the latest JLT scoreboard post'
+          git pull --rebase
+          git push
