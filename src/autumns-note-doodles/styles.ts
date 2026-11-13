@@ -132,6 +132,21 @@ const CSS = `
   .doodle-row + .doodle-row {
     margin-top: 4px;
   }
+  /* Sends a group of buttons to the right of its row. */
+  .doodle-push {
+    margin-left: auto !important;
+  }
+  .doodle-popup-right .doodle-popup {
+    left: auto;
+    right: 0;
+  }
+  /* Docked in full screen the rows stack or centre, so nothing is pushed. */
+  #doodle-toolbar.doodle-docked .doodle-push {
+    margin-left: 0 !important;
+  }
+  #doodle-toolbar.doodle-docked .doodle-popup-right .doodle-popup {
+    right: auto;
+  }
   .doodle-holder {
     position: relative;
     display: inline-flex;
@@ -363,6 +378,11 @@ const CSS = `
   #doodle-confirm .torn-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  #doodle-confirm .doodle-link {
+    max-width: 260px;
+    overflow-wrap: anywhere;
+    user-select: all;
   }
   #doodle-confirm .doodle-row {
     justify-content: flex-end;

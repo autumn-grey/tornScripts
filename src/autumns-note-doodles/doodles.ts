@@ -14,7 +14,8 @@
 // deleted with Backspace comes back with Ctrl+Z, as it would in Word.
 
 import { log } from "./debug";
-import { dataUrlToBlob, isMobileView, readPicture, writePicture } from "./storage";
+import { isMobileView, readPicture, writePicture } from "./storage";
+import { canUpload, uploadPicture } from "./upload";
 
 // Every selector this feature matches on, from the live Notes window.
 const SELECTORS = {
@@ -882,15 +883,17 @@ function setStatus(text: string): void {
 function copyPicture(): void {
   const canvas = activeCanvas();
   if (!canvas) return;
-  // Torn PDA's web view will not let a page put a picture on the clipboard.
-  // Its press-and-hold menu copies a picture's address, not the picture,
-  // and this one's address is the whole drawing as text, too long for chat.
-  // The phone's own share menu takes the picture itself, so that is tried
-  // first, and the picture shown only where sharing is not offered.
-  if (inPda() || typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-    // In PDA the press-and-hold copy is the one that gives the long text, so
-    // the picture is offered for saving, to copy from the phone's gallery.
-    if (!sharePicture(canvas)) showPicture(canvas, inPda() ? "Press and hold to save" : undefined);
+  // Torn PDA's web view will not let a page put a picture on the clipboard,
+  // and copying one with its own menu copies the picture's address, which
+  // for a drawing is the drawing itself as text, too long for chat. Its
+  // share menu took nothing either. So there the drawing is uploaded, and
+  // the short link copied instead.
+  if (inPda() && canUpload()) {
+    uploadAndCopy(canvas);
+    return;
+  }
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    showPicture(canvas, inPda() ? "Press and hold to save" : undefined);
     return;
   }
   // The blob is handed over as a promise so the write still counts as part
@@ -907,27 +910,88 @@ function copyPicture(): void {
     });
 }
 
+/** Where the reader's yes to uploading is kept, so it is asked once. */
+const UPLOAD_OK_KEY = "AND_UPLOAD_OK";
+
+/** Whether the reader has agreed to drawings being uploaded. */
+function uploadAgreed(): boolean {
+  try {
+    return localStorage.getItem(UPLOAD_OK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Hands the drawing to the phone's share menu as a PNG file. Returns false
- * when the phone offers no way to share a file from here.
- *
- * The file is made without waiting on anything, as share() must be called
- * while the tap that asked for it still counts, and Safari stops counting
- * at the first wait.
+ * Uploads the drawing to Pasteboard and copies its link, asking first the
+ * first time: the drawing leaves the phone for a site of someone else's.
  */
-function sharePicture(canvas: HTMLCanvasElement): boolean {
-  const file = new File([dataUrlToBlob(canvas.toDataURL("image/png"))], "doodle.png", {
-    type: "image/png",
+function uploadAndCopy(canvas: HTMLCanvasElement): void {
+  if (!uploadAgreed()) {
+    askQuestion("Upload this Masterpiece to Pasteboard to share it in chat?", "Upload", () => {
+      try {
+        localStorage.setItem(UPLOAD_OK_KEY, "1");
+      } catch {}
+      uploadAndCopy(canvas);
+    });
+    return;
+  }
+  setStatus("Uploading");
+  canvas.toBlob((png) => {
+    if (!png) return;
+    uploadPicture(png)
+      .then(copyLink)
+      .catch((error: unknown) => {
+        log("notes draw: upload failed", error);
+        setStatus("Upload failed");
+      });
+  }, "image/png");
+}
+
+/**
+ * Copies a link as text, which PDA does allow. Should that be refused, as
+ * it can be once the upload has taken a while, the link is shown with a
+ * button that copies it on a fresh tap.
+ */
+function copyLink(link: string): void {
+  const shown = () => {
+    setStatus("");
+    showLink(link);
+  };
+  if (!navigator.clipboard?.writeText) {
+    shown();
+    return;
+  }
+  navigator.clipboard
+    .writeText(link)
+    .then(() => setStatus("Link copied"))
+    .catch(shown);
+}
+
+/** Shows a link with a button to copy it, for when it could not be copied straight away. */
+function showLink(link: string): void {
+  document.getElementById(CONFIRM_ID)?.remove();
+  const panel = document.createElement("div");
+  panel.id = CONFIRM_ID;
+  const text = document.createElement("p");
+  text.className = "doodle-link";
+  text.textContent = link;
+  const copy = toolButton("Copy", () => {
+    void navigator.clipboard
+      ?.writeText(link)
+      .then(() => {
+        panel.remove();
+        setStatus("Link copied");
+      })
+      .catch(() => {});
   });
-  const files = [file];
-  if (typeof navigator.share !== "function" || !navigator.canShare?.({ files })) return false;
-  navigator.share({ files }).catch((error: unknown) => {
-    // Closing the share menu without choosing is not a failure.
-    if (error instanceof DOMException && error.name === "AbortError") return;
-    log("notes draw: share failed", error);
-    showPicture(canvas, inPda() ? "Press and hold to save" : undefined);
-  });
-  return true;
+  copy.dataset.enter = "";
+  const buttons = document.createElement("div");
+  buttons.className = "doodle-row";
+  buttons.append(copy, toolButton("Close", () => panel.remove()));
+  panel.append(text, buttons);
+  document.body.appendChild(panel);
+  placeConfirm(panel);
 }
 
 /** Whether this is Torn PDA, whose web view carries its bridge to the app. */
@@ -1087,6 +1151,46 @@ function clearPicture(): void {
 }
 
 /** Changes the open drawing's shape, in the note and on the canvas. */
+/**
+ * Turns the open drawing a quarter turn clockwise. Landscape becomes portrait
+ * and back, so its lines in the note are re-cut to the new shape; a square
+ * stays a square. Undo turns it back, lines and all.
+ */
+function rotatePicture(): void {
+  const body = noteBody();
+  const block = active ? blockFor(active) : null;
+  const canvas = activeCanvas();
+  const context = canvas?.getContext("2d");
+  if (!body || !block || !canvas || !context || !active) return;
+  const turned: ShapeKey = block.shape === "l" ? "p" : block.shape === "p" ? "l" : "s";
+  const oldText = body.value.slice(block.start, block.end);
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+
+  const copy = document.createElement("canvas");
+  copy.width = canvas.width;
+  copy.height = canvas.height;
+  copy.getContext("2d")?.drawImage(canvas, 0, 0);
+  canvas.width = copy.height;
+  canvas.height = copy.width;
+  // A quarter turn clockwise about the top left, then across by the new
+  // width, so the old top left corner lands at the new top right.
+  context.translate(canvas.width, 0);
+  context.rotate(Math.PI / 2);
+  context.drawImage(copy, 0, 0);
+  context.setTransform(1, 0, 0, 1, 0, 0);
+
+  if (turned !== block.shape || !block.named) {
+    replaceText(body, block.start, block.end, blockText(active, turned, linesToReserve(body, turned)));
+  }
+  undoStack.push({ kind: "reshaped", id: active, oldText, image });
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = [];
+  // A drawing from before shapes had their own sizes is brought to its shape's size.
+  reshape(canvas, turned);
+  storePicture(active, canvas);
+  syncToolbar();
+}
+
 function setShape(shape: ShapeKey): void {
   const body = noteBody();
   const block = active ? blockFor(active) : null;
@@ -1205,6 +1309,8 @@ const ICONS = {
 </g>`,
   // A page with its corner folded and a plus on it.
   newPage: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm4 18H6V4h7v5h5v11Zm-7-9h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z",
+  // An arrow curling round clockwise.
+  rotate: "M15.55 5.55 11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45ZM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02ZM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03Zm3.89-2.42 1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48Z",
   bin: "M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h1.5v-8H10Zm2.5 0v8H14v-8h-1.5Z",
   expand: "M3 3h7v2.5H6.8l4 4-1.8 1.8-4-4V11H2.5V3Zm18 0v8h-2.5V7.3l-4 4-1.8-1.8 4-4H13V3h8ZM3 21v-8h2.5v3.7l4-4 1.8 1.8-4 4H11V21H3Zm18 0h-8v-2.5h3.7l-4-4 1.8-1.8 4 4V13H21v8Z",
 };
@@ -1230,30 +1336,35 @@ function iconButton(
   return button;
 }
 
-/** Asks whether to bin a drawing, the open one by default, and bins it on Confirm. */
-function confirmBin(id: string | null = active): void {
-  if (!id) return;
+/** Asks a yes or no question over Notes, running the yes when it is given. */
+function askQuestion(words: string, yes: string, onYes: () => void): void {
   document.getElementById(CONFIRM_ID)?.remove();
   const panel = document.createElement("div");
   panel.id = CONFIRM_ID;
   const question = document.createElement("p");
-  question.textContent = "Are you sure you want to bin this Masterpiece?";
+  question.textContent = words;
+  const confirm = toolButton(yes, () => {
+    panel.remove();
+    onYes();
+  });
+  // Enter answers yes; Escape is no, handled with the other keys.
+  confirm.dataset.enter = "";
   const buttons = document.createElement("div");
   buttons.className = "doodle-row";
-  const confirm = toolButton("Confirm", () => {
-    panel.remove();
-    removeDrawing(id);
-  });
-  // Enter answers Confirm; Escape is Cancel, handled with the other keys.
-  confirm.dataset.enter = "";
   buttons.append(confirm, toolButton("Cancel", () => panel.remove()));
   panel.append(question, buttons);
   document.body.appendChild(panel);
   placeConfirm(panel);
 }
 
+/** Asks whether to bin a drawing, the open one by default, and bins it on Confirm. */
+function confirmBin(id: string | null = active): void {
+  if (!id) return;
+  askQuestion("Are you sure you want to bin this Masterpiece?", "Confirm", () => removeDrawing(id));
+}
+
 /**
- * Centres the bin's question over the Notes window, where the drawing is,
+ * Centres a question over the Notes window, where the drawing is,
  * or over the screen in full screen. Kept on screen when Notes sits at an edge.
  */
 function placeConfirm(panel: HTMLElement): void {
@@ -1350,25 +1461,34 @@ function toolbar(): HTMLElement {
   // on top, and what is done with the drawing underneath.
   const tools = document.createElement("div");
   tools.className = "doodle-row";
+  // Undo and Redo sit at the top right, Rotate and the shape at the bottom
+  // right; the first of each pair carries the push that sends it there.
+  const undo = iconButton("Undo", ICONS.undo, () => step(true));
+  undo.classList.add("doodle-push");
   tools.append(
-    withPopup("shape", shapeButton, shapes),
     withPopup("colour", colourButton, grid),
     withPopup("size", sizeButton, slider),
     toolFor("Pen", ICONS.pen, "pen"),
     toolFor("Eraser", ICONS.eraser, "eraser"),
     toolFor("Paint bucket", ICONS.bucket, "bucket"),
     iconButton("Clear", ICONS.sweep, clearPicture),
+    undo,
+    iconButton("Redo", ICONS.redo, () => step(false)),
   );
+  const rotate = iconButton("Rotate", ICONS.rotate, rotatePicture);
+  rotate.classList.add("doodle-push");
+  const shapeHolder = withPopup("shape", shapeButton, shapes);
+  shapeHolder.classList.add("doodle-popup-right");
   const actions = document.createElement("div");
   actions.className = "doodle-row";
   actions.append(
     iconButton("New drawing", ICONS.newPage, newDrawing),
     iconButton("Copy", ICONS.copy, copyPicture),
     iconButton("Save", ICONS.download, askName),
-    iconButton("Undo", ICONS.undo, () => step(true)),
-    iconButton("Redo", ICONS.redo, () => step(false)),
     iconButton("Bin", ICONS.bin, () => confirmBin()),
     status,
+    rotate,
+    shapeHolder,
   );
   bar.append(tools, actions);
   document.body.appendChild(bar);

@@ -1,6 +1,6 @@
 {
   "name": "Autumn's Note Doodles",
-  "version": "1.0.22",
+  "version": "1.0.24",
   "description": "Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script",
   "match": [
     "https://www.torn.com/*"

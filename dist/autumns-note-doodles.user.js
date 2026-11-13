@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Doodles
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.22
+// @version      1.0.24
 // @description  Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script
 // @author       AutumnGrey
 // @license      MIT
@@ -124,6 +124,63 @@
     const array = new Uint8Array(bytes.length);
     for (let index = 0; index < bytes.length; index += 1) array[index] = bytes.charCodeAt(index);
     return new Blob([array], { type });
+  }
+
+  // src/autumns-note-doodles/upload.ts
+  var PASTEBOARD_URL = "https://www.pasteboard.co/api/upload";
+  var PASTEBOARD_PAGE = "https://pasteboard.co/";
+  var TIMEOUT_MS = 2e4;
+  function pdaPost() {
+    const page = window;
+    if (typeof page.PDA_httpPost === "function") return (url, headers, body) => page.PDA_httpPost(url, headers, body);
+    const bridge = page.flutter_inappwebview;
+    if (typeof bridge?.callHandler === "function") {
+      return (url, headers, body) => bridge.callHandler("PDA_httpPost", url, headers, body);
+    }
+    return null;
+  }
+  function canUpload() {
+    return pdaPost() !== null;
+  }
+  function byteString(bytes) {
+    let out = "";
+    for (let at = 0; at < bytes.length; at += 32768) {
+      out += String.fromCharCode(...bytes.subarray(at, at + 32768));
+    }
+    return out;
+  }
+  async function uploadPicture(png) {
+    const post = pdaPost();
+    if (!post) throw new Error("not in Torn PDA");
+    const boundary = `----DoodleBoundary${Math.random().toString(36).slice(2)}`;
+    const bytes = new Uint8Array(await png.arrayBuffer());
+    const body = `--${boundary}\r
+Content-Disposition: form-data; name="file"; filename="doodle.png"\r
+Content-Type: image/png\r
+\r
+` + byteString(bytes) + `\r
+--${boundary}--\r
+`;
+    const headers = { "Content-Type": `multipart/form-data; boundary=${boundary}; charset=ISO-8859-1` };
+    let timer = 0;
+    const late = new Promise((_, reject) => {
+      timer = window.setTimeout(() => reject(new Error("timed out")), TIMEOUT_MS);
+    });
+    let reply;
+    try {
+      reply = await Promise.race([Promise.resolve(post(PASTEBOARD_URL, headers, body)), late]) ?? {};
+    } finally {
+      clearTimeout(timer);
+    }
+    const status = Number(reply.status ?? reply.statusCode ?? 0);
+    const text = String(reply.responseText ?? reply.body ?? "");
+    let name = null;
+    try {
+      name = JSON.parse(text).fileName;
+    } catch {
+    }
+    if (status === 200 && typeof name === "string" && /^[\w-]+\.\w+$/.test(name)) return PASTEBOARD_PAGE + name;
+    throw new Error(status ? `Pasteboard answered ${status}` : "no answer from Pasteboard");
   }
 
   // src/autumns-note-doodles/doodles.ts
@@ -833,8 +890,12 @@ ${RESERVED}`.repeat(reserve)}`;
   function copyPicture() {
     const canvas = activeCanvas();
     if (!canvas) return;
-    if (inPda() || typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-      if (!sharePicture(canvas)) showPicture(canvas, inPda() ? "Press and hold to save" : void 0);
+    if (inPda() && canUpload()) {
+      uploadAndCopy(canvas);
+      return;
+    }
+    if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+      showPicture(canvas, inPda() ? "Press and hold to save" : void 0);
       return;
     }
     const png = new Promise(
@@ -845,18 +906,66 @@ ${RESERVED}`.repeat(reserve)}`;
       showPicture(canvas);
     });
   }
-  function sharePicture(canvas) {
-    const file = new File([dataUrlToBlob(canvas.toDataURL("image/png"))], "doodle.png", {
-      type: "image/png"
+  var UPLOAD_OK_KEY = "AND_UPLOAD_OK";
+  function uploadAgreed() {
+    try {
+      return localStorage.getItem(UPLOAD_OK_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function uploadAndCopy(canvas) {
+    if (!uploadAgreed()) {
+      askQuestion("Upload this Masterpiece to Pasteboard to share it in chat?", "Upload", () => {
+        try {
+          localStorage.setItem(UPLOAD_OK_KEY, "1");
+        } catch {
+        }
+        uploadAndCopy(canvas);
+      });
+      return;
+    }
+    setStatus("Uploading");
+    canvas.toBlob((png) => {
+      if (!png) return;
+      uploadPicture(png).then(copyLink).catch((error) => {
+        log("notes draw: upload failed", error);
+        setStatus("Upload failed");
+      });
+    }, "image/png");
+  }
+  function copyLink(link) {
+    const shown = () => {
+      setStatus("");
+      showLink(link);
+    };
+    if (!navigator.clipboard?.writeText) {
+      shown();
+      return;
+    }
+    navigator.clipboard.writeText(link).then(() => setStatus("Link copied")).catch(shown);
+  }
+  function showLink(link) {
+    document.getElementById(CONFIRM_ID)?.remove();
+    const panel = document.createElement("div");
+    panel.id = CONFIRM_ID;
+    const text = document.createElement("p");
+    text.className = "doodle-link";
+    text.textContent = link;
+    const copy = toolButton("Copy", () => {
+      void navigator.clipboard?.writeText(link).then(() => {
+        panel.remove();
+        setStatus("Link copied");
+      }).catch(() => {
+      });
     });
-    const files = [file];
-    if (typeof navigator.share !== "function" || !navigator.canShare?.({ files })) return false;
-    navigator.share({ files }).catch((error) => {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      log("notes draw: share failed", error);
-      showPicture(canvas, inPda() ? "Press and hold to save" : void 0);
-    });
-    return true;
+    copy.dataset.enter = "";
+    const buttons = document.createElement("div");
+    buttons.className = "doodle-row";
+    buttons.append(copy, toolButton("Close", () => panel.remove()));
+    panel.append(text, buttons);
+    document.body.appendChild(panel);
+    placeConfirm(panel);
   }
   function inPda() {
     return "flutter_inappwebview" in window;
@@ -979,6 +1088,35 @@ ${RESERVED}`.repeat(reserve)}`;
     blank(canvas);
     storePicture(active, canvas);
   }
+  function rotatePicture() {
+    const body = noteBody();
+    const block = active ? blockFor(active) : null;
+    const canvas = activeCanvas();
+    const context = canvas?.getContext("2d");
+    if (!body || !block || !canvas || !context || !active) return;
+    const turned = block.shape === "l" ? "p" : block.shape === "p" ? "l" : "s";
+    const oldText = body.value.slice(block.start, block.end);
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    const copy = document.createElement("canvas");
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    copy.getContext("2d")?.drawImage(canvas, 0, 0);
+    canvas.width = copy.height;
+    canvas.height = copy.width;
+    context.translate(canvas.width, 0);
+    context.rotate(Math.PI / 2);
+    context.drawImage(copy, 0, 0);
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    if (turned !== block.shape || !block.named) {
+      replaceText(body, block.start, block.end, blockText(active, turned, linesToReserve(body, turned)));
+    }
+    undoStack.push({ kind: "reshaped", id: active, oldText, image });
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack = [];
+    reshape(canvas, turned);
+    storePicture(active, canvas);
+    syncToolbar();
+  }
   function setShape(shape) {
     const body = noteBody();
     const block = active ? blockFor(active) : null;
@@ -1080,6 +1218,8 @@ ${RESERVED}`.repeat(reserve)}`;
 </g>`,
     // A page with its corner folded and a plus on it.
     newPage: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm4 18H6V4h7v5h5v11Zm-7-9h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z",
+    // An arrow curling round clockwise.
+    rotate: "M15.55 5.55 11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45ZM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02ZM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03Zm3.89-2.42 1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48Z",
     bin: "M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h1.5v-8H10Zm2.5 0v8H14v-8h-1.5Z",
     expand: "M3 3h7v2.5H6.8l4 4-1.8 1.8-4-4V11H2.5V3Zm18 0v8h-2.5V7.3l-4 4-1.8-1.8 4-4H13V3h8ZM3 21v-8h2.5v3.7l4-4 1.8 1.8-4 4H11V21H3Zm18 0h-8v-2.5h3.7l-4-4 1.8-1.8 4 4V13H21v8Z"
   };
@@ -1094,24 +1234,27 @@ ${RESERVED}`.repeat(reserve)}`;
     button.innerHTML = svgIcon(path);
     return button;
   }
-  function confirmBin(id = active) {
-    if (!id) return;
+  function askQuestion(words, yes, onYes) {
     document.getElementById(CONFIRM_ID)?.remove();
     const panel = document.createElement("div");
     panel.id = CONFIRM_ID;
     const question = document.createElement("p");
-    question.textContent = "Are you sure you want to bin this Masterpiece?";
-    const buttons = document.createElement("div");
-    buttons.className = "doodle-row";
-    const confirm = toolButton("Confirm", () => {
+    question.textContent = words;
+    const confirm = toolButton(yes, () => {
       panel.remove();
-      removeDrawing(id);
+      onYes();
     });
     confirm.dataset.enter = "";
+    const buttons = document.createElement("div");
+    buttons.className = "doodle-row";
     buttons.append(confirm, toolButton("Cancel", () => panel.remove()));
     panel.append(question, buttons);
     document.body.appendChild(panel);
     placeConfirm(panel);
+  }
+  function confirmBin(id = active) {
+    if (!id) return;
+    askQuestion("Are you sure you want to bin this Masterpiece?", "Confirm", () => removeDrawing(id));
   }
   function placeConfirm(panel) {
     const notes = full ? null : document.querySelector(SELECTORS.panel);
@@ -1195,25 +1338,32 @@ ${RESERVED}`.repeat(reserve)}`;
     status.className = "doodle-status";
     const tools = document.createElement("div");
     tools.className = "doodle-row";
+    const undo = iconButton("Undo", ICONS.undo, () => step(true));
+    undo.classList.add("doodle-push");
     tools.append(
-      withPopup("shape", shapeButton, shapes),
       withPopup("colour", colourButton, grid),
       withPopup("size", sizeButton, slider),
       toolFor("Pen", ICONS.pen, "pen"),
       toolFor("Eraser", ICONS.eraser, "eraser"),
       toolFor("Paint bucket", ICONS.bucket, "bucket"),
-      iconButton("Clear", ICONS.sweep, clearPicture)
+      iconButton("Clear", ICONS.sweep, clearPicture),
+      undo,
+      iconButton("Redo", ICONS.redo, () => step(false))
     );
+    const rotate = iconButton("Rotate", ICONS.rotate, rotatePicture);
+    rotate.classList.add("doodle-push");
+    const shapeHolder = withPopup("shape", shapeButton, shapes);
+    shapeHolder.classList.add("doodle-popup-right");
     const actions = document.createElement("div");
     actions.className = "doodle-row";
     actions.append(
       iconButton("New drawing", ICONS.newPage, newDrawing),
       iconButton("Copy", ICONS.copy, copyPicture),
       iconButton("Save", ICONS.download, askName),
-      iconButton("Undo", ICONS.undo, () => step(true)),
-      iconButton("Redo", ICONS.redo, () => step(false)),
       iconButton("Bin", ICONS.bin, () => confirmBin()),
-      status
+      status,
+      rotate,
+      shapeHolder
     );
     bar.append(tools, actions);
     document.body.appendChild(bar);
@@ -1823,6 +1973,21 @@ ${key}`);
   .doodle-row + .doodle-row {
     margin-top: 4px;
   }
+  /* Sends a group of buttons to the right of its row. */
+  .doodle-push {
+    margin-left: auto !important;
+  }
+  .doodle-popup-right .doodle-popup {
+    left: auto;
+    right: 0;
+  }
+  /* Docked in full screen the rows stack or centre, so nothing is pushed. */
+  #doodle-toolbar.doodle-docked .doodle-push {
+    margin-left: 0 !important;
+  }
+  #doodle-toolbar.doodle-docked .doodle-popup-right .doodle-popup {
+    right: auto;
+  }
   .doodle-holder {
     position: relative;
     display: inline-flex;
@@ -2054,6 +2219,11 @@ ${key}`);
   #doodle-confirm .torn-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  #doodle-confirm .doodle-link {
+    max-width: 260px;
+    overflow-wrap: anywhere;
+    user-select: all;
   }
   #doodle-confirm .doodle-row {
     justify-content: flex-end;
