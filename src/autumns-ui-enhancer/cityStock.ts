@@ -117,7 +117,7 @@ export async function loadStock(key: string, maxAgeMs: number): Promise<CityShop
   if (stored && Date.now() - stored.fetchedAt < maxAgeMs) return stored.shops;
   try {
     const shops = await fetchCityShops(key);
-    // Fetched every 30 seconds, so only a change is worth a line in the log.
+    // Fetched every 20 seconds, so only a change is worth a line in the log.
     if (JSON.stringify(shops) !== JSON.stringify(stored?.shops)) log("city shop: stock changed", shops);
     writeSetting(STOCK_STATE_SETTING, JSON.stringify({ fetchedAt: Date.now(), shops }));
     return shops;

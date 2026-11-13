@@ -49,6 +49,10 @@ const AUCTION_PARTS = {
   mobBid: ".top-bid-mob-wrap",
   mobTime: ".time-mob-wrap",
   panels: ".confirm, .show-item-info",
+  // Lines another userscript adds to Torn's rows (a bonus name and figure
+  // under the title). A clone would carry the template's, and that script
+  // then adds the right one beside it, so the copy's are taken out.
+  foreign: '[class*="w3b-"]',
 } as const;
 
 /**
@@ -98,14 +102,15 @@ interface Countdown {
  * Returns the countdown text Torn would show.
  *
  * Two units, largest first, with the trailing space the page's own markup
- * carries. The units come already worked out in the response, so this only
- * has to pick which pair to show.
+ * carries. Torn's `max` field says which pair to show.
  */
 function countdownText(timer: Countdown): string {
+  // Torn's units are running totals, not remainders: 1 day 2 hours comes as
+  // d 1, h 26. Each is cut down to what is left over from the unit above.
   const days = asNumber(timer.d);
-  const hours = asNumber(timer.h);
-  const minutes = asNumber(timer.m);
-  const seconds = asNumber(timer.s);
+  const hours = asNumber(timer.h) % 24;
+  const minutes = asNumber(timer.m) % 60;
+  const seconds = asNumber(timer.s) % 60;
   switch (timer.max) {
     case "d":
       return `${days}d ${hours}h `;
@@ -181,6 +186,7 @@ const AUCTION_MARKET: RowBuilder = {
   fill(row, listing) {
     const parts = AUCTION_PARTS;
     row.id = asText(listing.ID);
+    for (const added of row.querySelectorAll(parts.foreign)) added.remove();
 
     // The glow is the coloured ring around an item's picture, and says how
     // rare it is. The cloned row carries the template's, so it has to go.
@@ -268,6 +274,21 @@ const AUCTION_MARKET: RowBuilder = {
 
 const BUILDERS: RowBuilder[] = [AUCTION_MARKET];
 
+/**
+ * Returns the template row's classes that not every one of Torn's rows has.
+ *
+ * Those mark one lot's state, such as being outbid, and would otherwise be
+ * copied onto every row built from it.
+ */
+function passingClasses(template: HTMLElement): string[] {
+  const own = [...(template.parentElement?.children ?? [])].filter(
+    (row) => !row.hasAttribute("data-aue-extra") && row.tagName === template.tagName,
+  );
+  return [...template.classList].filter((name) =>
+    own.some((row) => !row.classList.contains(name)),
+  );
+}
+
 /** Returns the rows held in a JSON response, or null if there are none to build. */
 export function rowsFromJson(
   body: string,
@@ -291,10 +312,16 @@ export function rowsFromJson(
     return null;
   }
 
+  const passing = passingClasses(template);
   const rows: HTMLElement[] = [];
   for (const listing of list) {
     if (typeof listing !== "object" || listing === null) continue;
+    // Kept where the console can read it, to compare a built row with its data.
+    const store = ((window as unknown as { aueListings?: Record<string, unknown> })
+      .aueListings ??= {});
+    store[asText((listing as Listing).ID)] = listing;
     const row = template.cloneNode(true) as HTMLElement;
+    for (const name of passing) row.classList.remove(name);
     if (row.hasAttribute(SYNC_ATTR)) row.setAttribute(SYNC_ATTR, SYNC_MARK);
     try {
       builder.fill(row, listing as Listing);

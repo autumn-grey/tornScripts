@@ -829,6 +829,39 @@ const CSS = `
   #aue-city-shop-tip[hidden] {
     display: none;
   }
+  #aue-city-shop-alert {
+    position: absolute;
+    z-index: 999999;
+    padding: 6px 9px;
+    border-radius: 5px;
+    background: #2e2e2e;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+  }
+  #aue-city-shop-alert[hidden] {
+    display: none;
+  }
+  #aue-city-shop-alert a {
+    display: block;
+    color: #a9d1ff !important;
+    font-weight: bold;
+    text-decoration: none;
+  }
+  #aue-city-shop-alert a:hover {
+    text-decoration: underline;
+  }
+  /* Flashes the bag while a restock alert is up. */
+  #aue-city-shop-icon a.aue-bag-flash {
+    animation: aue-bag-flash 0.8s ease-in-out infinite;
+  }
+  @keyframes aue-bag-flash {
+    50% {
+      opacity: 0.2;
+    }
+  }
   /* The tip is a single line for the count; the key message wraps. */
   .aue-tip-message {
     max-width: 220px;

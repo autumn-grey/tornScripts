@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.22.12
+// @version      0.22.18
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -25,8 +25,20 @@
       return false;
     }
   }
+  function safeJson(value) {
+    try {
+      return (JSON.stringify(value) ?? String(value)).slice(0, 300);
+    } catch {
+      return String(value);
+    }
+  }
   function log(...parts) {
     if (!debugging()) return;
+    const kept = window.aueLog ?? (window.aueLog = []);
+    kept.push(
+      `${(/* @__PURE__ */ new Date()).toISOString().slice(11, 23)} ${parts.map((part2) => typeof part2 === "string" ? part2 : safeJson(part2)).join(" ")}`
+    );
+    if (kept.length > 500) kept.splice(0, kept.length - 500);
     console.log("[AUE]", ...parts);
   }
 
@@ -290,7 +302,7 @@
   var DAILY_LIMIT = 100;
   var DAY_S = 86400;
   var REFRESH_MS = 2 * 6e4;
-  var STOCK_REFRESH_MS = 3e4;
+  var STOCK_REFRESH_MS = 2e4;
   var STOCK_SLACK_MS = 2e3;
   var AFTER_BUY_MS = 1500;
   var MIN_GAP_MS = 5e3;
@@ -301,11 +313,14 @@
   var ICON_ID = "aue-city-shop-icon";
   var TIP_ID = "aue-city-shop-tip";
   var STOCK_ID = "aue-city-shop-stock";
+  var ALERT_ID = "aue-city-shop-alert";
+  var FLASH_CLASS = "aue-bag-flash";
   var LIT_ATTR = "data-aue-city-lit";
   var BLUE_ATTR = "data-aue-city-blue";
   var bought = null;
   var lastFetch = 0;
   var deferred = 0;
+  var restocked = [];
   var update = () => {
   };
   function tctMidnight() {
@@ -375,7 +390,25 @@
     const key = readSetting(API_KEY_SETTING, "").trim();
     if (!key || !isEnabled(CITY_SHOP_STOCK) || readCheckedItems().size === 0) return;
     if (document.hidden) return;
+    const before = readStock();
     await loadStock(key, force ? 0 : STOCK_REFRESH_MS - STOCK_SLACK_MS);
+    const after = readStock();
+    if (!before || !after || after.fetchedAt === before.fetchedAt) return;
+    noteRestocks(before.shops, after.shops);
+  }
+  function noteRestocks(before, after) {
+    const checked = readCheckedItems();
+    const was = /* @__PURE__ */ new Map();
+    for (const shop of before) for (const item of shop.items) was.set(item.id, item.stock);
+    for (const shop of after) {
+      for (const item of shop.items) {
+        if (!checked.has(item.id) || was.get(item.id) !== 0) continue;
+        if (typeof item.stock !== "number" || item.stock <= 0) continue;
+        if (restocked.some((seen3) => seen3.id === item.id)) continue;
+        log("city shop: back in stock", item.name, item.stock);
+        restocked.push({ id: item.id, name: item.name, url: shop.url });
+      }
+    }
   }
   async function refresh(force = false) {
     const key = readSetting(API_KEY_SETTING, "").trim();
@@ -569,12 +602,12 @@
     const tip = box(TIP_ID);
     refill(tip, fillTip);
     tip.hidden = false;
-    const place = icon.getBoundingClientRect();
+    const place2 = icon.getBoundingClientRect();
     const width = tip.offsetWidth;
-    const centre = place.left + place.width / 2;
+    const centre = place2.left + place2.width / 2;
     const left = Math.min(Math.max(4, centre - width / 2), innerWidth - width - 4);
     tip.style.left = `${left + scrollX}px`;
-    tip.style.top = `${place.top + scrollY - tip.offsetHeight - 8}px`;
+    tip.style.top = `${place2.top + scrollY - tip.offsetHeight - 8}px`;
     tip.style.setProperty("--aue-arrow-left", `${centre - left}px`);
   }
   function hideTip() {
@@ -586,18 +619,51 @@
     const list = box(STOCK_ID);
     refill(list, fillStock);
     list.hidden = false;
-    const place = icon.getBoundingClientRect();
+    const place2 = icon.getBoundingClientRect();
     const width = list.offsetWidth;
     const left = Math.min(
-      Math.max(4, place.left + place.width / 2 - width / 2),
+      Math.max(4, place2.left + place2.width / 2 - width / 2),
       innerWidth - width - 4
     );
     list.style.left = `${left + scrollX}px`;
-    list.style.top = `${place.bottom + scrollY + 6}px`;
+    list.style.top = `${place2.bottom + scrollY + 6}px`;
   }
   function closeStock() {
     const list = document.getElementById(STOCK_ID);
     if (list) list.hidden = true;
+  }
+  function fillAlert(alert) {
+    for (const item of restocked) {
+      const link = document.createElement("a");
+      link.href = item.url;
+      link.textContent = `${item.name} back in stock`;
+      alert.appendChild(link);
+    }
+  }
+  function showAlert(on3) {
+    const link = document.querySelector(`#${ICON_ID} a`);
+    link?.classList.toggle(FLASH_CLASS, on3);
+    const alert = document.getElementById(ALERT_ID);
+    if (!on3 || !link) {
+      if (alert) alert.hidden = true;
+      return;
+    }
+    const shown = alert ?? box(ALERT_ID);
+    refill(shown, fillAlert);
+    shown.hidden = false;
+    const place2 = link.getBoundingClientRect();
+    const width = shown.offsetWidth;
+    const left = Math.min(
+      Math.max(4, place2.left + place2.width / 2 - width / 2),
+      innerWidth - width - 4
+    );
+    shown.style.left = `${left + scrollX}px`;
+    shown.style.top = `${place2.bottom + scrollY + 6}px`;
+  }
+  function dismissAlert() {
+    if (restocked.length === 0) return;
+    restocked = [];
+    showAlert(false);
   }
   function buildIcon() {
     const item = document.createElement("li");
@@ -679,10 +745,13 @@
       if (tip && !tip.hidden) refill(tip, fillTip);
       const list = document.getElementById(STOCK_ID);
       if (list && !list.hidden) refill(list, fillStock);
+      if (!left && known) restocked = [];
+      showAlert(!missingKey && restocked.length > 0 && (list?.hidden ?? true));
     } else {
       document.getElementById(ICON_ID)?.remove();
       hideTip();
       closeStock();
+      showAlert(false);
     }
   }
   function installCityShopAlert() {
@@ -710,9 +779,13 @@
     });
     document.addEventListener("pointerdown", (event) => {
       const target = event.target;
+      if (!(target instanceof Element && target.closest(`#${ALERT_ID}`))) dismissAlert();
       if (target instanceof Element && target.closest(`#${ICON_ID}, #${STOCK_ID}`)) return;
       hideTip();
       closeStock();
+    });
+    document.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest(`#${ALERT_ID} a`)) dismissAlert();
     });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") closeStock();
@@ -839,7 +912,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.22.12");
+    root.setAttribute(RUNNING_ATTR, "0.22.18");
     return true;
   }
   async function w3bOneTabOn() {
@@ -1461,7 +1534,11 @@
     mobBidder: ".top-seller-mob-wrap",
     mobBid: ".top-bid-mob-wrap",
     mobTime: ".time-mob-wrap",
-    panels: ".confirm, .show-item-info"
+    panels: ".confirm, .show-item-info",
+    // Lines another userscript adds to Torn's rows (a bonus name and figure
+    // under the title). A clone would carry the template's, and that script
+    // then adds the right one beside it, so the copy's are taken out.
+    foreign: '[class*="w3b-"]'
   };
   var SYNC_ATTR = "data-w3b-sync";
   var SYNC_MARK = "aue";
@@ -1476,9 +1553,9 @@
   }
   function countdownText(timer) {
     const days = asNumber(timer.d);
-    const hours = asNumber(timer.h);
-    const minutes = asNumber(timer.m);
-    const seconds = asNumber(timer.s);
+    const hours = asNumber(timer.h) % 24;
+    const minutes = asNumber(timer.m) % 60;
+    const seconds = asNumber(timer.s) % 60;
     switch (timer.max) {
       case "d":
         return `${days}d ${hours}h `;
@@ -1526,6 +1603,7 @@
     fill(row, listing) {
       const parts = AUCTION_PARTS;
       row.id = asText(listing.ID);
+      for (const added of row.querySelectorAll(parts.foreign)) added.remove();
       const plate = row.querySelector(parts.plate);
       if (plate) {
         for (const name2 of [...plate.classList]) {
@@ -1589,6 +1667,14 @@
     }
   };
   var BUILDERS = [AUCTION_MARKET];
+  function passingClasses(template) {
+    const own = [...template.parentElement?.children ?? []].filter(
+      (row) => !row.hasAttribute("data-aue-extra") && row.tagName === template.tagName
+    );
+    return [...template.classList].filter(
+      (name) => own.some((row) => !row.classList.contains(name))
+    );
+  }
   function rowsFromJson(body, template) {
     if (body.trimStart()[0] !== "{") return null;
     let data;
@@ -1604,10 +1690,14 @@
       log("build: this page answers with data, and nothing here can draw it");
       return null;
     }
+    const passing = passingClasses(template);
     const rows = [];
     for (const listing of list) {
       if (typeof listing !== "object" || listing === null) continue;
+      const store = window.aueListings ?? (window.aueListings = {});
+      store[asText(listing.ID)] = listing;
       const row = template.cloneNode(true);
+      for (const name of passing) row.classList.remove(name);
       if (row.hasAttribute(SYNC_ATTR)) row.setAttribute(SYNC_ATTR, SYNC_MARK);
       try {
         builder.fill(row, listing);
@@ -1642,6 +1732,9 @@
   var STATUS_CLASS = "aue-per-page-status";
   var EXTRA_ROW_ATTR = "data-aue-extra";
   var PAGER_STATE_ATTR = "data-aue-pager";
+  var OWN_LINK_ATTR = "data-aue-page";
+  var PAGING_HOLD_MS = 8e3;
+  var POST_IN_HASH = /[?&]to=(\d+)/;
   var START_IN_BODY = /(^|&)start=\d+/;
   var START_IN_URL = /([?&])start=\d+/;
   var START_IN_HASH = /[?&]start=(\d+)/;
@@ -1654,7 +1747,19 @@
   var FETCH_BUDGET = 12;
   var fetchBudget = FETCH_BUDGET;
   var saidNoRequest = false;
-  var primed = false;
+  var primed = /* @__PURE__ */ new WeakSet();
+  var requestKey = null;
+  function listKey() {
+    return location.hash.replace(START_IN_HASH, "");
+  }
+  function requestLanded() {
+    requestKey = listKey();
+    onRequestCaptured?.();
+  }
+  var trustedSetting = null;
+  var pagingUntil = 0;
+  var realigned = /* @__PURE__ */ new Set();
+  var pendingPost = null;
   var onRequestCaptured = null;
   var originalPagers = /* @__PURE__ */ new WeakMap();
   var basePageCounts = /* @__PURE__ */ new WeakMap();
@@ -1736,8 +1841,7 @@
     return `${SIZE_SETTING}:${location.pathname}`;
   }
   function pageSize(step) {
-    const shared = readSetting(SIZE_SETTING, String(step));
-    const stored = Number(readSetting(sizeSetting(), shared));
+    const stored = Number(readSetting(sizeSetting(), String(step)));
     const wanted = Number.isFinite(stored) && stored > 0 ? stored : step;
     const requests = Math.min(
       MAX_REQUESTS,
@@ -1759,6 +1863,7 @@
     if (body !== null && START_IN_BODY.test(body)) {
       if (address.pathname !== location.pathname) return false;
       lastRequest = { method: method || "POST", url, body, offsetIn: "body" };
+      requestKey = null;
       log("capture: list request to", address.pathname, redact(body));
       return true;
     }
@@ -1766,6 +1871,7 @@
       if (address.pathname !== location.pathname) return false;
       if (lastRequest?.offsetIn === "body") return false;
       lastRequest = { method: method || "GET", url, body, offsetIn: "url" };
+      requestKey = null;
       log(
         "capture: list request to",
         address.pathname + redact(address.search),
@@ -1791,7 +1897,7 @@
           typeof body === "string" ? body : null
         );
         if (captured) {
-          this.addEventListener("loadend", () => onRequestCaptured?.(), {
+          this.addEventListener("loadend", requestLanded, {
             once: true
           });
         }
@@ -1814,7 +1920,7 @@
         );
       }
       const sent = fetchOriginal.apply(this, args);
-      if (captured) void sent.then(() => onRequestCaptured?.()).catch(() => {
+      if (captured) void sent.then(requestLanded).catch(() => {
       });
       return sent;
     };
@@ -1896,12 +2002,16 @@
     }
     return null;
   }
+  function isShown(element) {
+    return element.getClientRects().length > 0;
+  }
   function findTarget() {
     let below = null;
     for (const widget of document.querySelectorAll(
       PAGINATION_SELECTOR
     )) {
       if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
+      if (!isShown(widget)) continue;
       const target = findList(widget, pageStepFor(widget));
       if (!target) continue;
       const listIsAfterPager = target.pagerBlock.compareDocumentPosition(target.block) & Node.DOCUMENT_POSITION_FOLLOWING;
@@ -1934,7 +2044,92 @@
     log("page: going to page", page, "- start", start2);
     removeAllExtraRows();
     newGeneration();
-    location.hash = `${template}start=${start2}`;
+    const hash = `${template}start=${start2}`;
+    const step = pageStepFor(widget);
+    const clicked2 = step !== null && pagedByClicks(widget);
+    if (clicked2) clickTornPage(widget, start2, step);
+    else if (location.hash === hash) return;
+    if (location.hash !== hash) location.hash = hash;
+    if (trustedSetting === sizeSetting()) {
+      pagingUntil = Date.now() + PAGING_HOLD_MS;
+      holdPagers();
+    }
+  }
+  function pagedByClicks(widget) {
+    const href = widget.querySelector(`${PAGE_LINK_SELECTOR}[href]`)?.getAttribute("href") ?? "";
+    return href !== "" && href[0] !== "#";
+  }
+  var passingClick = false;
+  function clickTornPage(widget, start2, step) {
+    const source = widget.querySelector(PAGE_LINK_SELECTOR);
+    if (!source) return;
+    const proxy = source.cloneNode(true);
+    proxy.removeAttribute(OWN_LINK_ATTR);
+    proxy.classList.remove("active", "first", "last");
+    proxy.setAttribute("page", String(start2 / step + 1));
+    const base = (source.getAttribute("href") ?? "").replace(/[?&]start=\d+/, "");
+    proxy.setAttribute("href", `${base}${base.includes("#") ? "&" : "#"}start=${start2}`);
+    proxy.style.display = "none";
+    writing = true;
+    widget.appendChild(proxy);
+    passingClick = true;
+    try {
+      proxy.click();
+    } finally {
+      passingClick = false;
+      proxy.remove();
+      writing = false;
+    }
+  }
+  function holdPagers() {
+    if (Date.now() > pagingUntil) return;
+    const target = findTarget();
+    if (!target || target.step === null) return;
+    if (pageSize(target.step) <= target.step) return;
+    syncPagers(target.step, true);
+  }
+  function syncPagers(step, renumber) {
+    writing = true;
+    for (const widget of document.querySelectorAll(
+      PAGINATION_SELECTOR
+    )) {
+      if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
+      const own = pageStepFor(widget) ?? step;
+      adoptStep(widget, own);
+      if (renumber && isShown(widget)) rewritePager(widget, pageSize(own), own);
+      else restorePager(widget);
+    }
+    writing = false;
+  }
+  function realign(start2, size) {
+    const aligned = Math.floor(start2 / size) * size;
+    const post = POST_IN_HASH.exec(location.hash)?.[1];
+    if (post) pendingPost = { id: post, at: Date.now() };
+    log("page: start", start2, "is mid-page at", size, "a page, moving to", aligned);
+    realigned.add(location.hash);
+    removeAllExtraRows();
+    newGeneration();
+    location.hash = location.hash.replace(START_IN_HASH, (match) => match.replace(/\d+$/, String(aligned))).replace(POST_IN_HASH, "");
+  }
+  function rowHolding(container, id) {
+    const ending = new RegExp(`(?:^|\\D)${id}$`);
+    const holds = (element) => [...element.attributes].some(
+      (attribute) => (attribute.name === "id" || attribute.name.startsWith("data-")) && ending.test(attribute.value)
+    );
+    const rows = rowsOf(container);
+    return rows.find(holds) ?? rows.find((row) => [...row.querySelectorAll("*")].some(holds)) ?? null;
+  }
+  function scrollToPendingPost(container) {
+    if (!pendingPost) return;
+    const { id, at } = pendingPost;
+    pendingPost = null;
+    if (Date.now() - at > 3e4) return;
+    const row = rowHolding(container, id);
+    if (!row) {
+      log("page: post", id, "is not in this page's rows");
+      return;
+    }
+    setTimeout(() => row.scrollIntoView({ block: "start" }), Math.max(0, at + 1200 - Date.now()));
   }
   function basePageCount(widget) {
     const stored = basePageCounts.get(widget);
@@ -1973,6 +2168,12 @@
     element.style.removeProperty("display");
   }
   function rewritePager(widget, size, step) {
+    const tornsAgain = widget.querySelector(`${PAGE_LINK_SELECTOR}:not([${OWN_LINK_ATTR}])`) !== null;
+    if (tornsAgain && originalPagers.has(widget)) {
+      originalPagers.delete(widget);
+      basePageCounts.delete(widget);
+      widget.removeAttribute(PAGER_STATE_ATTR);
+    }
     const model = pagerModel(widget, size, step);
     if (!model) return;
     const state = `${size}:${model.current}:${model.total}`;
@@ -2014,6 +2215,7 @@
       }
       const link = blank.cloneNode(true);
       link.setAttribute("page", String(page));
+      link.setAttribute(OWN_LINK_ATTR, "");
       link.classList.remove("first", "last", "active");
       if (page === 1) link.classList.add("first");
       if (page === model.total) link.classList.add("last");
@@ -2043,7 +2245,7 @@
     document.addEventListener(
       "click",
       (event) => {
-        if (!isEnabled(LIST_DISPLAY_EXTENSION)) return;
+        if (passingClick || !isEnabled(LIST_DISPLAY_EXTENSION)) return;
         const target = event.target;
         if (!(target instanceof Element)) return;
         const link = target.closest("a");
@@ -2059,6 +2261,7 @@
         let page = null;
         const pageAttribute = link.getAttribute("page");
         if (pageAttribute !== null) {
+          if (!link.hasAttribute(OWN_LINK_ATTR)) return;
           page = Number(pageAttribute);
         } else if (link.querySelector(ARROW_PREV_SELECTOR)) {
           page = model.current - 1;
@@ -2346,12 +2549,8 @@
     const size = pageSize(target.step);
     writing = true;
     removeExtraRows(target.container);
-    for (const widget of document.querySelectorAll(
-      PAGINATION_SELECTOR
-    )) {
-      restorePager(widget);
-    }
     writing = false;
+    syncPagers(target.step, false);
     const page = Math.floor(currentStart() / size) + 1;
     const before = location.hash;
     goToPage(target.widget, page, size);
@@ -2404,15 +2603,19 @@
     for (const widget of document.querySelectorAll(
       PAGINATION_SELECTOR
     )) {
-      if (widget.hasAttribute(TOP_PAGER_ATTR)) continue;
+      if (widget.hasAttribute(TOP_PAGER_ATTR) || !isShown(widget)) continue;
       if (widget.querySelector(PAGE_LINK_SELECTOR)) return widget;
     }
     return null;
   }
   function ensureTopPager(target, step) {
-    const existing = document.querySelector(`[${TOP_PAGER_ATTR}]`);
+    let existing = document.querySelector(`[${TOP_PAGER_ATTR}]`);
+    if (existing && existing !== target.widget && existing.nextElementSibling !== target.block) {
+      removeTopPager();
+      existing = null;
+    }
     if (!existing && target.pagerIsAbove) return null;
-    const source = tornsOwnPager();
+    const source = existing === target.widget ? tornsOwnPager() : target.widget;
     if (!source) return existing;
     const stamp = String(generation);
     if (existing && existing.getAttribute(TOP_PAGER_ATTR) === stamp) {
@@ -2461,13 +2664,51 @@
     writing = false;
   }
   function removeControl() {
+    placed = false;
     document.getElementById(CONTROL_ID)?.remove();
   }
+  var VANISH_GRACE_MS = 2e3;
+  var missingSince = 0;
+  var placed = false;
   function primeRequest(target, size) {
-    if (primed || START_IN_HASH.test(location.hash)) return;
-    primed = true;
+    if (primed.has(target.block) || START_IN_HASH.test(location.hash)) return;
+    if (pagedByClicks(target.widget)) return;
+    primed.add(target.block);
     log("prime: asking Torn for this list so its request can be replayed");
     goToPage(target.widget, Math.floor(currentStart() / size) + 1, size);
+  }
+  function place(target, step) {
+    missingSince = 0;
+    const topPager = ensureTopPager(target, step);
+    ensureControl(topPager ?? target.pagerBlock, step);
+    placed = true;
+  }
+  function withdraw(reason) {
+    if (!placed) {
+      removeControl();
+      removeTopPager();
+      return;
+    }
+    if (missingSince === 0) {
+      missingSince = Date.now();
+      log("apply:", reason, "- holding the control a moment");
+    }
+    if (Date.now() - missingSince < VANISH_GRACE_MS) {
+      setTimeout(() => void apply2(), VANISH_GRACE_MS);
+      return;
+    }
+    log("apply:", reason, "- taking the control away");
+    placed = false;
+    missingSince = 0;
+    removeControl();
+    removeTopPager();
+  }
+  function restoreControl() {
+    if (!placed || document.getElementById(CONTROL_ID)) return;
+    const target = findTarget();
+    if (!target || target.step === null) return;
+    log("apply: Torn's redraw took the control, putting it back");
+    place(target, target.step);
   }
   async function apply2() {
     if (!isEnabled(LIST_DISPLAY_EXTENSION)) {
@@ -2477,15 +2718,12 @@
     }
     const target = findTarget();
     if (!target) {
-      removeControl();
-      removeTopPager();
+      withdraw("no list on the page");
       return;
     }
     const step = target.step;
     if (step === null) {
-      log("apply: cannot tell how many rows this list sends, so leaving it be");
-      removeControl();
-      removeTopPager();
+      withdraw("cannot tell how many rows this list sends");
       return;
     }
     if (tornSetsTheSizeHere(target)) {
@@ -2494,33 +2732,30 @@
       removeTopPager();
       return;
     }
-    const topPager = ensureTopPager(target, step);
-    ensureControl(topPager ?? target.pagerBlock, step);
+    place(target, step);
     const size = pageSize(step);
     if (size <= step) {
       writing = true;
       removeExtraRows(target.container);
-      for (const widget of document.querySelectorAll(
-        PAGINATION_SELECTOR
-      )) {
-        restorePager(widget);
-      }
       writing = false;
+      syncPagers(step, false);
       return;
     }
-    if (!lastRequest) {
+    const start2 = currentStart();
+    if (start2 % size !== 0 && !realigned.has(location.hash)) {
+      realign(start2, size);
+      return;
+    }
+    const holding = Date.now() < pagingUntil;
+    if (!lastRequest || requestKey !== listKey()) {
       if (!saidNoRequest) {
         saidNoRequest = true;
         log("apply: no list request to replay yet, leaving the page alone");
       }
       writing = true;
       removeExtraRows(target.container);
-      for (const widget of document.querySelectorAll(
-        PAGINATION_SELECTOR
-      )) {
-        restorePager(widget);
-      }
       writing = false;
+      if (!holding) syncPagers(step, false);
       primeRequest(target, size);
       return;
     }
@@ -2528,19 +2763,14 @@
     if (filling && filling.container === target.container) return;
     const filled2 = rowsOf(target.container).length;
     if (filled2 <= step) {
+      if (holding) return;
       log("fill: still", filled2, "rows, so Torn's own pager stands");
+    } else {
+      trustedSetting = sizeSetting();
+      pagingUntil = 0;
+      scrollToPendingPost(target.container);
     }
-    writing = true;
-    for (const widget of document.querySelectorAll(
-      PAGINATION_SELECTOR
-    )) {
-      if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
-      const own = pageStepFor(widget) ?? step;
-      adoptStep(widget, own);
-      if (filled2 > own) rewritePager(widget, pageSize(own), own);
-      else restorePager(widget);
-    }
-    writing = false;
+    syncPagers(step, filled2 > step);
   }
   function installListDisplay() {
     installPagerClicks();
@@ -2561,6 +2791,8 @@
     onRequestCaptured = schedule;
     new MutationObserver(() => {
       if (writing) return;
+      restoreControl();
+      holdPagers();
       schedule();
     }).observe(document.body, { childList: true, subtree: true });
     addEventListener("hashchange", () => {
@@ -3110,9 +3342,9 @@
     if (panel >= 0) return panel;
     const chat = bar.findIndex((barId) => belongsTo(id, barId));
     if (chat >= 0) {
-      const place = PANEL_ORDER.length + chat;
-      lastSlots.set(item, place);
-      return place;
+      const place2 = PANEL_ORDER.length + chat;
+      lastSlots.set(item, place2);
+      return place2;
     }
     return lastSlots.get(item) ?? PANEL_ORDER.length + bar.length;
   }
@@ -3186,16 +3418,16 @@
       return;
     }
     const gap = spacingGap(items, first.width);
-    const placed = [];
+    const placed2 = [];
     let used = 0;
     for (const chat of visible) {
       const natural = side === "left" ? containerWidth - chat.width : containerWidth - chat.width + chat.torn;
       const target = side === "left" ? used : containerWidth - used - chat.width;
       setOffset(chat.wrapper, target - natural);
-      placed.push(`${windowIdOf(chat.wrapper) || "?"}@${Math.round(target)}`);
+      placed2.push(`${windowIdOf(chat.wrapper) || "?"}@${Math.round(target)}`);
       used += chat.width + gap;
     }
-    const summary = `${side}: ${placed.join(" ")}`;
+    const summary = `${side}: ${placed2.join(" ")}`;
     if (summary !== lastLayout) {
       lastLayout = summary;
       log("layout", summary);
@@ -4725,6 +4957,39 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   #aue-city-shop-tip[hidden] {
     display: none;
   }
+  #aue-city-shop-alert {
+    position: absolute;
+    z-index: 999999;
+    padding: 6px 9px;
+    border-radius: 5px;
+    background: #2e2e2e;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+  }
+  #aue-city-shop-alert[hidden] {
+    display: none;
+  }
+  #aue-city-shop-alert a {
+    display: block;
+    color: #a9d1ff !important;
+    font-weight: bold;
+    text-decoration: none;
+  }
+  #aue-city-shop-alert a:hover {
+    text-decoration: underline;
+  }
+  /* Flashes the bag while a restock alert is up. */
+  #aue-city-shop-icon a.aue-bag-flash {
+    animation: aue-bag-flash 0.8s ease-in-out infinite;
+  }
+  @keyframes aue-bag-flash {
+    50% {
+      opacity: 0.2;
+    }
+  }
   /* The tip is a single line for the count; the key message wraps. */
   .aue-tip-message {
     max-width: 220px;
@@ -4809,7 +5074,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.22.12");
+    document.documentElement.setAttribute("data-aue", "0.22.18");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;

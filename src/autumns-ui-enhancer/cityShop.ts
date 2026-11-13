@@ -1,6 +1,8 @@
 // City Shop Alert: while fewer than 100 city shop items have been bought today,
 // lights up the City link in the side menu. A shop icon among the status icons
 // gives the count in its tooltip, opens the watched stock, and turns green at 100.
+// While buys are left, a watched item coming back from 0 flashes the icon and
+// says so in a box under it.
 //
 // The count comes from the "Item shop buy" log since midnight TCT. The
 // cityitemsbought personal stat was tried first and lags behind purchases.
@@ -82,7 +84,7 @@ const DAY_S = 86_400;
 /** How long a fetched count is used before it is fetched again. */
 const REFRESH_MS = 2 * 60_000;
 /** How often the watched stock is fetched, as shelves empty faster than the count moves. */
-const STOCK_REFRESH_MS = 30_000;
+const STOCK_REFRESH_MS = 20_000;
 // A timer firing a moment early would find the stock not quite stale and skip
 // a round, so anything within this of the limit counts as stale.
 const STOCK_SLACK_MS = 2_000;
@@ -102,6 +104,9 @@ const SETTINGS_URL = "/preferences.php";
 const ICON_ID = "aue-city-shop-icon";
 const TIP_ID = "aue-city-shop-tip";
 const STOCK_ID = "aue-city-shop-stock";
+const ALERT_ID = "aue-city-shop-alert";
+/** Makes the bag flash while a restock alert is up. */
+const FLASH_CLASS = "aue-bag-flash";
 const LIT_ATTR = "data-aue-city-lit";
 const BLUE_ATTR = "data-aue-city-blue";
 
@@ -119,6 +124,8 @@ let bought: number | null = null;
 let lastFetch = 0;
 /** A fetch put off by MIN_GAP_MS, waiting to run. */
 let deferred = 0;
+/** Watched items that went from 0 to some since the alert was last put away. */
+let restocked: { id: number; name: string; url: string }[] = [];
 /** Starts a refresh and redraws when it is done; set by installCityShopAlert. */
 let update: (force?: boolean) => void = () => {};
 
@@ -213,8 +220,29 @@ async function refreshStock(force: boolean): Promise<void> {
   const key = readSetting(API_KEY_SETTING, "").trim();
   if (!key || !isEnabled(CITY_SHOP_STOCK) || readCheckedItems().size === 0) return;
   if (document.hidden) return;
+  const before = readStock();
   // A purchase takes stock off the shelf, so it asks again then.
   await loadStock(key, force ? 0 : STOCK_REFRESH_MS - STOCK_SLACK_MS);
+  const after = readStock();
+  // Only the tab that made the fetch compares, so several open tabs alert once.
+  if (!before || !after || after.fetchedAt === before.fetchedAt) return;
+  noteRestocks(before.shops, after.shops);
+}
+
+/** Adds the watched items that were at 0 in one fetch and have stock in the next. */
+function noteRestocks(before: CityShop[], after: CityShop[]): void {
+  const checked = readCheckedItems();
+  const was = new Map<number, number | null>();
+  for (const shop of before) for (const item of shop.items) was.set(item.id, item.stock);
+  for (const shop of after) {
+    for (const item of shop.items) {
+      if (!checked.has(item.id) || was.get(item.id) !== 0) continue;
+      if (typeof item.stock !== "number" || item.stock <= 0) continue;
+      if (restocked.some((seen) => seen.id === item.id)) continue;
+      log("city shop: back in stock", item.name, item.stock);
+      restocked.push({ id: item.id, name: item.name, url: shop.url });
+    }
+  }
 }
 
 /** Brings the count up to date, asking the API only when the stored one is stale or forced. */
@@ -510,6 +538,45 @@ function closeStock(): void {
   if (list) list.hidden = true;
 }
 
+/** Fills the alert with a link to each restocked item's shop. */
+function fillAlert(alert: HTMLElement): void {
+  for (const item of restocked) {
+    const link = document.createElement("a");
+    link.href = item.url;
+    link.textContent = `${item.name} back in stock`;
+    alert.appendChild(link);
+  }
+}
+
+/** Shows the restock alert under the icon and flashes the bag, or takes both down. */
+function showAlert(on: boolean): void {
+  const link = document.querySelector<HTMLElement>(`#${ICON_ID} a`);
+  link?.classList.toggle(FLASH_CLASS, on);
+  const alert = document.getElementById(ALERT_ID);
+  if (!on || !link) {
+    if (alert) alert.hidden = true;
+    return;
+  }
+  const shown = alert ?? box(ALERT_ID);
+  refill(shown, fillAlert);
+  shown.hidden = false;
+  const place = link.getBoundingClientRect();
+  const width = shown.offsetWidth;
+  const left = Math.min(
+    Math.max(4, place.left + place.width / 2 - width / 2),
+    innerWidth - width - 4,
+  );
+  shown.style.left = `${left + scrollX}px`;
+  shown.style.top = `${place.bottom + scrollY + 6}px`;
+}
+
+/** Puts the restock alert away until the next item comes back. */
+function dismissAlert(): void {
+  if (restocked.length === 0) return;
+  restocked = [];
+  showAlert(false);
+}
+
 /** Returns the status icon, made on first use. */
 function buildIcon(): HTMLElement {
   const item = document.createElement("li");
@@ -609,10 +676,14 @@ function apply(): void {
     if (tip && !tip.hidden) refill(tip, fillTip);
     const list = document.getElementById(STOCK_ID);
     if (list && !list.hidden) refill(list, fillStock);
+    // A restock is no use once the day's buys are gone.
+    if (!left && known) restocked = [];
+    showAlert(!missingKey && restocked.length > 0 && (list?.hidden ?? true));
   } else {
     document.getElementById(ICON_ID)?.remove();
     hideTip();
     closeStock();
+    showAlert(false);
   }
 }
 
@@ -649,12 +720,17 @@ export function installCityShopAlert(): void {
     if (!document.hidden) update();
   });
 
-  // A click or tap anywhere else puts both boxes away.
+  // A click or tap anywhere else puts the boxes away. The alert goes on any
+  // click outside it, the bag included; a click on its link is followed first.
   document.addEventListener("pointerdown", (event) => {
     const target = event.target;
+    if (!(target instanceof Element && target.closest(`#${ALERT_ID}`))) dismissAlert();
     if (target instanceof Element && target.closest(`#${ICON_ID}, #${STOCK_ID}`)) return;
     hideTip();
     closeStock();
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest(`#${ALERT_ID} a`)) dismissAlert();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeStock();

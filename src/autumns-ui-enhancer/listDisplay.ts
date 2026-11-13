@@ -52,6 +52,12 @@ const STATUS_CLASS = "aue-per-page-status";
 const EXTRA_ROW_ATTR = "data-aue-extra";
 /** Stops the pager being rebuilt on every mutation it causes itself. */
 const PAGER_STATE_ATTR = "data-aue-pager";
+/** Marks a page link this script drew, so Torn redrawing the pager over it shows. */
+const OWN_LINK_ATTR = "data-aue-page";
+/** How long after a page move Torn's redrawn pager is renumbered on the spot. */
+const PAGING_HOLD_MS = 8000;
+/** Matches the post a forum link points at, which Torn pages to on its own. */
+const POST_IN_HASH = /[?&]to=(\d+)/;
 
 interface CapturedRequest {
   method: string;
@@ -92,8 +98,36 @@ const FETCH_BUDGET = 12;
 let fetchBudget = FETCH_BUDGET;
 /** Said once per page, not once per tick of whatever is counting down. */
 let saidNoRequest = false;
-/** Whether Torn has already been nudged into making a list request. */
-let primed = false;
+/** The lists Torn has already been nudged into making a request for. */
+const primed = new WeakSet<Element>();
+/**
+ * Which list the captured request fetched: the hash, offset aside, as it
+ * stood when the response came back. Null while the request is in flight.
+ *
+ * The auction market keeps a list per tab on one page, so a request captured
+ * on Weapons would otherwise fill Armour with weapons. Waiting for the
+ * response also keeps a fill from starting while Torn is still drawing.
+ */
+let requestKey: string | null = null;
+
+/** Returns which list the page is showing, from its hash with the offset taken out. */
+function listKey(): string {
+  return location.hash.replace(START_IN_HASH, "");
+}
+
+/** Records which list a captured request belonged to, then runs a pass. */
+function requestLanded(): void {
+  requestKey = listKey();
+  onRequestCaptured?.();
+}
+/** The size setting a fill has worked under, so its pager can be trusted early. */
+let trustedSetting: string | null = null;
+/** Until when a page move is in flight and Torn's pager is renumbered as it lands. */
+let pagingUntil = 0;
+/** Hashes already pulled back onto a page boundary, so Torn and this cannot fight over one. */
+const realigned = new Set<string>();
+/** A forum post the reader was sent to, to scroll to once its page is filled. */
+let pendingPost: { id: string; at: number } | null = null;
 /** Runs a pass once a replayable request appears. */
 let onRequestCaptured: (() => void) | null = null;
 
@@ -247,12 +281,10 @@ function sizeSetting(): string {
  *
  * The reader's choice is a row count, but a page has to be a whole number of
  * requests, so it is rounded to the nearest the list can actually serve. A
- * list not yet chosen for falls back to what was set before sizes were kept
- * apart, so nobody's existing choice is dropped.
+ * list not yet chosen for shows Torn's own size, the smallest on offer.
  */
 function pageSize(step: number): number {
-  const shared = readSetting(SIZE_SETTING, String(step));
-  const stored = Number(readSetting(sizeSetting(), shared));
+  const stored = Number(readSetting(sizeSetting(), String(step)));
   const wanted = Number.isFinite(stored) && stored > 0 ? stored : step;
   const requests = Math.min(
     MAX_REQUESTS,
@@ -297,6 +329,7 @@ function rememberRequest(
   if (body !== null && START_IN_BODY.test(body)) {
     if (address.pathname !== location.pathname) return false;
     lastRequest = { method: method || "POST", url, body, offsetIn: "body" };
+    requestKey = null;
     log("capture: list request to", address.pathname, redact(body));
     return true;
   }
@@ -310,6 +343,7 @@ function rememberRequest(
     // the list asking for itself, while this may be any GET of the page.
     if (lastRequest?.offsetIn === "body") return false;
     lastRequest = { method: method || "GET", url, body, offsetIn: "url" };
+    requestKey = null;
     log(
       "capture: list request to",
       address.pathname + redact(address.search),
@@ -344,7 +378,7 @@ export function installRequestCapture(): void {
         typeof body === "string" ? body : null,
       );
       if (captured) {
-        this.addEventListener("loadend", () => onRequestCaptured?.(), {
+        this.addEventListener("loadend", requestLanded, {
           once: true,
         });
       }
@@ -375,7 +409,7 @@ export function installRequestCapture(): void {
     const sent = (
       fetchOriginal as (...a: unknown[]) => Promise<Response>
     ).apply(this, args);
-    if (captured) void sent.then(() => onRequestCaptured?.()).catch(() => {});
+    if (captured) void sent.then(requestLanded).catch(() => {});
     return sent;
   } as typeof window.fetch;
 }
@@ -495,6 +529,11 @@ function findList(widget: HTMLElement, step: number | null): ListTarget | null {
   return null;
 }
 
+/** Whether an element is on screen, rather than in a tab Torn has hidden. */
+function isShown(element: Element): boolean {
+  return element.getClientRects().length > 0;
+}
+
 /** Returns the list on the page, with the pager to hang the control off. */
 export function findTarget(): ListTarget | null {
   let below: ListTarget | null = null;
@@ -502,6 +541,9 @@ export function findTarget(): ListTarget | null {
     PAGINATION_SELECTOR,
   )) {
     if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
+    // The auction market draws every tab's list and pager and hides all but
+    // one, and the first in the page is not the one being looked at.
+    if (!isShown(widget)) continue;
     const target = findList(widget, pageStepFor(widget));
     if (!target) continue;
     const listIsAfterPager =
@@ -543,7 +585,152 @@ function goToPage(widget: Element, page: number, size: number): void {
   // Torn's own list sync has to find the list as it left it.
   removeAllExtraRows();
   newGeneration(); // abandon any top-up still running for the old page
-  location.hash = `${template}start=${start}`;
+  const hash = `${template}start=${start}`;
+  const step = pageStepFor(widget);
+  const clicked = step !== null && pagedByClicks(widget);
+  if (clicked) clickTornPage(widget, start, step);
+  else if (location.hash === hash) return;
+  // Kept in step either way: the offset in the hash is what the fill reads.
+  if (location.hash !== hash) location.hash = hash;
+  // Torn redraws its pager in its own numbering before the extra rows can
+  // load; holding ours in place meanwhile stops it reading "page 6 of 217".
+  if (trustedSetting === sizeSetting()) {
+    pagingUntil = Date.now() + PAGING_HOLD_MS;
+    holdPagers();
+  }
+}
+
+/**
+ * Whether a list moves page on a click on its pager rather than on a hash change.
+ *
+ * The auction market's links point at "amarket.php#itemtab=armor&start=10"
+ * and its own handler loads the page; changing the hash alone loads nothing.
+ * Lists that page by the hash link to a bare "#...".
+ */
+function pagedByClicks(widget: Element): boolean {
+  const href = widget.querySelector(`${PAGE_LINK_SELECTOR}[href]`)?.getAttribute("href") ?? "";
+  return href !== "" && href[0] !== "#";
+}
+
+/** Set while a click is being passed to Torn's own pager handler. */
+let passingClick = false;
+
+/**
+ * Gets Torn's own handler to load the page at an offset.
+ *
+ * A stand-in link in Torn's numbering is put in the pager and clicked, so
+ * Torn loads the page exactly as if the reader had clicked one of its own.
+ * It is one click, answered with one request, as Torn would make it.
+ */
+function clickTornPage(widget: Element, start: number, step: number): void {
+  const source = widget.querySelector<HTMLAnchorElement>(PAGE_LINK_SELECTOR);
+  if (!source) return;
+  const proxy = source.cloneNode(true) as HTMLAnchorElement;
+  proxy.removeAttribute(OWN_LINK_ATTR);
+  proxy.classList.remove("active", "first", "last");
+  proxy.setAttribute("page", String(start / step + 1));
+  const base = (source.getAttribute("href") ?? "").replace(/[?&]start=\d+/, "");
+  proxy.setAttribute("href", `${base}${base.includes("#") ? "&" : "#"}start=${start}`);
+  proxy.style.display = "none";
+  writing = true;
+  widget.appendChild(proxy);
+  passingClick = true;
+  try {
+    proxy.click();
+  } finally {
+    passingClick = false;
+    proxy.remove();
+    writing = false;
+  }
+}
+
+/**
+ * Renumbers the shown pagers straight away while a page move is in flight.
+ *
+ * Run from the mutation observer, which fires before the browser paints, so
+ * a pager Torn has just redrawn in its own numbering is never seen.
+ */
+function holdPagers(): void {
+  if (Date.now() > pagingUntil) return;
+  const target = findTarget();
+  if (!target || target.step === null) return;
+  if (pageSize(target.step) <= target.step) return;
+  syncPagers(target.step, true);
+}
+
+/**
+ * Renumbers the shown pagers for the chosen size, or puts them back as Torn
+ * drew them. Pagers in a hidden tab are always put back: their list is not
+ * the one being filled.
+ */
+function syncPagers(step: number, renumber: boolean): void {
+  writing = true;
+  for (const widget of document.querySelectorAll<HTMLElement>(
+    PAGINATION_SELECTOR,
+  )) {
+    if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
+    const own = pageStepFor(widget) ?? step;
+    adoptStep(widget, own);
+    if (renumber && isShown(widget)) rewritePager(widget, pageSize(own), own);
+    else restorePager(widget);
+  }
+  writing = false;
+}
+
+/**
+ * Moves an offset that falls mid-page back to the start of its page.
+ *
+ * A forum link to a post lands on Torn's page for it, start=60 say. At 100
+ * a page that is no page boundary, so the pager would call it page 1 while
+ * showing posts 60 on, with no way back to the first 60. The post is kept
+ * and scrolled to once its page has filled.
+ */
+function realign(start: number, size: number): void {
+  const aligned = Math.floor(start / size) * size;
+  const post = POST_IN_HASH.exec(location.hash)?.[1];
+  if (post) pendingPost = { id: post, at: Date.now() };
+  log("page: start", start, "is mid-page at", size, "a page, moving to", aligned);
+  realigned.add(location.hash);
+  removeAllExtraRows();
+  newGeneration();
+  // The post goes from the hash, or Torn would page straight back to it.
+  location.hash = location.hash
+    .replace(START_IN_HASH, (match) => match.replace(/\d+$/, String(aligned)))
+    .replace(POST_IN_HASH, "");
+}
+
+/** Returns the row a forum post sits in, matched on an id or data attribute ending in its number. */
+function rowHolding(container: Element, id: string): HTMLElement | null {
+  const ending = new RegExp(`(?:^|\\D)${id}$`);
+  const holds = (element: Element) =>
+    [...element.attributes].some(
+      (attribute) =>
+        (attribute.name === "id" || attribute.name.startsWith("data-")) &&
+        ending.test(attribute.value),
+    );
+  const rows = rowsOf(container);
+  // The row's own marks first: a quote inside an earlier post can carry the
+  // number of the post it quotes.
+  return (
+    rows.find(holds) ??
+    rows.find((row) => [...row.querySelectorAll("*")].some(holds)) ??
+    null
+  );
+}
+
+/** Scrolls to the post a realigned forum link pointed at, once its row is in. */
+function scrollToPendingPost(container: Element): void {
+  if (!pendingPost) return;
+  const { id, at } = pendingPost;
+  pendingPost = null;
+  if (Date.now() - at > 30_000) return;
+  const row = rowHolding(container, id);
+  if (!row) {
+    log("page: post", id, "is not in this page's rows");
+    return;
+  }
+  // The jump block swallows scrolls for a second after a navigation.
+  setTimeout(() => row.scrollIntoView({ block: "start" }), Math.max(0, at + 1200 - Date.now()));
 }
 
 interface PagerModel {
@@ -606,6 +793,16 @@ function unhide(element: HTMLElement): void {
 
 /** Renumbers a pager to count in the chosen page size. */
 function rewritePager(widget: HTMLElement, size: number, step: number): void {
+  // Torn can redraw a pager inside the same element, leaving our state mark
+  // on markup that is Torn's again. That markup is the fresh original.
+  const tornsAgain =
+    widget.querySelector(`${PAGE_LINK_SELECTOR}:not([${OWN_LINK_ATTR}])`) !== null;
+  if (tornsAgain && originalPagers.has(widget)) {
+    originalPagers.delete(widget);
+    basePageCounts.delete(widget);
+    widget.removeAttribute(PAGER_STATE_ATTR);
+  }
+
   const model = pagerModel(widget, size, step);
   if (!model) return;
 
@@ -656,6 +853,7 @@ function rewritePager(widget: HTMLElement, size: number, step: number): void {
     }
     const link = blank.cloneNode(true) as HTMLAnchorElement;
     link.setAttribute("page", String(page));
+    link.setAttribute(OWN_LINK_ATTR, "");
     link.classList.remove("first", "last", "active");
     if (page === 1) link.classList.add("first");
     if (page === model.total) link.classList.add("last");
@@ -692,7 +890,7 @@ function installPagerClicks(): void {
   document.addEventListener(
     "click",
     (event) => {
-      if (!isEnabled(LIST_DISPLAY_EXTENSION)) return;
+      if (passingClick || !isEnabled(LIST_DISPLAY_EXTENSION)) return;
 
       const target = event.target;
       if (!(target instanceof Element)) return;
@@ -717,6 +915,8 @@ function installPagerClicks(): void {
       let page: number | null = null;
       const pageAttribute = link.getAttribute("page");
       if (pageAttribute !== null) {
+        // A number Torn has just redrawn is in Torn's page size, so Torn handles it.
+        if (!link.hasAttribute(OWN_LINK_ATTR)) return;
         page = Number(pageAttribute);
       } else if (link.querySelector(ARROW_PREV_SELECTOR)) {
         page = model.current - 1;
@@ -1092,12 +1292,8 @@ function onSizeChange(chosen: number): void {
 
   writing = true;
   removeExtraRows(target.container);
-  for (const widget of document.querySelectorAll<HTMLElement>(
-    PAGINATION_SELECTOR,
-  )) {
-    restorePager(widget);
-  }
   writing = false;
+  syncPagers(target.step, false);
 
   const page = Math.floor(currentStart() / size) + 1;
   const before = location.hash;
@@ -1186,7 +1382,7 @@ function tornsOwnPager(): HTMLElement | null {
   for (const widget of document.querySelectorAll<HTMLElement>(
     PAGINATION_SELECTOR,
   )) {
-    if (widget.hasAttribute(TOP_PAGER_ATTR)) continue;
+    if (widget.hasAttribute(TOP_PAGER_ATTR) || !isShown(widget)) continue;
     if (widget.querySelector(PAGE_LINK_SELECTOR)) return widget;
   }
   return null;
@@ -1202,13 +1398,23 @@ function tornsOwnPager(): HTMLElement | null {
  * with the rest of them.
  */
 function ensureTopPager(target: ListTarget, step: number): HTMLElement | null {
-  const existing = document.querySelector<HTMLElement>(`[${TOP_PAGER_ATTR}]`);
+  let existing = document.querySelector<HTMLElement>(`[${TOP_PAGER_ATTR}]`);
+
+  // A copy cut for another tab's list goes; this list gets its own.
+  if (
+    existing &&
+    existing !== target.widget &&
+    existing.nextElementSibling !== target.block
+  ) {
+    removeTopPager();
+    existing = null;
+  }
 
   // Nothing to do for a list that already has one, unless ours is the one
   // being found - which it will be, once it is there.
   if (!existing && target.pagerIsAbove) return null;
 
-  const source = tornsOwnPager();
+  const source = existing === target.widget ? tornsOwnPager() : target.widget;
   if (!source) return existing;
 
   // Cut afresh each time the page moves, so the copy never shows the
@@ -1271,15 +1477,77 @@ function ensureControl(anchor: HTMLElement, step: number): void {
 
 /** Takes the control off the page. */
 function removeControl(): void {
+  placed = false;
   document.getElementById(CONTROL_ID)?.remove();
 }
 
+/** How long the list may be missing before the control is taken away. */
+const VANISH_GRACE_MS = 2000;
+/** When the list was first found missing, or 0 while it is there. */
+let missingSince = 0;
+/** Whether the control is meant to be on the page. */
+let placed = false;
+
 /** Gets Torn to make a list request that can be replayed. */
 function primeRequest(target: ListTarget, size: number): void {
-  if (primed || START_IN_HASH.test(location.hash)) return;
-  primed = true;
+  if (primed.has(target.block) || START_IN_HASH.test(location.hash)) return;
+  // On a list paged by clicks a prime would be a request nobody clicked for.
+  if (pagedByClicks(target.widget)) return;
+  primed.add(target.block);
   log("prime: asking Torn for this list so its request can be replayed");
   goToPage(target.widget, Math.floor(currentStart() / size) + 1, size);
+}
+
+/** Puts the control, and a copied pager where the list needs one, above the list. */
+function place(target: ListTarget, step: number): void {
+  missingSince = 0;
+  // The control sits above the pager, so where a copied pager goes in, the
+  // control goes above that rather than wherever Torn's own pager sits.
+  const topPager = ensureTopPager(target, step);
+  ensureControl(topPager ?? target.pagerBlock, step);
+  placed = true;
+}
+
+/**
+ * Takes the control away, once the list has been gone for a grace period.
+ *
+ * Torn hides or redraws a list while a page loads, and a pager mid-redraw
+ * has nothing to read. Taking the control away then and putting it back
+ * makes the page jump, so it waits to see whether the list comes back.
+ */
+function withdraw(reason: string): void {
+  if (!placed) {
+    removeControl();
+    removeTopPager();
+    return;
+  }
+  if (missingSince === 0) {
+    missingSince = Date.now();
+    log("apply:", reason, "- holding the control a moment");
+  }
+  if (Date.now() - missingSince < VANISH_GRACE_MS) {
+    setTimeout(() => void apply(), VANISH_GRACE_MS);
+    return;
+  }
+  log("apply:", reason, "- taking the control away");
+  placed = false;
+  missingSince = 0;
+  removeControl();
+  removeTopPager();
+}
+
+/**
+ * Puts the control straight back when a redraw of Torn's has taken it.
+ *
+ * Run from the mutation observer, before the browser paints, so the gap the
+ * control leaves is never drawn and the page does not jump.
+ */
+function restoreControl(): void {
+  if (!placed || document.getElementById(CONTROL_ID)) return;
+  const target = findTarget();
+  if (!target || target.step === null) return;
+  log("apply: Torn's redraw took the control, putting it back");
+  place(target, target.step);
 }
 
 /** Brings the list, the pager and the control into line with the chosen size. */
@@ -1292,18 +1560,16 @@ async function apply(): Promise<void> {
 
   const target = findTarget();
   if (!target) {
-    removeControl();
-    removeTopPager();
+    withdraw("no list on the page");
     return;
   }
 
   // Without a step there is no telling where a page of this list begins, so
-  // leave the list and its pager exactly as Torn drew them.
+  // leave the list and its pager exactly as Torn drew them. A pager caught
+  // mid-redraw has no links to read one from yet, so this waits as well.
   const step = target.step;
   if (step === null) {
-    log("apply: cannot tell how many rows this list sends, so leaving it be");
-    removeControl();
-    removeTopPager();
+    withdraw("cannot tell how many rows this list sends");
     return;
   }
 
@@ -1314,37 +1580,36 @@ async function apply(): Promise<void> {
     return;
   }
 
-  // The control sits above the pager, so where a copied pager goes in, the
-  // control goes above that rather than wherever Torn's own pager sits.
-  const topPager = ensureTopPager(target, step);
-  ensureControl(topPager ?? target.pagerBlock, step);
+  place(target, step);
 
   const size = pageSize(step);
   if (size <= step) {
     writing = true;
     removeExtraRows(target.container);
-    for (const widget of document.querySelectorAll<HTMLElement>(
-      PAGINATION_SELECTOR,
-    )) {
-      restorePager(widget);
-    }
     writing = false;
+    syncPagers(step, false);
     return;
   }
 
-  if (!lastRequest) {
+  const start = currentStart();
+  if (start % size !== 0 && !realigned.has(location.hash)) {
+    realign(start, size);
+    return;
+  }
+
+  // While a page move is landing, the held pager stays: putting Torn's back
+  // only for the hold to renumber it again is a fight, a redraw every pass.
+  const holding = Date.now() < pagingUntil;
+
+  if (!lastRequest || requestKey !== listKey()) {
     if (!saidNoRequest) {
       saidNoRequest = true;
       log("apply: no list request to replay yet, leaving the page alone");
     }
     writing = true;
     removeExtraRows(target.container);
-    for (const widget of document.querySelectorAll<HTMLElement>(
-      PAGINATION_SELECTOR,
-    )) {
-      restorePager(widget);
-    }
     writing = false;
+    if (!holding) syncPagers(step, false);
     primeRequest(target, size);
     return;
   }
@@ -1360,20 +1625,14 @@ async function apply(): Promise<void> {
   // numbers would be ours and the rows still Torn's.
   const filled = rowsOf(target.container).length;
   if (filled <= step) {
+    if (holding) return;
     log("fill: still", filled, "rows, so Torn's own pager stands");
+  } else {
+    trustedSetting = sizeSetting();
+    pagingUntil = 0;
+    scrollToPendingPost(target.container);
   }
-
-  writing = true;
-  for (const widget of document.querySelectorAll<HTMLElement>(
-    PAGINATION_SELECTOR,
-  )) {
-    if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
-    const own = pageStepFor(widget) ?? step;
-    adoptStep(widget, own);
-    if (filled > own) rewritePager(widget, pageSize(own), own);
-    else restorePager(widget);
-  }
-  writing = false;
+  syncPagers(step, filled > step);
 }
 
 /** Adds an items-per-page control to Torn's paged lists. */
@@ -1399,6 +1658,8 @@ export function installListDisplay(): void {
 
   new MutationObserver(() => {
     if (writing) return;
+    restoreControl();
+    holdPagers();
     schedule();
   }).observe(document.body, { childList: true, subtree: true });
 
