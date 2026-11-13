@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Doodles
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.1
+// @version      1.0.15
 // @description  Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script
 // @author       AutumnGrey
 // @license      MIT
@@ -69,6 +69,7 @@
   var FRAME_CLASS = "doodle-frame";
   var ACTIVE_CLASS = "doodle-active";
   var ON_CLASS = "doodle-on";
+  var DRAGGING_CLASS = "doodle-dragging";
   var ARMED_CLASS = "doodle-armed";
   var MARKER = /^\[drawing ([a-z0-9]{4,12})(?: ([lps]))?\]$/;
   var SHAPES = {
@@ -77,10 +78,12 @@
     s: { width: 600, height: 600, shown: 220, label: "Square" }
   };
   var DEFAULT_SHAPE = "l";
+  var RESERVED = "⠀";
+  var TALLEST = 0.85;
   var ICON_SIZE = 24;
   var BACKGROUND = "#ffffff";
   var SIZE_MIN = 2;
-  var SIZE_MAX = 10;
+  var SIZE_MAX = 30;
   var SIZE_DEFAULT = 5;
   var UNDO_LIMIT = 30;
   var FILL_TOLERANCE = 60;
@@ -216,6 +219,8 @@
   var tool = "pen";
   var undoStack = [];
   var redoStack = [];
+  var toolsOpen = false;
+  var focusOn = null;
   var measured = null;
   var lastCaret = 0;
   function noteBody() {
@@ -228,9 +233,17 @@
   function blankLinesNeeded(shape, lineHeight) {
     return Math.max(1, Math.ceil(SHAPES[shape].shown / lineHeight) - 1);
   }
-  function measure(body) {
-    const key = `${body.clientWidth}|${body.value}`;
-    if (measured?.key === key) return measured;
+  function room(body) {
+    const padding = parseFloat(getComputedStyle(body).paddingLeft) || 0;
+    const seen = visibleBox(body);
+    return { width: body.clientWidth - padding * 2, height: (seen.bottom - seen.top) * TALLEST };
+  }
+  function linesToReserve(body, shape) {
+    const { width, height } = room(body);
+    const tall = Math.min(width * (SHAPES[shape].height / SHAPES[shape].width), height);
+    return Math.max(1, Math.round(tall / measure(body).lineHeight) - 1);
+  }
+  function mirrorOf(body) {
     const style = getComputedStyle(body);
     const mirror = document.createElement("div");
     mirror.id = "doodle-mirror";
@@ -265,6 +278,90 @@
       overflowWrap: "break-word"
     });
     document.body.appendChild(mirror);
+    return mirror;
+  }
+  function dropSpots(body, blocks) {
+    const mirror = mirrorOf(body);
+    const lines = body.value.split("\n");
+    const marks = [];
+    let offset = 0;
+    for (const line of lines) {
+      const span = document.createElement("span");
+      span.textContent = `${line}
+`;
+      mirror.appendChild(span);
+      marks.push({ offset, span });
+      offset += line.length + 1;
+    }
+    const end = document.createElement("span");
+    end.textContent = "​";
+    mirror.appendChild(end);
+    const inside = (at) => blocks.some((block) => at > block.start && at <= block.end);
+    const spots = marks.filter((mark) => !inside(mark.offset)).map((mark) => ({ offset: mark.offset, top: mark.span.offsetTop }));
+    if (!body.value.endsWith("\n")) spots.push({ offset: body.value.length, top: end.offsetTop });
+    mirror.remove();
+    return spots;
+  }
+  function moveDrawing(body, block, to) {
+    const value = body.value;
+    const cutStart = block.end < value.length ? block.start : Math.max(0, block.start - 1);
+    const cutEnd = block.end < value.length ? block.end + 1 : block.end;
+    if (to >= cutStart && to <= cutEnd) return;
+    const piece = value.slice(block.start, block.end);
+    const without = value.slice(0, cutStart) + value.slice(cutEnd);
+    const at = to > cutStart ? to - (cutEnd - cutStart) : to;
+    const lone = at === without.length && without.length > 0 && !without.endsWith("\n");
+    const placed = lone ? `${without}
+${piece}
+` : `${without.slice(0, at)}${piece}
+${without.slice(at)}`;
+    let head = 0;
+    while (head < value.length && head < placed.length && value[head] === placed[head]) head += 1;
+    let tail = 0;
+    while (tail < value.length - head && tail < placed.length - head && value[value.length - 1 - tail] === placed[placed.length - 1 - tail]) {
+      tail += 1;
+    }
+    replaceText(body, head, value.length - tail, placed.slice(head, placed.length - tail));
+    log("notes draw: moved drawing", block.id);
+  }
+  var DRAG_START_PX = 6;
+  var drag = null;
+  function followDrag(event) {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag.dx = event.clientX - drag.startX;
+    drag.dy = event.clientY - drag.startY;
+    const body = noteBody();
+    if (!body) return;
+    if (!drag.moving) {
+      if (Math.hypot(drag.dx, drag.dy) < DRAG_START_PX) return;
+      drag.moving = true;
+      drag.spots = dropSpots(body, measure(body).blocks);
+    }
+    const rect = body.getBoundingClientRect();
+    const y = event.clientY - (rect.top + body.clientTop - body.scrollTop);
+    let best = null;
+    for (const spot of drag.spots) {
+      if (!best || Math.abs(spot.top - y) < Math.abs(best.top - y)) best = spot;
+    }
+    drag.target = best;
+  }
+  function endDrag(event) {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const ended = drag;
+    drag = null;
+    if (!ended.moving) {
+      activate(ended.id);
+      return;
+    }
+    const body = noteBody();
+    const block = blockFor(ended.id);
+    if (body && block && ended.target) moveDrawing(body, block, ended.target.offset);
+  }
+  function measure(body) {
+    const key = `${body.clientWidth}|${body.value}`;
+    if (measured?.key === key) return measured;
+    const style = getComputedStyle(body);
+    const mirror = mirrorOf(body);
     mirror.textContent = "M";
     const lineHeight = mirror.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) || 18;
     const blocks = [];
@@ -274,18 +371,34 @@
       const match = MARKER.exec(line);
       if (match?.[1]) {
         const shape = match[2] ?? DEFAULT_SHAPE;
-        const needed = blankLinesNeeded(shape, lineHeight);
         let end = offset + line.length;
         let next = index + 1;
-        while (next - index - 1 < needed && lines[next] === "" && next < lines.length - 1) {
-          end += 1;
+        while (lines[next] === RESERVED) {
+          end += RESERVED.length + 1;
           next += 1;
+        }
+        const reserved = next > index + 1;
+        if (!reserved) {
+          const needed = blankLinesNeeded(shape, lineHeight);
+          while (next - index - 1 < needed && lines[next] === "" && next < lines.length - 1) {
+            end += 1;
+            next += 1;
+          }
         }
         mirror.textContent = body.value.slice(0, offset);
         const spot = document.createElement("span");
         spot.textContent = line;
         mirror.appendChild(spot);
-        blocks.push({ id: match[1], shape, named: match[2] !== void 0, top: spot.offsetTop, start: offset, end });
+        blocks.push({
+          id: match[1],
+          shape,
+          named: match[2] !== void 0,
+          top: spot.offsetTop,
+          start: offset,
+          end,
+          lines: next - index,
+          reserved
+        });
       }
       offset += line.length + 1;
     });
@@ -298,7 +411,7 @@
     return body ? measure(body).blocks.find((block) => block.id === id) ?? null : null;
   }
   function replaceText(body, start2, end, text) {
-    body.focus();
+    body.focus({ preventScroll: true });
     body.setSelectionRange(start2, end);
     const done = text === "" ? document.execCommand("delete") : document.execCommand("insertText", false, text);
     if (done) return;
@@ -307,28 +420,47 @@
     body.dispatchEvent(new Event("input", { bubbles: true }));
     body.setSelectionRange(start2 + text.length, start2 + text.length);
   }
-  function blockText(id, shape, lineHeight) {
-    return `[drawing ${id} ${shape}]${"\n".repeat(blankLinesNeeded(shape, lineHeight))}`;
+  function blockText(id, shape, reserve) {
+    return `[drawing ${id} ${shape}]${`
+${RESERVED}`.repeat(reserve)}`;
   }
-  function insertDrawing(body) {
+  function refit(id) {
+    const body = noteBody();
+    const block = blockFor(id);
+    if (!body || !block) return;
+    const reserve = linesToReserve(body, block.shape);
+    if (block.reserved && block.named && block.lines - 1 === reserve) return;
+    replaceText(body, block.start, block.end, blockText(id, block.shape, reserve));
+  }
+  function insertDrawing(body, after) {
     const value = body.value;
-    const caret = document.activeElement === body ? body.selectionEnd : value.length;
+    const caret = after ?? (document.activeElement === body ? body.selectionEnd : value.length);
     let lineEnd = value.indexOf("\n", caret);
     if (lineEnd === -1) lineEnd = value.length;
     const lineStart = value.lastIndexOf("\n", lineEnd - 1) + 1;
     const id = newId();
     const lead = lineEnd > lineStart ? "\n" : "";
-    const text = `${lead}${blockText(id, DEFAULT_SHAPE, measure(body).lineHeight)}
-`;
+    const tail = lineEnd === value.length ? "\n\n" : "\n";
+    const text = `${lead}${blockText(id, DEFAULT_SHAPE, linesToReserve(body, DEFAULT_SHAPE))}${tail}`;
     replaceText(body, lineEnd, lineEnd, text);
     log("notes draw: added drawing", id);
     activate(id);
+    return id;
+  }
+  function newDrawing() {
+    const body = noteBody();
+    if (!body) return;
+    const before = active;
+    const open = active ? blockFor(active) : null;
+    const id = insertDrawing(body, open ? open.end : void 0);
+    undoStack.push({ created: id, before });
+    focusOn = { id, tries: 30 };
   }
   function removeDrawing(id) {
     const body = noteBody();
     const block = blockFor(id);
     if (!body || !block) return;
-    if (active === id) deactivate();
+    if (active === id) release();
     replaceText(body, block.start, Math.min(body.value.length, block.end + 1), "");
   }
   function storedPicture(id) {
@@ -375,7 +507,7 @@
     expand.type = "button";
     expand.className = "doodle-expand";
     expand.setAttribute("aria-label", "Full screen");
-    expand.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 3h7v2.5H6.8l4 4-1.8 1.8-4-4V11H2.5V3Zm18 0v8h-2.5V7.3l-4 4-1.8-1.8 4-4H13V3h8ZM3 21v-8h2.5v3.7l4-4 1.8 1.8-4 4H11V21H3Zm18 0h-8v-2.5h3.7l-4-4 1.8-1.8 4 4V13H21v8Z"/></svg>`;
+    expand.innerHTML = svgIcon(ICONS.expand);
     expand.addEventListener("click", (event) => {
       event.stopPropagation();
       enterFull();
@@ -448,7 +580,48 @@
         pixel += 1;
       }
     }
+    blendEdges(data, done, width, height, [target[0] ?? 0, target[1] ?? 0, target[2] ?? 0], [r, g, b]);
     context.putImageData(image, 0, 0);
+  }
+  var EDGE_REACH = 2;
+  function blendEdges(data, filled, width, height, old, fill) {
+    const source = data.slice();
+    const away = (i) => Math.hypot((source[i] ?? 0) - old[0], (source[i + 1] ?? 0) - old[1], (source[i + 2] ?? 0) - old[2]);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const pixel = y * width + x;
+        if (filled[pixel]) continue;
+        const top = Math.max(0, y - EDGE_REACH);
+        const bottom = Math.min(height - 1, y + EDGE_REACH);
+        const left = Math.max(0, x - EDGE_REACH);
+        const right = Math.min(width - 1, x + EDGE_REACH);
+        let nearFill = false;
+        for (let ny = top; ny <= bottom && !nearFill; ny += 1) {
+          for (let nx = left; nx <= right; nx += 1) {
+            if (filled[ny * width + nx]) {
+              nearFill = true;
+              break;
+            }
+          }
+        }
+        if (!nearFill) continue;
+        let line = 0;
+        for (let ny = top; ny <= bottom; ny += 1) {
+          for (let nx = left; nx <= right; nx += 1) {
+            const near = ny * width + nx;
+            if (!filled[near]) line = Math.max(line, away(near * 4));
+          }
+        }
+        if (line < 1) continue;
+        const i = pixel * 4;
+        const lineShare = Math.min(1, away(i) / line);
+        if (lineShare > 0.98) continue;
+        const oldShare = 1 - lineShare;
+        for (let c = 0; c < 3; c += 1) {
+          data[i + c] = (source[i + c] ?? 0) + oldShare * ((fill[c] ?? 0) - (old[c] ?? 0));
+        }
+      }
+    }
   }
   function remember(canvas) {
     const context = canvas.getContext("2d");
@@ -496,7 +669,18 @@
       if (event.button !== 0) return;
       event.preventDefault();
       if (active !== id) {
-        activate(id);
+        canvas.setPointerCapture(event.pointerId);
+        drag = {
+          id,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          dx: 0,
+          dy: 0,
+          moving: false,
+          spots: [],
+          target: null
+        };
         return;
       }
       closePopups();
@@ -513,7 +697,8 @@
       stroke({ x: at.x + 0.01, y: at.y });
     });
     canvas.addEventListener("pointermove", (event) => {
-      if (drawing) stroke(point(event));
+      if (drag?.id === id) followDrag(event);
+      else if (drawing) stroke(point(event));
     });
     const finish = () => {
       if (!drawing) return;
@@ -521,23 +706,35 @@
       last = null;
       storePicture(id, canvas);
     };
-    canvas.addEventListener("pointerup", finish);
-    canvas.addEventListener("pointercancel", finish);
+    canvas.addEventListener("pointerup", (event) => {
+      if (drag?.id === id) endDrag(event);
+      else finish();
+    });
+    canvas.addEventListener("pointercancel", () => {
+      if (drag?.id === id) drag = null;
+      else finish();
+    });
   }
   function activate(id) {
     if (active !== id && full) exitFull();
+    if (active !== id) refit(id);
     active = id;
+    toolsOpen = true;
     undoStack = [];
     redoStack = [];
     setStatus("");
     syncToolbar();
   }
-  function deactivate() {
+  function release() {
     if (full) exitFull();
     closePopups();
     active = null;
     undoStack = [];
     redoStack = [];
+  }
+  function deactivate() {
+    release();
+    toolsOpen = false;
   }
   function activeCanvas() {
     return active ? frames.get(active)?.canvas ?? null : null;
@@ -557,23 +754,67 @@
       setStatus("Copy failed");
     });
   }
-  function downloadPicture() {
+  function downloadPicture(name) {
     const canvas = activeCanvas();
     if (!canvas || !active) return;
     const link = document.createElement("a");
     link.href = canvas.toDataURL("image/png");
-    link.download = `drawing-${active}.png`;
+    const safe = name.replace(/[\\/:*?"<>|]+/g, "").trim();
+    link.download = `${safe || "drawing"}.png`;
     link.click();
   }
+  function askName() {
+    if (!active) return;
+    document.getElementById(CONFIRM_ID)?.remove();
+    const panel = document.createElement("div");
+    panel.id = CONFIRM_ID;
+    const label = document.createElement("label");
+    label.textContent = "Name this Masterpiece";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "doodle-name";
+    input.maxLength = 100;
+    label.appendChild(input);
+    const save = toolButton("Save", () => {
+      const name = input.value.trim();
+      if (!name) return;
+      panel.remove();
+      downloadPicture(name);
+    });
+    const sync2 = () => {
+      save.disabled = input.value.trim() === "";
+    };
+    input.addEventListener("input", sync2);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") save.click();
+    });
+    sync2();
+    const buttons = document.createElement("div");
+    buttons.className = "doodle-row";
+    buttons.append(save, toolButton("Cancel", () => panel.remove()));
+    panel.append(label, buttons);
+    document.body.appendChild(panel);
+    placeConfirm(panel);
+    input.focus();
+  }
   function step(back) {
+    if (!active) return;
+    const last = undoStack[undoStack.length - 1];
+    if (back && last && !(last instanceof ImageData)) {
+      const { created, before } = last;
+      removeDrawing(created);
+      if (before && blockFor(before)) activate(before);
+      return;
+    }
     const canvas = activeCanvas();
     const context = canvas?.getContext("2d");
-    if (!canvas || !context || !active) return;
+    if (!canvas || !context) return;
     const from = back ? undoStack : redoStack;
-    const to = back ? redoStack : undoStack;
     const state = from.pop();
-    if (!state) return;
-    to.push(context.getImageData(0, 0, canvas.width, canvas.height));
+    if (!(state instanceof ImageData)) return;
+    const now = context.getImageData(0, 0, canvas.width, canvas.height);
+    if (back) redoStack.push(now);
+    else undoStack.push(now);
     if (canvas.width !== state.width || canvas.height !== state.height) {
       canvas.width = state.width;
       canvas.height = state.height;
@@ -594,7 +835,7 @@
     const canvas = activeCanvas();
     if (!body || !block || !canvas || !active) return;
     if (block.shape === shape && block.named) return;
-    replaceText(body, block.start, block.end, blockText(active, shape, measure(body).lineHeight));
+    replaceText(body, block.start, block.end, blockText(active, shape, linesToReserve(body, shape)));
     remember(canvas);
     if (reshape(canvas, shape)) storePicture(active, canvas);
     syncToolbar();
@@ -643,7 +884,8 @@
     const swatch = bar.querySelector(".doodle-colour");
     if (swatch) swatch.style.background = colour;
     const dot = bar.querySelector(".doodle-size span");
-    if (dot) dot.style.width = dot.style.height = `${size + 2}px`;
+    const shownDot = 4 + (size - SIZE_MIN) / (SIZE_MAX - SIZE_MIN) * 14;
+    if (dot) dot.style.width = dot.style.height = `${Math.round(shownDot)}px`;
     for (const button of bar.querySelectorAll("[data-tool]")) {
       button.classList.toggle(ON_CLASS, button.dataset.tool === tool);
     }
@@ -658,8 +900,42 @@
     bar.classList.toggle("doodle-docked", full);
     bar.classList.toggle("doodle-docked-bottom", full && isMobileView());
   }
-  function binIcon() {
-    return `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h1.5v-8H10Zm2.5 0v8H14v-8h-1.5Z"/></svg>`;
+  var ICONS = {
+    pen: "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm17.71-10.21a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z",
+    eraser: "M16.24 3.56l4.95 4.94c.78.79.78 2.05 0 2.84L12 20.53a4 4 0 0 1-5.66 0L2.81 17c-.78-.79-.78-2.05 0-2.84l10.6-10.6c.79-.78 2.05-.78 2.83 0ZM4.22 15.58l3.54 3.53c.78.79 2.04.79 2.83 0l3.53-3.53-4.95-4.95-4.95 4.95Z",
+    // Moved down to sit centred like the others; the shape was drawn hard against the top.
+    bucket: `<path transform="translate(-0.2 3.5)" d="M16.56 8.94 7.62 0 6.21 1.41l2.38 2.38-5.15 5.15a1.49 1.49 0 0 0 0 2.12l5.5 5.5c.29.29.68.44 1.06.44s.77-.15 1.06-.44l5.5-5.5c.59-.58.59-1.53 0-2.12ZM5.21 10 10 5.21 14.79 10H5.21ZM19 11.5s-2 2.17-2 3.5c0 1.1.9 2 2 2s2-.9 2-2c0-1.33-2-3.5-2-3.5Z"/>`,
+    undo: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8Z",
+    redo: "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6Z",
+    copy: "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z",
+    // Scaled up to the others' height, now it has no tray under it.
+    download: `<path transform="translate(12 12) scale(1.28) translate(-12 -11)" d="M19 11h-4V4H9v7H5l7 7 7-7Z"/>`,
+    // A broom mid-sweep: the handle up to the right, and a head whose bristles
+    // bend away in a curve to one side, notched along that curved edge.
+    sweep: `<g transform="rotate(40 12 12) translate(12 12) scale(0.92) translate(-12 -12)">
+<rect x="10.8" y="0.3" width="2.4" height="10" rx="1.2"/>
+<rect x="8.4" y="10" width="7.2" height="2.6" rx="0.7"/>
+<mask id="doodle-sweep-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="26">
+<rect width="24" height="26" fill="#fff"/>
+<path fill="#000" d="M5.63 21.58L8.2 18.5L6.43 22.06Z M9.44 22.88L10.84 19.1L10.32 23.1Z M12.36 23.25L12.73 19.3L13.26 23.25Z"/>
+</mask>
+<path mask="url(#doodle-sweep-cut)" d="M8.4 13.3H15.6C16.4 16.5 16 19.5 14.6 22.6C11 22.9 6.5 22 2.8 19.6C4.6 18.2 6.6 16 8.4 13.3Z"/>
+</g>`,
+    // A page with its corner folded and a plus on it.
+    newPage: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm4 18H6V4h7v5h5v11Zm-7-9h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z",
+    bin: "M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h1.5v-8H10Zm2.5 0v8H14v-8h-1.5Z",
+    expand: "M3 3h7v2.5H6.8l4 4-1.8 1.8-4-4V11H2.5V3Zm18 0v8h-2.5V7.3l-4 4-1.8-1.8 4-4H13V3h8ZM3 21v-8h2.5v3.7l4-4 1.8 1.8-4 4H11V21H3Zm18 0h-8v-2.5h3.7l-4-4 1.8-1.8 4 4V13H21v8Z"
+  };
+  function svgIcon(path) {
+    const inner = path.startsWith("<") ? path : `<path d="${path}"/>`;
+    return `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">${inner}</svg>`;
+  }
+  function iconButton(label, path, onClick, className = "torn-btn doodle-btn doodle-icon-btn") {
+    const button = toolButton("", onClick, className);
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.innerHTML = svgIcon(path);
+    return button;
   }
   function confirmBin(id = active) {
     if (!id) return;
@@ -670,13 +946,12 @@
     question.textContent = "Are you sure you want to bin this Masterpiece?";
     const buttons = document.createElement("div");
     buttons.className = "doodle-row";
-    buttons.append(
-      toolButton("Confirm", () => {
-        panel.remove();
-        removeDrawing(id);
-      }),
-      toolButton("Cancel", () => panel.remove())
-    );
+    const confirm = toolButton("Confirm", () => {
+      panel.remove();
+      removeDrawing(id);
+    });
+    confirm.dataset.enter = "";
+    buttons.append(confirm, toolButton("Cancel", () => panel.remove()));
     panel.append(question, buttons);
     document.body.appendChild(panel);
     placeConfirm(panel);
@@ -700,6 +975,9 @@
     if (bar) return bar;
     bar = document.createElement("div");
     bar.id = TOOLBAR_ID;
+    bar.addEventListener("mousedown", (event) => {
+      if (!(event.target instanceof Element && event.target.closest("input"))) event.preventDefault();
+    });
     const colourButton = toolButton("", () => {
     }, "doodle-colour");
     colourButton.setAttribute("aria-label", "Colour");
@@ -748,39 +1026,39 @@
       option.appendChild(shapeIcon(key));
       shapes.appendChild(option);
     }
-    const toolFor = (label, value) => {
-      const button = toolButton(label, () => {
+    const toolFor = (label, icon, value) => {
+      const button = iconButton(label, icon, () => {
         tool = value;
         syncToolbar();
       });
       button.dataset.tool = value;
       return button;
     };
-    const bin = toolButton("", () => confirmBin(), "torn-btn doodle-btn doodle-bin");
-    bin.setAttribute("aria-label", "Bin");
-    bin.innerHTML = binIcon();
-    const exit = toolButton("Exit", exitFull, "torn-btn doodle-btn doodle-exit");
     const status = document.createElement("span");
     status.className = "doodle-status";
-    const row = document.createElement("div");
-    row.className = "doodle-row";
-    row.append(
+    const tools = document.createElement("div");
+    tools.className = "doodle-row";
+    tools.append(
+      withPopup("shape", shapeButton, shapes),
       withPopup("colour", colourButton, grid),
       withPopup("size", sizeButton, slider),
-      toolFor("Pen", "pen"),
-      toolFor("Eraser", "eraser"),
-      toolFor("Fill", "bucket"),
-      withPopup("shape", shapeButton, shapes),
-      toolButton("Undo", () => step(true)),
-      toolButton("Redo", () => step(false)),
-      toolButton("Clear", clearPicture),
-      toolButton("Copy", copyPicture),
-      toolButton("Save", downloadPicture),
-      bin,
-      exit,
+      toolFor("Pen", ICONS.pen, "pen"),
+      toolFor("Eraser", ICONS.eraser, "eraser"),
+      toolFor("Paint bucket", ICONS.bucket, "bucket"),
+      iconButton("Clear", ICONS.sweep, clearPicture)
+    );
+    const actions = document.createElement("div");
+    actions.className = "doodle-row";
+    actions.append(
+      iconButton("New drawing", ICONS.newPage, newDrawing),
+      iconButton("Copy", ICONS.copy, copyPicture),
+      iconButton("Save", ICONS.download, askName),
+      iconButton("Undo", ICONS.undo, () => step(true)),
+      iconButton("Redo", ICONS.redo, () => step(false)),
+      iconButton("Bin", ICONS.bin, () => confirmBin()),
       status
     );
-    bar.appendChild(row);
+    bar.append(tools, actions);
     document.body.appendChild(bar);
     syncToolbar();
     return bar;
@@ -794,7 +1072,8 @@
     cover.id = FULL_ID;
     const stage = document.createElement("div");
     stage.className = "doodle-stage";
-    stage.appendChild(canvas);
+    const back = iconButton("Exit full screen", ICONS.expand, exitFull, "doodle-full-exit");
+    stage.append(canvas, back);
     cover.append(toolbar(), stage);
     document.body.appendChild(cover);
     syncToolbar();
@@ -804,22 +1083,32 @@
     if (!full) return;
     full = false;
     const frame = active ? frames.get(active) : null;
-    if (frame) frame.element.prepend(frame.canvas);
+    if (frame) {
+      frame.canvas.style.removeProperty("width");
+      frame.canvas.style.removeProperty("height");
+      frame.element.prepend(frame.canvas);
+    }
     const bar = document.getElementById(TOOLBAR_ID);
     if (bar) document.body.appendChild(bar);
     document.getElementById(FULL_ID)?.remove();
     closePopups();
     syncToolbar();
   }
+  var FULL_GAP = 12;
+  var FULL_MARGIN = 16;
+  var EXIT_ROOM = 34;
   function fitFull() {
-    const stage = document.querySelector(`#${FULL_ID} .doodle-stage`);
     const canvas = activeCanvas();
-    if (!stage || !canvas) return;
+    const bar = document.getElementById(TOOLBAR_ID);
+    if (!canvas || !bar) return;
+    const below = isMobileView();
+    const roomWidth = innerWidth - FULL_MARGIN * 2 - EXIT_ROOM - (below ? 0 : bar.offsetWidth + FULL_GAP);
+    const roomHeight = innerHeight - FULL_MARGIN * 2 - (below ? bar.offsetHeight + FULL_GAP : 0);
     const ratio = canvas.width / canvas.height;
-    let width = stage.clientWidth;
+    let width = Math.max(50, roomWidth);
     let height = width / ratio;
-    if (height > stage.clientHeight) {
-      height = stage.clientHeight;
+    if (height > roomHeight) {
+      height = Math.max(50, roomHeight);
       width = height * ratio;
     }
     setStyle(canvas, "width", `${Math.floor(width)}px`);
@@ -858,12 +1147,8 @@ ${brush}
     const toggle = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (active) {
-        deactivate();
-        return;
-      }
-      const body = noteBody();
-      if (body) insertDrawing(body);
+      if (toolsOpen) deactivate();
+      else toolsOpen = true;
     };
     icon.addEventListener("click", toggle);
     icon.addEventListener("keydown", (event) => {
@@ -881,8 +1166,8 @@ ${brush}
     } else if (icon.parentElement !== header) {
       header.appendChild(icon);
     }
-    if (icon.classList.contains(ACTIVE_CLASS) !== (active !== null)) {
-      icon.classList.toggle(ACTIVE_CLASS, active !== null);
+    if (icon.classList.contains(ACTIVE_CLASS) !== toolsOpen) {
+      icon.classList.toggle(ACTIVE_CLASS, toolsOpen);
     }
   }
   function layer() {
@@ -915,13 +1200,7 @@ ${brush}
     return body;
   }
   function visibleBox(body) {
-    const rect = body.getBoundingClientRect();
-    const box = {
-      left: rect.left + body.clientLeft,
-      top: rect.top + body.clientTop,
-      right: rect.left + body.clientLeft + body.clientWidth,
-      bottom: rect.top + body.clientTop + body.clientHeight
-    };
+    const box = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
     for (let element = body.parentElement; element && element !== document.body; element = element.parentElement) {
       const style = getComputedStyle(element);
       if (style.overflowX !== "visible" || style.overflowY !== "visible") {
@@ -964,6 +1243,48 @@ ${brush}
     container.dataset.clip = clip;
     container.style.clipPath = clip;
   }
+  function growToFit(body) {
+    if (body.scrollHeight <= body.clientHeight + 1) return false;
+    if (getComputedStyle(body).overflowY !== "hidden") return false;
+    const borders = body.offsetHeight - body.clientHeight;
+    body.style.height = `${body.scrollHeight + borders}px`;
+    return true;
+  }
+  var keptScroll = 0;
+  function scrollToNew(container) {
+    if (!focusOn) return;
+    const body = noteBody();
+    const frame = frames.get(focusOn.id);
+    focusOn.tries -= 1;
+    if (focusOn.tries < 0) {
+      focusOn = null;
+      return;
+    }
+    if (!body || !frame) return;
+    const place = frame.element.getBoundingClientRect();
+    const seen = container.getBoundingClientRect();
+    const scroller = scrollerOf(body);
+    if (place.top < seen.top) scroller.scrollTop -= seen.top - place.top + 8;
+    else if (place.bottom > seen.bottom) {
+      scroller.scrollTop += Math.min(place.bottom - seen.bottom + 8, place.top - seen.top - 8);
+    } else focusOn = null;
+    keptScroll = scroller.scrollTop;
+  }
+  function placeDropLine(container, spot, x, y, width) {
+    let line = container.querySelector(".doodle-drop");
+    if (!spot) {
+      if (line) setHidden(line, true);
+      return;
+    }
+    if (!line) {
+      line = document.createElement("div");
+      line.className = "doodle-drop";
+      container.appendChild(line);
+    }
+    setHidden(line, false);
+    setStyle(line, "transform", `translate(${x}px, ${y + spot.top - 2}px)`);
+    setStyle(line, "width", `${width}px`);
+  }
   var hiddenFor = "";
   function sync() {
     placeIcon();
@@ -978,6 +1299,11 @@ ${brush}
       hideAll();
       return;
     }
+    if (growToFit(body)) {
+      const scroller = scrollerOf(body);
+      if (scroller !== body) scroller.scrollTop = keptScroll;
+    }
+    keptScroll = scrollerOf(body).scrollTop;
     const { blocks } = measure(body);
     const container = layer();
     const box = visibleBox(body);
@@ -989,8 +1315,8 @@ ${brush}
     cutOutList(container, box);
     const rect = body.getBoundingClientRect();
     const padding = parseFloat(getComputedStyle(body).paddingLeft) || 0;
-    const room = body.clientWidth - padding * 2;
-    const tallest = scrollerOf(body).clientHeight * 0.85;
+    const space = room(body);
+    const { lineHeight } = measure(body);
     const originX = rect.left + body.clientLeft + padding - box.left;
     const originY = rect.top + body.clientTop - body.scrollTop - box.top;
     const shown = /* @__PURE__ */ new Set();
@@ -998,15 +1324,21 @@ ${brush}
       shown.add(block.id);
       const shape = SHAPES[block.shape];
       const ratio = shape.width / shape.height;
-      let height = Math.min(shape.shown, tallest);
+      let height = Math.min(block.lines * lineHeight, space.height);
       let width = height * ratio;
-      if (width > room) {
-        width = room;
+      if (width > space.width) {
+        width = space.width;
         height = width / ratio;
       }
       const { element, canvas } = frameFor(block, container);
       if (reshape(canvas, block.shape)) storePicture(block.id, canvas);
-      setStyle(element, "transform", `translate(${originX}px, ${originY + block.top}px)`);
+      const dragged = drag?.moving === true && drag.id === block.id ? drag : null;
+      const shiftX = dragged ? dragged.dx : 0;
+      const shiftY = dragged ? dragged.dy : 0;
+      setStyle(element, "transform", `translate(${originX + shiftX}px, ${originY + block.top + shiftY}px)`);
+      if (element.classList.contains(DRAGGING_CLASS) !== !!dragged) {
+        element.classList.toggle(DRAGGING_CLASS, !!dragged);
+      }
       setStyle(element, "width", `${width}px`);
       setStyle(element, "height", `${height}px`);
       if (element.classList.contains(ACTIVE_CLASS) !== (block.id === active)) {
@@ -1018,12 +1350,14 @@ ${brush}
     for (const [id, frame] of frames) {
       if (!shown.has(id) && frame.element.isConnected) frame.element.remove();
     }
-    if (active && !shown.has(active)) deactivate();
+    placeDropLine(container, drag?.moving ? drag.target : null, originX, originY, space.width);
+    if (active && !shown.has(active)) release();
+    scrollToNew(container);
     const bar = toolbar();
     if (full) return;
-    setHidden(bar, active === null);
+    setHidden(bar, !toolsOpen);
     const panel = document.querySelector(SELECTORS.panel);
-    if (active && panel) {
+    if (toolsOpen && panel) {
       const place = panel.getBoundingClientRect();
       setStyle(bar, "left", `${place.left}px`);
       setStyle(bar, "width", `${place.width}px`);
@@ -1033,14 +1367,35 @@ ${brush}
   function keepCaretOut(body) {
     if (body.selectionStart !== body.selectionEnd) return;
     const caret = body.selectionStart;
+    const length = body.value.length;
     for (const { start: start2, end } of measure(body).blocks) {
-      if (caret < start2 || caret > end) continue;
-      const target = lastCaret > end ? Math.max(0, start2 - 1) : Math.min(body.value.length, end + 1);
+      const inside = caret > start2 && (caret < end || caret === end && end < length);
+      if (!inside) continue;
+      const target = lastCaret > end ? start2 : Math.min(length, end + 1);
       body.setSelectionRange(target, target);
       lastCaret = target;
       return;
     }
     lastCaret = caret;
+  }
+  function typeAtDrawing(body, key) {
+    if (body.selectionStart !== body.selectionEnd) return false;
+    const caret = body.selectionStart;
+    for (const block of measure(body).blocks) {
+      if (caret === block.start) {
+        if (key === "Enter") return false;
+        replaceText(body, caret, caret, `${key}
+`);
+        body.setSelectionRange(caret + key.length, caret + key.length);
+        return true;
+      }
+      if (caret === block.end && block.end === body.value.length) {
+        replaceText(body, caret, caret, key === "Enter" ? "\n\n" : `
+${key}`);
+        return true;
+      }
+    }
+    return false;
   }
   var ARM_MS = 3e3;
   var armed = null;
@@ -1060,6 +1415,12 @@ ${brush}
       }
       if (key === "Delete" && caret === block.start - 1) {
         confirmBin(block.id);
+        return true;
+      }
+      if (key === "Backspace" && caret === block.start && caret > 0) {
+        const above = body.value.lastIndexOf("\n", caret - 2) + 1;
+        if (above === caret - 1) replaceText(body, caret - 1, caret, "");
+        else body.setSelectionRange(caret - 1, caret - 1);
         return true;
       }
     }
@@ -1084,6 +1445,23 @@ ${brush}
     document.addEventListener(
       "keydown",
       (event) => {
+        const question = document.getElementById(CONFIRM_ID);
+        if (question && event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          question.remove();
+          return;
+        }
+        const answer = question?.querySelector("[data-enter]");
+        if (answer && event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          answer.click();
+          return;
+        }
+        if (event.key !== "Escape" && event.target instanceof Element && event.target.closest(`#${CONFIRM_ID}`)) {
+          return;
+        }
         const body = noteBody();
         const erase = event.key === "Backspace" || event.key === "Delete";
         if (!erase) armed = null;
@@ -1095,6 +1473,11 @@ ${brush}
         if (body && event.target === body && erase) {
           if (keyAtDrawing(body, event.key)) event.preventDefault();
           else armed = null;
+          return;
+        }
+        const typing = !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === "Enter" || event.key.length === 1);
+        if (body && event.target === body && typing && !event.isComposing) {
+          if (typeAtDrawing(body, event.key)) event.preventDefault();
           return;
         }
         if (event.key === "Escape" && active) {
@@ -1141,10 +1524,17 @@ ${brush}
     opacity: 0.9;
     cursor: pointer;
   }
-  #doodle-icon:hover,
+  #doodle-icon:hover {
+    opacity: 1;
+  }
+  /* Lit while drawing: white all over, glowing. A blue glow was lost on the
+     blue header. */
   #doodle-icon.doodle-active {
     opacity: 1;
-    filter: drop-shadow(0 0 3px rgba(150, 210, 255, 0.9));
+    filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 5px rgba(255, 255, 255, 0.8));
+  }
+  #doodle-icon.doodle-active svg > g {
+    fill: #fff;
   }
   /* Covers the visible part of the note body; only the frames take clicks.
      Above every chat window, which Torn stacks high. */
@@ -1167,11 +1557,36 @@ ${brush}
     border: 1px solid #555;
     border-radius: 3px;
     box-sizing: border-box;
-    cursor: pointer;
+    /* Covers the marker line, even while its canvas is out in full screen. */
+    background: #fff;
+  }
+  /* A closed drawing can be dragged to another line. */
+  .doodle-frame:not(.doodle-active) {
+    cursor: grab;
+  }
+  .doodle-frame.doodle-dragging {
+    z-index: 1;
+    opacity: 0.75;
+    cursor: grabbing;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+  }
+  /* Where a dragged drawing will land. */
+  .doodle-drop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 3px;
+    border-radius: 2px;
+    background: #9fd3ff;
+    box-shadow: 0 0 6px rgba(150, 210, 255, 0.8);
+    pointer-events: none;
+  }
+  .doodle-drop[hidden] {
+    display: none;
   }
   .doodle-frame.doodle-active {
-    border-color: #9fd3ff;
-    box-shadow: 0 0 6px 2px rgba(150, 210, 255, 0.55);
+    border: 2px solid #9fd3ff;
+    box-shadow: 0 0 10px 4px rgba(150, 210, 255, 0.85);
     cursor: crosshair;
   }
   /* One more Backspace deletes this drawing. */
@@ -1225,6 +1640,9 @@ ${brush}
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+  }
+  .doodle-row + .doodle-row {
+    margin-top: 4px;
   }
   .doodle-holder {
     position: relative;
@@ -1312,35 +1730,53 @@ ${brush}
     font-size: 12px;
     line-height: 22px;
   }
-  .doodle-bin {
-    display: inline-flex !important;
+  .torn-btn.doodle-icon-btn {
+    display: inline-flex;
     align-items: center;
-  }
-  .doodle-exit {
-    display: none !important;
+    justify-content: center;
+    width: 30px;
+    padding: 0;
   }
   .doodle-status {
     margin-left: 4px;
     opacity: 0.85;
   }
-  /* Full screen: the drawing in the middle, the tools down the left on a
-     desktop and along the bottom on a phone. */
+  /* Full screen: the drawing and its tools centred together, the tools to
+     the drawing's left on a desktop and under it on a phone. */
   #doodle-full {
     position: fixed;
     inset: 0;
     z-index: 2147483002;
     display: flex;
     flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
     background: rgba(0, 0, 0, 0.88);
   }
   #doodle-full .doodle-stage {
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
-    margin: 16px;
-    display: flex;
+    position: relative;
+    display: block;
+  }
+  /* Just off the drawing's top right corner. */
+  .doodle-full-exit {
+    position: absolute;
+    top: 0;
+    right: -34px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+    cursor: pointer;
+  }
+  .doodle-full-exit:hover {
+    background: rgba(255, 255, 255, 0.3);
   }
   #doodle-full canvas {
     box-shadow: 0 0 8px 3px rgba(150, 210, 255, 0.55);
@@ -1350,7 +1786,7 @@ ${brush}
     top: auto !important;
     left: auto !important;
     width: auto !important;
-    border-radius: 0;
+    max-width: calc(100vw - 32px);
     overflow: visible;
   }
   #doodle-toolbar.doodle-docked .doodle-row {
@@ -1361,9 +1797,6 @@ ${brush}
   #doodle-toolbar.doodle-docked .doodle-popup {
     top: 0;
     left: calc(100% + 6px);
-  }
-  #doodle-toolbar.doodle-docked .doodle-exit {
-    display: inline-block !important;
   }
   #doodle-full:has(.doodle-docked-bottom) {
     flex-direction: column-reverse;
@@ -1394,6 +1827,27 @@ ${brush}
   #doodle-confirm p {
     margin: 0 0 10px;
     color: #fff !important;
+  }
+  #doodle-confirm label {
+    display: block;
+    margin: 0 0 10px;
+    color: #fff !important;
+  }
+  .doodle-name {
+    display: block;
+    box-sizing: border-box;
+    width: 240px;
+    margin-top: 6px;
+    padding: 4px 6px;
+    border: 1px solid #777;
+    border-radius: 4px;
+    background: #f2f2f2;
+    color: #000 !important;
+    font-size: 13px;
+  }
+  #doodle-confirm .torn-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   #doodle-confirm .doodle-row {
     justify-content: flex-end;

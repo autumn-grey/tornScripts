@@ -12,10 +12,17 @@ const CSS = `
     opacity: 0.9;
     cursor: pointer;
   }
-  #doodle-icon:hover,
+  #doodle-icon:hover {
+    opacity: 1;
+  }
+  /* Lit while drawing: white all over, glowing. A blue glow was lost on the
+     blue header. */
   #doodle-icon.doodle-active {
     opacity: 1;
-    filter: drop-shadow(0 0 3px rgba(150, 210, 255, 0.9));
+    filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 5px rgba(255, 255, 255, 0.8));
+  }
+  #doodle-icon.doodle-active svg > g {
+    fill: #fff;
   }
   /* Covers the visible part of the note body; only the frames take clicks.
      Above every chat window, which Torn stacks high. */
@@ -38,11 +45,36 @@ const CSS = `
     border: 1px solid #555;
     border-radius: 3px;
     box-sizing: border-box;
-    cursor: pointer;
+    /* Covers the marker line, even while its canvas is out in full screen. */
+    background: #fff;
+  }
+  /* A closed drawing can be dragged to another line. */
+  .doodle-frame:not(.doodle-active) {
+    cursor: grab;
+  }
+  .doodle-frame.doodle-dragging {
+    z-index: 1;
+    opacity: 0.75;
+    cursor: grabbing;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+  }
+  /* Where a dragged drawing will land. */
+  .doodle-drop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 3px;
+    border-radius: 2px;
+    background: #9fd3ff;
+    box-shadow: 0 0 6px rgba(150, 210, 255, 0.8);
+    pointer-events: none;
+  }
+  .doodle-drop[hidden] {
+    display: none;
   }
   .doodle-frame.doodle-active {
-    border-color: #9fd3ff;
-    box-shadow: 0 0 6px 2px rgba(150, 210, 255, 0.55);
+    border: 2px solid #9fd3ff;
+    box-shadow: 0 0 10px 4px rgba(150, 210, 255, 0.85);
     cursor: crosshair;
   }
   /* One more Backspace deletes this drawing. */
@@ -96,6 +128,9 @@ const CSS = `
     flex-wrap: wrap;
     align-items: center;
     gap: 4px;
+  }
+  .doodle-row + .doodle-row {
+    margin-top: 4px;
   }
   .doodle-holder {
     position: relative;
@@ -183,35 +218,53 @@ const CSS = `
     font-size: 12px;
     line-height: 22px;
   }
-  .doodle-bin {
-    display: inline-flex !important;
+  .torn-btn.doodle-icon-btn {
+    display: inline-flex;
     align-items: center;
-  }
-  .doodle-exit {
-    display: none !important;
+    justify-content: center;
+    width: 30px;
+    padding: 0;
   }
   .doodle-status {
     margin-left: 4px;
     opacity: 0.85;
   }
-  /* Full screen: the drawing in the middle, the tools down the left on a
-     desktop and along the bottom on a phone. */
+  /* Full screen: the drawing and its tools centred together, the tools to
+     the drawing's left on a desktop and under it on a phone. */
   #doodle-full {
     position: fixed;
     inset: 0;
     z-index: 2147483002;
     display: flex;
     flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
     background: rgba(0, 0, 0, 0.88);
   }
   #doodle-full .doodle-stage {
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
-    margin: 16px;
-    display: flex;
+    position: relative;
+    display: block;
+  }
+  /* Just off the drawing's top right corner. */
+  .doodle-full-exit {
+    position: absolute;
+    top: 0;
+    right: -34px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+    cursor: pointer;
+  }
+  .doodle-full-exit:hover {
+    background: rgba(255, 255, 255, 0.3);
   }
   #doodle-full canvas {
     box-shadow: 0 0 8px 3px rgba(150, 210, 255, 0.55);
@@ -221,7 +274,7 @@ const CSS = `
     top: auto !important;
     left: auto !important;
     width: auto !important;
-    border-radius: 0;
+    max-width: calc(100vw - 32px);
     overflow: visible;
   }
   #doodle-toolbar.doodle-docked .doodle-row {
@@ -232,9 +285,6 @@ const CSS = `
   #doodle-toolbar.doodle-docked .doodle-popup {
     top: 0;
     left: calc(100% + 6px);
-  }
-  #doodle-toolbar.doodle-docked .doodle-exit {
-    display: inline-block !important;
   }
   #doodle-full:has(.doodle-docked-bottom) {
     flex-direction: column-reverse;
@@ -265,6 +315,27 @@ const CSS = `
   #doodle-confirm p {
     margin: 0 0 10px;
     color: #fff !important;
+  }
+  #doodle-confirm label {
+    display: block;
+    margin: 0 0 10px;
+    color: #fff !important;
+  }
+  .doodle-name {
+    display: block;
+    box-sizing: border-box;
+    width: 240px;
+    margin-top: 6px;
+    padding: 4px 6px;
+    border: 1px solid #777;
+    border-radius: 4px;
+    background: #f2f2f2;
+    color: #000 !important;
+    font-size: 13px;
+  }
+  #doodle-confirm .torn-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   #doodle-confirm .doodle-row {
     justify-content: flex-end;

@@ -1,12 +1,13 @@
 // Drawings inside the chat bar's Notes, on lines of their own.
 //
 // Torn's note body is a plain <textarea>, which cannot hold a picture. So the
-// palette button writes a marker line, "[drawing 3f9a2c l]", followed by
-// blank lines to make room, and a frame is laid over that spot from outside
-// the textarea and kept on it as the note scrolls. Torn saves the marker and
-// the blank lines like any other note text; the picture itself is kept in
-// this browser, under the marker's id. A device without it shows the marker
-// and the gap, and can draw a fresh one in it.
+// New button writes a marker line, "[drawing 3f9a2c l]", followed by
+// enough blank-looking lines to fill the note's width at the drawing's shape,
+// and a frame is laid over that spot from outside the textarea and kept on
+// it as the note scrolls. Torn saves the marker and those lines like any
+// other note text; the picture itself is kept in this browser, under the
+// marker's id. A device without it shows the marker and the gap, and can
+// draw a fresh one in it.
 //
 // Text edits go through execCommand, not by setting the value: that is the
 // one way to change a textarea that its own undo can take back, so a drawing
@@ -34,6 +35,8 @@ const CONFIRM_ID = "doodle-confirm";
 const FRAME_CLASS = "doodle-frame";
 const ACTIVE_CLASS = "doodle-active";
 const ON_CLASS = "doodle-on";
+/** Marks a drawing being dragged to a new line. */
+const DRAGGING_CLASS = "doodle-dragging";
 /** Marks a drawing one more Backspace will delete. */
 const ARMED_CLASS = "doodle-armed";
 
@@ -42,10 +45,11 @@ const MARKER = /^\[drawing ([a-z0-9]{4,12})(?: ([lps]))?\]$/;
 
 type ShapeKey = "l" | "p" | "s";
 
-/** A drawing's shape: its size in canvas pixels, and how tall it is shown in the note. */
+/** A drawing's shape: its size in canvas pixels, and its name. */
 interface Shape {
   width: number;
   height: number;
+  /** How tall the first drawings were made, which reserved plain blank lines. */
   shown: number;
   label: string;
 }
@@ -57,6 +61,14 @@ const SHAPES: Record<ShapeKey, Shape> = {
   s: { width: 600, height: 600, shown: 220, label: "Square" },
 };
 const DEFAULT_SHAPE: ShapeKey = "l";
+/**
+ * What each line a drawing covers holds: a braille blank, which shows as a
+ * space. Plain empty lines could not be told from ones the reader left, so
+ * a drawing would swallow the spacing under it.
+ */
+const RESERVED = "⠀";
+/** The most of the note's window a drawing may take up, top to bottom. */
+const TALLEST = 0.85;
 
 /** The size of Torn's own header icons beside it. */
 const ICON_SIZE = 24;
@@ -64,7 +76,7 @@ const ICON_SIZE = 24;
 const BACKGROUND = "#ffffff";
 /** Brush sizes in shown pixels: the slider's ends, and where it starts. */
 const SIZE_MIN = 2;
-const SIZE_MAX = 10;
+const SIZE_MAX = 30;
 const SIZE_DEFAULT = 5;
 const UNDO_LIMIT = 30;
 /** How far a pixel's colour may stray and still be filled by the bucket. */
@@ -104,6 +116,10 @@ interface Block {
   start: number;
   /** Where the last line the drawing covers ends in the text. */
   end: number;
+  /** How many lines the drawing covers, its marker included. */
+  lines: number;
+  /** Whether its lines are reserved ones, rather than the first drawings' plain blanks. */
+  reserved: boolean;
 }
 
 /** One frame on the page, and the canvas it draws on. */
@@ -120,8 +136,17 @@ let full = false;
 let colour = "#000000";
 let size = SIZE_DEFAULT;
 let tool: Tool = "pen";
-let undoStack: ImageData[] = [];
+/**
+ * One step back: how the canvas looked, or the making of the drawing itself,
+ * which undoing takes away again, back to the drawing that was open before.
+ */
+type Step = ImageData | { created: string; before: string | null };
+let undoStack: Step[] = [];
 let redoStack: ImageData[] = [];
+/** Whether the drawing tools are out, with or without a drawing open. */
+let toolsOpen = false;
+/** A new drawing the note should scroll to, and how many frames are left to try. */
+let focusOn: { id: string; tries: number } | null = null;
 /** The last measurement, kept until the text or the width changes. */
 let measured: { key: string; blocks: Block[]; lineHeight: number } | null = null;
 /** Where the caret was, so a move into a drawing's lines can be undone the way it came. */
@@ -138,21 +163,33 @@ function newId(): string {
   return Math.random().toString(36).slice(2, 8).padEnd(6, "0");
 }
 
-/** Returns how many blank lines a drawing of a shape needs under its marker. */
+/** Returns how many plain blank lines one of the first drawings took under its marker. */
 function blankLinesNeeded(shape: ShapeKey, lineHeight: number): number {
   return Math.max(1, Math.ceil(SHAPES[shape].shown / lineHeight) - 1);
 }
 
-/**
- * Returns where each drawing sits in the body, and the height of one line.
- *
- * Measured on a hidden copy styled like the textarea, which wraps its text
- * the same way; a textarea gives no position for a line of its own.
- */
-function measure(body: HTMLTextAreaElement): { blocks: Block[]; lineHeight: number } {
-  const key = `${body.clientWidth}|${body.value}`;
-  if (measured?.key === key) return measured;
+/** Returns how wide a drawing may be in the note, and how tall at most. */
+function room(body: HTMLTextAreaElement): { width: number; height: number } {
+  const padding = parseFloat(getComputedStyle(body).paddingLeft) || 0;
+  // The part of Notes that can be seen, not the textarea: Torn grows that to
+  // fit its text, so it is a few lines tall in a short note and taller than
+  // the window in a long one.
+  const seen = visibleBox(body);
+  return { width: body.clientWidth - padding * 2, height: (seen.bottom - seen.top) * TALLEST };
+}
 
+/** Returns how many lines a drawing should reserve under its marker to fill the note's width. */
+function linesToReserve(body: HTMLTextAreaElement, shape: ShapeKey): number {
+  const { width, height } = room(body);
+  const tall = Math.min(width * (SHAPES[shape].height / SHAPES[shape].width), height);
+  return Math.max(1, Math.round(tall / measure(body).lineHeight) - 1);
+}
+
+/**
+ * Returns a hidden copy of the body, styled to wrap text exactly as it does,
+ * already in the page. The caller removes it.
+ */
+function mirrorOf(body: HTMLTextAreaElement): HTMLElement {
   const style = getComputedStyle(body);
   const mirror = document.createElement("div");
   // An id of ours, so the page watchers know adding it was this script.
@@ -176,7 +213,144 @@ function measure(body: HTMLTextAreaElement): { blocks: Block[]; lineHeight: numb
     overflowWrap: "break-word",
   });
   document.body.appendChild(mirror);
+  return mirror;
+}
 
+/** A place a dragged drawing can be dropped: the start of a line, and how far down it is. */
+interface Spot {
+  offset: number;
+  top: number;
+}
+
+/**
+ * Returns every line start a drawing could be dropped at.
+ *
+ * Not inside a drawing, its own or another's: a drawing dropped among
+ * another's reserved lines would split it in two.
+ */
+function dropSpots(body: HTMLTextAreaElement, blocks: Block[]): Spot[] {
+  const mirror = mirrorOf(body);
+  const lines = body.value.split("\n");
+  const marks: { offset: number; span: HTMLElement }[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    const span = document.createElement("span");
+    span.textContent = `${line}\n`;
+    mirror.appendChild(span);
+    marks.push({ offset, span });
+    offset += line.length + 1;
+  }
+  const end = document.createElement("span");
+  end.textContent = "​";
+  mirror.appendChild(end);
+
+  const inside = (at: number) => blocks.some((block) => at > block.start && at <= block.end);
+  const spots = marks
+    .filter((mark) => !inside(mark.offset))
+    .map((mark) => ({ offset: mark.offset, top: mark.span.offsetTop }));
+  if (!body.value.endsWith("\n")) spots.push({ offset: body.value.length, top: end.offsetTop });
+  mirror.remove();
+  return spots;
+}
+
+/**
+ * Moves a drawing so it starts at a line start, as one edit the textarea's
+ * undo can take back.
+ */
+function moveDrawing(body: HTMLTextAreaElement, block: Block, to: number): void {
+  const value = body.value;
+  // The drawing goes with the line break after it, or before it when it is last.
+  const cutStart = block.end < value.length ? block.start : Math.max(0, block.start - 1);
+  const cutEnd = block.end < value.length ? block.end + 1 : block.end;
+  if (to >= cutStart && to <= cutEnd) return;
+  const piece = value.slice(block.start, block.end);
+  const without = value.slice(0, cutStart) + value.slice(cutEnd);
+  const at = to > cutStart ? to - (cutEnd - cutStart) : to;
+  const lone = at === without.length && without.length > 0 && !without.endsWith("\n");
+  // A line after it either way, so there is somewhere to click and type below.
+  const placed = lone
+    ? `${without}\n${piece}\n`
+    : `${without.slice(0, at)}${piece}\n${without.slice(at)}`;
+
+  // Only the stretch that differs is replaced, so the edit stays small.
+  let head = 0;
+  while (head < value.length && head < placed.length && value[head] === placed[head]) head += 1;
+  let tail = 0;
+  while (
+    tail < value.length - head &&
+    tail < placed.length - head &&
+    value[value.length - 1 - tail] === placed[placed.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+  replaceText(body, head, value.length - tail, placed.slice(head, placed.length - tail));
+  log("notes draw: moved drawing", block.id);
+}
+
+/** A closed drawing being dragged to a new line. */
+interface Drag {
+  id: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dx: number;
+  dy: number;
+  moving: boolean;
+  spots: Spot[];
+  target: Spot | null;
+}
+
+/** How far a press has to move before it is a drag rather than a click. */
+const DRAG_START_PX = 6;
+let drag: Drag | null = null;
+
+/** Follows a dragged drawing, picking the line start nearest the pointer to drop it on. */
+function followDrag(event: PointerEvent): void {
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  drag.dx = event.clientX - drag.startX;
+  drag.dy = event.clientY - drag.startY;
+  const body = noteBody();
+  if (!body) return;
+  if (!drag.moving) {
+    if (Math.hypot(drag.dx, drag.dy) < DRAG_START_PX) return;
+    drag.moving = true;
+    drag.spots = dropSpots(body, measure(body).blocks);
+  }
+  const rect = body.getBoundingClientRect();
+  const y = event.clientY - (rect.top + body.clientTop - body.scrollTop);
+  let best: Spot | null = null;
+  for (const spot of drag.spots) {
+    if (!best || Math.abs(spot.top - y) < Math.abs(best.top - y)) best = spot;
+  }
+  drag.target = best;
+}
+
+/** Ends a press on a closed drawing: drops it if it was dragged, opens it if it was clicked. */
+function endDrag(event: PointerEvent): void {
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  const ended = drag;
+  drag = null;
+  if (!ended.moving) {
+    activate(ended.id);
+    return;
+  }
+  const body = noteBody();
+  const block = blockFor(ended.id);
+  if (body && block && ended.target) moveDrawing(body, block, ended.target.offset);
+}
+
+/**
+ * Returns where each drawing sits in the body, and the height of one line.
+ *
+ * Measured on a hidden copy styled like the textarea, which wraps its text
+ * the same way; a textarea gives no position for a line of its own.
+ */
+function measure(body: HTMLTextAreaElement): { blocks: Block[]; lineHeight: number } {
+  const key = `${body.clientWidth}|${body.value}`;
+  if (measured?.key === key) return measured;
+
+  const style = getComputedStyle(body);
+  const mirror = mirrorOf(body);
   mirror.textContent = "M";
   const lineHeight =
     mirror.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) || 18;
@@ -188,20 +362,36 @@ function measure(body: HTMLTextAreaElement): { blocks: Block[]; lineHeight: numb
     const match = MARKER.exec(line);
     if (match?.[1]) {
       const shape = (match[2] as ShapeKey | undefined) ?? DEFAULT_SHAPE;
-      // The drawing covers the blank lines it needs, never the text's last
-      // line: the caret has to have somewhere to go after it.
-      const needed = blankLinesNeeded(shape, lineHeight);
       let end = offset + line.length;
       let next = index + 1;
-      while (next - index - 1 < needed && lines[next] === "" && next < lines.length - 1) {
-        end += 1;
+      while (lines[next] === RESERVED) {
+        end += RESERVED.length + 1;
         next += 1;
+      }
+      const reserved = next > index + 1;
+      if (!reserved) {
+        // One of the first drawings, on plain blank lines: it covers the ones
+        // it needs, never the text's last line, so the caret can get past.
+        const needed = blankLinesNeeded(shape, lineHeight);
+        while (next - index - 1 < needed && lines[next] === "" && next < lines.length - 1) {
+          end += 1;
+          next += 1;
+        }
       }
       mirror.textContent = body.value.slice(0, offset);
       const spot = document.createElement("span");
       spot.textContent = line;
       mirror.appendChild(spot);
-      blocks.push({ id: match[1], shape, named: match[2] !== undefined, top: spot.offsetTop, start: offset, end });
+      blocks.push({
+        id: match[1],
+        shape,
+        named: match[2] !== undefined,
+        top: spot.offsetTop,
+        start: offset,
+        end,
+        lines: next - index,
+        reserved,
+      });
     }
     offset += line.length + 1;
   });
@@ -225,7 +415,8 @@ function blockFor(id: string): Block | null {
  * textarea's own undo history; setting the value fails both.
  */
 function replaceText(body: HTMLTextAreaElement, start: number, end: number, text: string): void {
-  body.focus();
+  // Focusing scrolls the textarea's box into view, which sent the note to its top.
+  body.focus({ preventScroll: true });
   body.setSelectionRange(start, end);
   const done = text === "" ? document.execCommand("delete") : document.execCommand("insertText", false, text);
   if (done) return;
@@ -236,25 +427,61 @@ function replaceText(body: HTMLTextAreaElement, start: number, end: number, text
   body.setSelectionRange(start + text.length, start + text.length);
 }
 
-/** Returns a drawing's marker line and the blank lines under it. */
-function blockText(id: string, shape: ShapeKey, lineHeight: number): string {
-  return `[drawing ${id} ${shape}]${"\n".repeat(blankLinesNeeded(shape, lineHeight))}`;
+/** Returns a drawing's marker line and the lines it reserves under it. */
+function blockText(id: string, shape: ShapeKey, reserve: number): string {
+  return `[drawing ${id} ${shape}]${`\n${RESERVED}`.repeat(reserve)}`;
 }
 
-/** Puts a new drawing on its own line after the caret, and starts drawing on it. */
-function insertDrawing(body: HTMLTextAreaElement): void {
+/**
+ * Re-cuts a drawing's lines to fill the note as it is now.
+ *
+ * A drawing is cut to the note's width when it is made; Notes made wider or
+ * narrower later leaves it the wrong height. Done when it is opened, as that
+ * is the reader's own click, and only when the count is off.
+ */
+function refit(id: string): void {
+  const body = noteBody();
+  const block = blockFor(id);
+  if (!body || !block) return;
+  const reserve = linesToReserve(body, block.shape);
+  if (block.reserved && block.named && block.lines - 1 === reserve) return;
+  replaceText(body, block.start, block.end, blockText(id, block.shape, reserve));
+}
+
+/**
+ * Puts a new drawing on its own line after a point in the text (the caret,
+ * unless one is given) and opens it. Returns its id.
+ */
+function insertDrawing(body: HTMLTextAreaElement, after?: number): string {
   const value = body.value;
-  const caret = document.activeElement === body ? body.selectionEnd : value.length;
+  const caret = after ?? (document.activeElement === body ? body.selectionEnd : value.length);
   let lineEnd = value.indexOf("\n", caret);
   if (lineEnd === -1) lineEnd = value.length;
   const lineStart = value.lastIndexOf("\n", lineEnd - 1) + 1;
 
   const id = newId();
   const lead = lineEnd > lineStart ? "\n" : "";
-  const text = `${lead}${blockText(id, DEFAULT_SHAPE, measure(body).lineHeight)}\n`;
+  // A spare line after it, so there is somewhere to click and type below.
+  const tail = lineEnd === value.length ? "\n\n" : "\n";
+  const text = `${lead}${blockText(id, DEFAULT_SHAPE, linesToReserve(body, DEFAULT_SHAPE))}${tail}`;
   replaceText(body, lineEnd, lineEnd, text);
   log("notes draw: added drawing", id);
   activate(id);
+  return id;
+}
+
+/**
+ * Makes a new drawing: below the open one when there is one, or else at the
+ * caret. Undo takes it away again, and the note scrolls to show it.
+ */
+function newDrawing(): void {
+  const body = noteBody();
+  if (!body) return;
+  const before = active;
+  const open = active ? blockFor(active) : null;
+  const id = insertDrawing(body, open ? open.end : undefined);
+  undoStack.push({ created: id, before });
+  focusOn = { id, tries: 30 };
 }
 
 /** Takes a drawing out of the note, as one edit the textarea's undo can bring back. */
@@ -263,7 +490,7 @@ function removeDrawing(id: string): void {
   const block = blockFor(id);
   if (!body || !block) return;
   // The picture stays stored, so undoing the deletion brings it back whole.
-  if (active === id) deactivate();
+  if (active === id) release();
   replaceText(body, block.start, Math.min(body.value.length, block.end + 1), "");
 }
 
@@ -321,7 +548,7 @@ function frameFor(block: Block, layer: HTMLElement): Frame {
   expand.type = "button";
   expand.className = "doodle-expand";
   expand.setAttribute("aria-label", "Full screen");
-  expand.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 3h7v2.5H6.8l4 4-1.8 1.8-4-4V11H2.5V3Zm18 0v8h-2.5V7.3l-4 4-1.8-1.8 4-4H13V3h8ZM3 21v-8h2.5v3.7l4-4 1.8 1.8-4 4H11V21H3Zm18 0h-8v-2.5h3.7l-4-4 1.8-1.8 4 4V13H21v8Z"/></svg>`;
+  expand.innerHTML = svgIcon(ICONS.expand);
   expand.addEventListener("click", (event) => {
     event.stopPropagation();
     enterFull();
@@ -408,7 +635,73 @@ function floodFill(canvas: HTMLCanvasElement, startX: number, startY: number, he
       pixel += 1;
     }
   }
+  blendEdges(data, done, width, height, [target[0] ?? 0, target[1] ?? 0, target[2] ?? 0], [r, g, b]);
   context.putImageData(image, 0, 0);
+}
+
+/** How far out from a fill its soft edges are looked for, in canvas pixels. */
+const EDGE_REACH = 2;
+
+/**
+ * Takes the old colour out of the soft edge round a fill and puts the fill
+ * colour in its place.
+ *
+ * Lines are drawn smoothed, so each has a rim of pixels that are part line,
+ * part what was under it. The fill stops short of them, being too far from
+ * the colour clicked on, and left them a pale ring. Each rim pixel is read
+ * as a mix of the old colour and the strongest line colour beside it; the
+ * old colour's share is swapped for the fill's, so the line keeps its soft
+ * edge but softens into the fill instead.
+ */
+function blendEdges(
+  data: Uint8ClampedArray,
+  filled: Uint8Array,
+  width: number,
+  height: number,
+  old: [number, number, number],
+  fill: [number, number, number],
+): void {
+  const source = data.slice();
+  const away = (i: number) =>
+    Math.hypot((source[i] ?? 0) - old[0], (source[i + 1] ?? 0) - old[1], (source[i + 2] ?? 0) - old[2]);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixel = y * width + x;
+      if (filled[pixel]) continue;
+      // On the rim when a filled pixel is near. Checked on its own first, as
+      // most of the canvas is nowhere near and the colour sums cost more.
+      const top = Math.max(0, y - EDGE_REACH);
+      const bottom = Math.min(height - 1, y + EDGE_REACH);
+      const left = Math.max(0, x - EDGE_REACH);
+      const right = Math.min(width - 1, x + EDGE_REACH);
+      let nearFill = false;
+      for (let ny = top; ny <= bottom && !nearFill; ny += 1) {
+        for (let nx = left; nx <= right; nx += 1) {
+          if (filled[ny * width + nx]) {
+            nearFill = true;
+            break;
+          }
+        }
+      }
+      if (!nearFill) continue;
+      // The line colour: the unfilled pixel near it furthest from the old colour.
+      let line = 0;
+      for (let ny = top; ny <= bottom; ny += 1) {
+        for (let nx = left; nx <= right; nx += 1) {
+          const near = ny * width + nx;
+          if (!filled[near]) line = Math.max(line, away(near * 4));
+        }
+      }
+      if (line < 1) continue;
+      const i = pixel * 4;
+      const lineShare = Math.min(1, away(i) / line);
+      if (lineShare > 0.98) continue;
+      const oldShare = 1 - lineShare;
+      for (let c = 0; c < 3; c += 1) {
+        data[i + c] = (source[i + c] ?? 0) + oldShare * ((fill[c] ?? 0) - (old[c] ?? 0));
+      }
+    }
+  }
 }
 
 /** Keeps the canvas as it is now, so the next change can be undone. */
@@ -465,7 +758,20 @@ function wireCanvas(id: string, element: HTMLElement, canvas: HTMLCanvasElement)
     if (event.button !== 0) return;
     event.preventDefault();
     if (active !== id) {
-      activate(id);
+      // A closed drawing: a click opens it, a drag moves it. Which one is
+      // only known once the pointer moves, or comes up without moving.
+      canvas.setPointerCapture(event.pointerId);
+      drag = {
+        id,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        dx: 0,
+        dy: 0,
+        moving: false,
+        spots: [],
+        target: null,
+      };
       return;
     }
     closePopups();
@@ -483,7 +789,8 @@ function wireCanvas(id: string, element: HTMLElement, canvas: HTMLCanvasElement)
     stroke({ x: at.x + 0.01, y: at.y });
   });
   canvas.addEventListener("pointermove", (event) => {
-    if (drawing) stroke(point(event));
+    if (drag?.id === id) followDrag(event);
+    else if (drawing) stroke(point(event));
   });
   const finish = () => {
     if (!drawing) return;
@@ -491,27 +798,42 @@ function wireCanvas(id: string, element: HTMLElement, canvas: HTMLCanvasElement)
     last = null;
     storePicture(id, canvas);
   };
-  canvas.addEventListener("pointerup", finish);
-  canvas.addEventListener("pointercancel", finish);
+  canvas.addEventListener("pointerup", (event) => {
+    if (drag?.id === id) endDrag(event);
+    else finish();
+  });
+  canvas.addEventListener("pointercancel", () => {
+    // The browser took the press over, to scroll on a touch screen.
+    if (drag?.id === id) drag = null;
+    else finish();
+  });
 }
 
 /** Opens a drawing for drawing on, with the toolbar above Notes. */
 function activate(id: string): void {
   if (active !== id && full) exitFull();
+  if (active !== id) refit(id);
   active = id;
+  toolsOpen = true;
   undoStack = [];
   redoStack = [];
   setStatus("");
   syncToolbar();
 }
 
-/** Closes the open drawing and the toolbar. */
-function deactivate(): void {
+/** Lets go of the open drawing, leaving the tools out for the next. */
+function release(): void {
   if (full) exitFull();
   closePopups();
   active = null;
   undoStack = [];
   redoStack = [];
+}
+
+/** Lets go of the open drawing and puts the tools away. */
+function deactivate(): void {
+  release();
+  toolsOpen = false;
 }
 
 /** Returns the open drawing's canvas. */
@@ -544,25 +866,75 @@ function copyPicture(): void {
 }
 
 /** Saves the open drawing as a PNG file. */
-function downloadPicture(): void {
+/** Saves the open drawing as a PNG file under a name. */
+function downloadPicture(name: string): void {
   const canvas = activeCanvas();
   if (!canvas || !active) return;
   const link = document.createElement("a");
   link.href = canvas.toDataURL("image/png");
-  link.download = `drawing-${active}.png`;
+  // Characters Windows will not have in a file name go.
+  const safe = name.replace(/[\\/:*?"<>|]+/g, "").trim();
+  link.download = `${safe || "drawing"}.png`;
   link.click();
+}
+
+/** Asks what to call the open drawing, and saves it once a name is given. */
+function askName(): void {
+  if (!active) return;
+  document.getElementById(CONFIRM_ID)?.remove();
+  const panel = document.createElement("div");
+  panel.id = CONFIRM_ID;
+  const label = document.createElement("label");
+  label.textContent = "Name this Masterpiece";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "doodle-name";
+  input.maxLength = 100;
+  label.appendChild(input);
+  const save = toolButton("Save", () => {
+    const name = input.value.trim();
+    if (!name) return;
+    panel.remove();
+    downloadPicture(name);
+  });
+  // A name is required: Save does nothing until there is one.
+  const sync = () => {
+    save.disabled = input.value.trim() === "";
+  };
+  input.addEventListener("input", sync);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") save.click();
+  });
+  sync();
+  const buttons = document.createElement("div");
+  buttons.className = "doodle-row";
+  buttons.append(save, toolButton("Cancel", () => panel.remove()));
+  panel.append(label, buttons);
+  document.body.appendChild(panel);
+  placeConfirm(panel);
+  input.focus();
 }
 
 /** Steps the open drawing back one change, or forward again. */
 function step(back: boolean): void {
+  if (!active) return;
+  const last = undoStack[undoStack.length - 1];
+  if (back && last && !(last instanceof ImageData)) {
+    // Undoing the drawing's making: it goes, and the one open before opens.
+    const { created, before } = last;
+    removeDrawing(created);
+    if (before && blockFor(before)) activate(before);
+    return;
+  }
   const canvas = activeCanvas();
   const context = canvas?.getContext("2d");
-  if (!canvas || !context || !active) return;
-  const from = back ? undoStack : redoStack;
-  const to = back ? redoStack : undoStack;
+  if (!canvas || !context) return;
+  const from: Step[] = back ? undoStack : redoStack;
   const state = from.pop();
-  if (!state) return;
-  to.push(context.getImageData(0, 0, canvas.width, canvas.height));
+  if (!(state instanceof ImageData)) return;
+  const now = context.getImageData(0, 0, canvas.width, canvas.height);
+  if (back) redoStack.push(now);
+  else undoStack.push(now);
   // A state from before a change of shape is the old size; the canvas follows it.
   if (canvas.width !== state.width || canvas.height !== state.height) {
     canvas.width = state.width;
@@ -588,7 +960,7 @@ function setShape(shape: ShapeKey): void {
   const canvas = activeCanvas();
   if (!body || !block || !canvas || !active) return;
   if (block.shape === shape && block.named) return;
-  replaceText(body, block.start, block.end, blockText(active, shape, measure(body).lineHeight));
+  replaceText(body, block.start, block.end, blockText(active, shape, linesToReserve(body, shape)));
   // The strokes before a change of shape stay undoable; stepping back to one
   // puts the canvas back to the size it was then.
   remember(canvas);
@@ -653,7 +1025,9 @@ function syncToolbar(): void {
   const swatch = bar.querySelector<HTMLElement>(".doodle-colour");
   if (swatch) swatch.style.background = colour;
   const dot = bar.querySelector<HTMLElement>(".doodle-size span");
-  if (dot) dot.style.width = dot.style.height = `${size + 2}px`;
+  // Scaled into the button: the largest brush is wider than the button is.
+  const shownDot = 4 + ((size - SIZE_MIN) / (SIZE_MAX - SIZE_MIN)) * 14;
+  if (dot) dot.style.width = dot.style.height = `${Math.round(shownDot)}px`;
   for (const button of bar.querySelectorAll<HTMLElement>("[data-tool]")) {
     button.classList.toggle(ON_CLASS, button.dataset.tool === tool);
   }
@@ -669,9 +1043,53 @@ function syncToolbar(): void {
   bar.classList.toggle("doodle-docked-bottom", full && isMobileView());
 }
 
-/** Returns the bin's icon. */
-function binIcon(): string {
-  return `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h1.5v-8H10Zm2.5 0v8H14v-8h-1.5Z"/></svg>`;
+/** The toolbar's icons on a 24-unit square: a path, or markup for one built from several shapes. */
+const ICONS = {
+  pen: "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm17.71-10.21a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z",
+  eraser: "M16.24 3.56l4.95 4.94c.78.79.78 2.05 0 2.84L12 20.53a4 4 0 0 1-5.66 0L2.81 17c-.78-.79-.78-2.05 0-2.84l10.6-10.6c.79-.78 2.05-.78 2.83 0ZM4.22 15.58l3.54 3.53c.78.79 2.04.79 2.83 0l3.53-3.53-4.95-4.95-4.95 4.95Z",
+  // Moved down to sit centred like the others; the shape was drawn hard against the top.
+  bucket: `<path transform="translate(-0.2 3.5)" d="M16.56 8.94 7.62 0 6.21 1.41l2.38 2.38-5.15 5.15a1.49 1.49 0 0 0 0 2.12l5.5 5.5c.29.29.68.44 1.06.44s.77-.15 1.06-.44l5.5-5.5c.59-.58.59-1.53 0-2.12ZM5.21 10 10 5.21 14.79 10H5.21ZM19 11.5s-2 2.17-2 3.5c0 1.1.9 2 2 2s2-.9 2-2c0-1.33-2-3.5-2-3.5Z"/>`,
+  undo: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8Z",
+  redo: "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6Z",
+  copy: "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z",
+  // Scaled up to the others' height, now it has no tray under it.
+  download: `<path transform="translate(12 12) scale(1.28) translate(-12 -11)" d="M19 11h-4V4H9v7H5l7 7 7-7Z"/>`,
+  // A broom mid-sweep: the handle up to the right, and a head whose bristles
+  // bend away in a curve to one side, notched along that curved edge.
+  sweep: `<g transform="rotate(40 12 12) translate(12 12) scale(0.92) translate(-12 -12)">
+<rect x="10.8" y="0.3" width="2.4" height="10" rx="1.2"/>
+<rect x="8.4" y="10" width="7.2" height="2.6" rx="0.7"/>
+<mask id="doodle-sweep-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="26">
+<rect width="24" height="26" fill="#fff"/>
+<path fill="#000" d="M5.63 21.58L8.2 18.5L6.43 22.06Z M9.44 22.88L10.84 19.1L10.32 23.1Z M12.36 23.25L12.73 19.3L13.26 23.25Z"/>
+</mask>
+<path mask="url(#doodle-sweep-cut)" d="M8.4 13.3H15.6C16.4 16.5 16 19.5 14.6 22.6C11 22.9 6.5 22 2.8 19.6C4.6 18.2 6.6 16 8.4 13.3Z"/>
+</g>`,
+  // A page with its corner folded and a plus on it.
+  newPage: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm4 18H6V4h7v5h5v11Zm-7-9h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z",
+  bin: "M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h1.5v-8H10Zm2.5 0v8H14v-8h-1.5Z",
+  expand: "M3 3h7v2.5H6.8l4 4-1.8 1.8-4-4V11H2.5V3Zm18 0v8h-2.5V7.3l-4 4-1.8-1.8 4-4H13V3h8ZM3 21v-8h2.5v3.7l4-4 1.8 1.8-4 4H11V21H3Zm18 0h-8v-2.5h3.7l-4-4 1.8-1.8 4 4V13H21v8Z",
+};
+
+/** Returns an icon's markup. */
+function svgIcon(path: string): string {
+  // Most icons are one path; one drawn from several shapes comes as markup.
+  const inner = path.startsWith("<") ? path : `<path d="${path}"/>`;
+  return `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">${inner}</svg>`;
+}
+
+/** Returns a toolbar button showing an icon, named for screen readers and on hover. */
+function iconButton(
+  label: string,
+  path: string,
+  onClick: () => void,
+  className = "torn-btn doodle-btn doodle-icon-btn",
+): HTMLButtonElement {
+  const button = toolButton("", onClick, className);
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.innerHTML = svgIcon(path);
+  return button;
 }
 
 /** Asks whether to bin a drawing, the open one by default, and bins it on Confirm. */
@@ -684,13 +1102,13 @@ function confirmBin(id: string | null = active): void {
   question.textContent = "Are you sure you want to bin this Masterpiece?";
   const buttons = document.createElement("div");
   buttons.className = "doodle-row";
-  buttons.append(
-    toolButton("Confirm", () => {
-      panel.remove();
-      removeDrawing(id);
-    }),
-    toolButton("Cancel", () => panel.remove()),
-  );
+  const confirm = toolButton("Confirm", () => {
+    panel.remove();
+    removeDrawing(id);
+  });
+  // Enter answers Confirm; Escape is Cancel, handled with the other keys.
+  confirm.dataset.enter = "";
+  buttons.append(confirm, toolButton("Cancel", () => panel.remove()));
   panel.append(question, buttons);
   document.body.appendChild(panel);
   placeConfirm(panel);
@@ -721,6 +1139,11 @@ function toolbar(): HTMLElement {
   if (bar) return bar;
   bar = document.createElement("div");
   bar.id = TOOLBAR_ID;
+  // A press on a button would take the focus, and with it the note's caret,
+  // which is where New puts a drawing. The size slider still takes it.
+  bar.addEventListener("mousedown", (event) => {
+    if (!(event.target instanceof Element && event.target.closest("input"))) event.preventDefault();
+  });
 
   // Colour: one swatch, opening the full set.
   const colourButton = toolButton("", () => {}, "doodle-colour");
@@ -773,8 +1196,8 @@ function toolbar(): HTMLElement {
     shapes.appendChild(option);
   }
 
-  const toolFor = (label: string, value: Tool) => {
-    const button = toolButton(label, () => {
+  const toolFor = (label: string, icon: string, value: Tool) => {
+    const button = iconButton(label, icon, () => {
       tool = value;
       syncToolbar();
     });
@@ -782,33 +1205,34 @@ function toolbar(): HTMLElement {
     return button;
   };
 
-  const bin = toolButton("", () => confirmBin(), "torn-btn doodle-btn doodle-bin");
-  bin.setAttribute("aria-label", "Bin");
-  bin.innerHTML = binIcon();
-  const exit = toolButton("Exit", exitFull, "torn-btn doodle-btn doodle-exit");
-
   const status = document.createElement("span");
   status.className = "doodle-status";
 
-  const row = document.createElement("div");
-  row.className = "doodle-row";
-  row.append(
+  // Two set rows, not one that wraps where it happens to: the drawing tools
+  // on top, and what is done with the drawing underneath.
+  const tools = document.createElement("div");
+  tools.className = "doodle-row";
+  tools.append(
+    withPopup("shape", shapeButton, shapes),
     withPopup("colour", colourButton, grid),
     withPopup("size", sizeButton, slider),
-    toolFor("Pen", "pen"),
-    toolFor("Eraser", "eraser"),
-    toolFor("Fill", "bucket"),
-    withPopup("shape", shapeButton, shapes),
-    toolButton("Undo", () => step(true)),
-    toolButton("Redo", () => step(false)),
-    toolButton("Clear", clearPicture),
-    toolButton("Copy", copyPicture),
-    toolButton("Save", downloadPicture),
-    bin,
-    exit,
+    toolFor("Pen", ICONS.pen, "pen"),
+    toolFor("Eraser", ICONS.eraser, "eraser"),
+    toolFor("Paint bucket", ICONS.bucket, "bucket"),
+    iconButton("Clear", ICONS.sweep, clearPicture),
+  );
+  const actions = document.createElement("div");
+  actions.className = "doodle-row";
+  actions.append(
+    iconButton("New drawing", ICONS.newPage, newDrawing),
+    iconButton("Copy", ICONS.copy, copyPicture),
+    iconButton("Save", ICONS.download, askName),
+    iconButton("Undo", ICONS.undo, () => step(true)),
+    iconButton("Redo", ICONS.redo, () => step(false)),
+    iconButton("Bin", ICONS.bin, () => confirmBin()),
     status,
   );
-  bar.appendChild(row);
+  bar.append(tools, actions);
   document.body.appendChild(bar);
   syncToolbar();
   return bar;
@@ -826,7 +1250,10 @@ function enterFull(): void {
   cover.id = FULL_ID;
   const stage = document.createElement("div");
   stage.className = "doodle-stage";
-  stage.appendChild(canvas);
+  // The way back sits just off the drawing's top right corner, the same
+  // symbol that brought it here.
+  const back = iconButton("Exit full screen", ICONS.expand, exitFull, "doodle-full-exit");
+  stage.append(canvas, back);
   cover.append(toolbar(), stage);
   document.body.appendChild(cover);
   syncToolbar();
@@ -838,7 +1265,12 @@ function exitFull(): void {
   if (!full) return;
   full = false;
   const frame = active ? frames.get(active) : null;
-  if (frame) frame.element.prepend(frame.canvas);
+  if (frame) {
+    // The full-screen size goes, or the canvas spills out of its frame.
+    frame.canvas.style.removeProperty("width");
+    frame.canvas.style.removeProperty("height");
+    frame.element.prepend(frame.canvas);
+  }
   const bar = document.getElementById(TOOLBAR_ID);
   if (bar) document.body.appendChild(bar);
   document.getElementById(FULL_ID)?.remove();
@@ -846,16 +1278,31 @@ function exitFull(): void {
   syncToolbar();
 }
 
-/** Sizes the full-screen drawing to the room left beside the tools, keeping its shape. */
+/** The gap between the drawing and its tools, and round the edge of the screen. */
+const FULL_GAP = 12;
+const FULL_MARGIN = 16;
+/** The exit button's width beside the drawing, and the gap to it. */
+const EXIT_ROOM = 34;
+
+/**
+ * Sizes the full-screen drawing to fit beside its tools, keeping its shape.
+ *
+ * The two are centred together as one group, so the tools sit against the
+ * drawing rather than out at the edge of the screen.
+ */
 function fitFull(): void {
-  const stage = document.querySelector<HTMLElement>(`#${FULL_ID} .doodle-stage`);
   const canvas = activeCanvas();
-  if (!stage || !canvas) return;
+  const bar = document.getElementById(TOOLBAR_ID);
+  if (!canvas || !bar) return;
+  const below = isMobileView();
+  // Room is kept on the right for the exit button off the drawing's corner.
+  const roomWidth = innerWidth - FULL_MARGIN * 2 - EXIT_ROOM - (below ? 0 : bar.offsetWidth + FULL_GAP);
+  const roomHeight = innerHeight - FULL_MARGIN * 2 - (below ? bar.offsetHeight + FULL_GAP : 0);
   const ratio = canvas.width / canvas.height;
-  let width = stage.clientWidth;
+  let width = Math.max(50, roomWidth);
   let height = width / ratio;
-  if (height > stage.clientHeight) {
-    height = stage.clientHeight;
+  if (height > roomHeight) {
+    height = Math.max(50, roomHeight);
     width = height * ratio;
   }
   setStyle(canvas, "width", `${Math.floor(width)}px`);
@@ -903,12 +1350,8 @@ ${brush}
   const toggle = (event: Event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (active) {
-      deactivate();
-      return;
-    }
-    const body = noteBody();
-    if (body) insertDrawing(body);
+    if (toolsOpen) deactivate();
+    else toolsOpen = true;
   };
   icon.addEventListener("click", toggle);
   icon.addEventListener("keydown", (event) => {
@@ -928,8 +1371,8 @@ function placeIcon(): void {
   } else if (icon.parentElement !== header) {
     header.appendChild(icon);
   }
-  if (icon.classList.contains(ACTIVE_CLASS) !== (active !== null)) {
-    icon.classList.toggle(ACTIVE_CLASS, active !== null);
+  if (icon.classList.contains(ACTIVE_CLASS) !== toolsOpen) {
+    icon.classList.toggle(ACTIVE_CLASS, toolsOpen);
   }
 }
 
@@ -993,15 +1436,13 @@ interface Box {
  * Torn scrolls a wrapper round the title and the body, not the body alone,
  * so the body runs on under the note picker above it; every box between the
  * body and the Notes window that cuts off its contents cuts the frames too.
+ *
+ * The body's own edges are not among them. Its bottom moves with its text,
+ * and cut short a drawing made taller before the textarea caught up; its
+ * sides cut off the glow round a drawing, which sits right at its edge.
  */
 function visibleBox(body: HTMLTextAreaElement): Box {
-  const rect = body.getBoundingClientRect();
-  const box: Box = {
-    left: rect.left + body.clientLeft,
-    top: rect.top + body.clientTop,
-    right: rect.left + body.clientLeft + body.clientWidth,
-    bottom: rect.top + body.clientTop + body.clientHeight,
-  };
+  const box: Box = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
   for (let element = body.parentElement; element && element !== document.body; element = element.parentElement) {
     const style = getComputedStyle(element);
     if (style.overflowX !== "visible" || style.overflowY !== "visible") {
@@ -1061,6 +1502,71 @@ function cutOutList(container: HTMLElement, box: Box): void {
   container.style.clipPath = clip;
 }
 
+/**
+ * Makes the note's textarea tall enough for its text.
+ *
+ * Torn sizes it to its text and hides anything past that, so it never
+ * scrolls itself. It does that when a note loads, not after this script
+ * adds lines, which left the end of a note out of reach: the wheel did
+ * nothing over the text, and only worked over a drawing. Only ever grown,
+ * and only when the text has outrun it; Torn's own sizing takes over again
+ * the next time it runs.
+ */
+function growToFit(body: HTMLTextAreaElement): boolean {
+  if (body.scrollHeight <= body.clientHeight + 1) return false;
+  if (getComputedStyle(body).overflowY !== "hidden") return false;
+  const borders = body.offsetHeight - body.clientHeight;
+  body.style.height = `${body.scrollHeight + borders}px`;
+  return true;
+}
+
+/** Where the note was scrolled to at the last frame. */
+let keptScroll = 0;
+
+/**
+ * Scrolls the note to a drawing just made, once its frame is in place.
+ *
+ * Tried for a few frames, as the textarea may only grow to hold the new
+ * lines a frame later, and until then there is nowhere to scroll to.
+ */
+function scrollToNew(container: HTMLElement): void {
+  if (!focusOn) return;
+  const body = noteBody();
+  const frame = frames.get(focusOn.id);
+  focusOn.tries -= 1;
+  if (focusOn.tries < 0) {
+    focusOn = null;
+    return;
+  }
+  if (!body || !frame) return;
+  const place = frame.element.getBoundingClientRect();
+  const seen = container.getBoundingClientRect();
+  const scroller = scrollerOf(body);
+  if (place.top < seen.top) scroller.scrollTop -= seen.top - place.top + 8;
+  else if (place.bottom > seen.bottom) {
+    // Its bottom into view, without pushing its top out of it.
+    scroller.scrollTop += Math.min(place.bottom - seen.bottom + 8, place.top - seen.top - 8);
+  } else focusOn = null;
+  keptScroll = scroller.scrollTop;
+}
+
+/** Shows where a dragged drawing will land, as a line across the note, or hides it. */
+function placeDropLine(container: HTMLElement, spot: Spot | null, x: number, y: number, width: number): void {
+  let line = container.querySelector<HTMLElement>(".doodle-drop");
+  if (!spot) {
+    if (line) setHidden(line, true);
+    return;
+  }
+  if (!line) {
+    line = document.createElement("div");
+    line.className = "doodle-drop";
+    container.appendChild(line);
+  }
+  setHidden(line, false);
+  setStyle(line, "transform", `translate(${x}px, ${y + spot.top - 2}px)`);
+  setStyle(line, "width", `${width}px`);
+}
+
 /** Why the frames were last hidden, so each reason is logged once. */
 let hiddenFor = "";
 
@@ -1079,6 +1585,14 @@ function sync(): void {
     return;
   }
 
+  // Torn shrinking the textarea back to its own idea of the text's height
+  // pulls the note's scroll up to the top before it is grown again here, so
+  // the place the reader was at is put back.
+  if (growToFit(body)) {
+    const scroller = scrollerOf(body);
+    if (scroller !== body) scroller.scrollTop = keptScroll;
+  }
+  keptScroll = scrollerOf(body).scrollTop;
   const { blocks } = measure(body);
   const container = layer();
   const box = visibleBox(body);
@@ -1091,9 +1605,8 @@ function sync(): void {
 
   const rect = body.getBoundingClientRect();
   const padding = parseFloat(getComputedStyle(body).paddingLeft) || 0;
-  const room = body.clientWidth - padding * 2;
-  // Never taller than most of the note's window, however small it is made.
-  const tallest = scrollerOf(body).clientHeight * 0.85;
+  const space = room(body);
+  const { lineHeight } = measure(body);
   const originX = rect.left + body.clientLeft + padding - box.left;
   const originY = rect.top + body.clientTop - body.scrollTop - box.top;
   const shown = new Set<string>();
@@ -1101,15 +1614,23 @@ function sync(): void {
     shown.add(block.id);
     const shape = SHAPES[block.shape];
     const ratio = shape.width / shape.height;
-    let height = Math.min(shape.shown, tallest);
+    // As tall as the lines it covers, and no wider than the note: a note made
+    // narrower since shrinks it, leaving a gap until it is next opened.
+    let height = Math.min(block.lines * lineHeight, space.height);
     let width = height * ratio;
-    if (width > room) {
-      width = room;
+    if (width > space.width) {
+      width = space.width;
       height = width / ratio;
     }
     const { element, canvas } = frameFor(block, container);
     if (reshape(canvas, block.shape)) storePicture(block.id, canvas);
-    setStyle(element, "transform", `translate(${originX}px, ${originY + block.top}px)`);
+    const dragged = drag?.moving === true && drag.id === block.id ? drag : null;
+    const shiftX = dragged ? dragged.dx : 0;
+    const shiftY = dragged ? dragged.dy : 0;
+    setStyle(element, "transform", `translate(${originX + shiftX}px, ${originY + block.top + shiftY}px)`);
+    if (element.classList.contains(DRAGGING_CLASS) !== !!dragged) {
+      element.classList.toggle(DRAGGING_CLASS, !!dragged);
+    }
     setStyle(element, "width", `${width}px`);
     setStyle(element, "height", `${height}px`);
     if (element.classList.contains(ACTIVE_CLASS) !== (block.id === active)) {
@@ -1121,14 +1642,16 @@ function sync(): void {
   for (const [id, frame] of frames) {
     if (!shown.has(id) && frame.element.isConnected) frame.element.remove();
   }
+  placeDropLine(container, drag?.moving ? drag.target : null, originX, originY, space.width);
   // A drawing whose marker was deleted, or is in another note, is put away.
-  if (active && !shown.has(active)) deactivate();
+  if (active && !shown.has(active)) release();
+  scrollToNew(container);
 
   const bar = toolbar();
   if (full) return;
-  setHidden(bar, active === null);
+  setHidden(bar, !toolsOpen);
   const panel = document.querySelector(SELECTORS.panel);
-  if (active && panel) {
+  if (toolsOpen && panel) {
     const place = panel.getBoundingClientRect();
     setStyle(bar, "left", `${place.left}px`);
     setStyle(bar, "width", `${place.width}px`);
@@ -1141,20 +1664,54 @@ function sync(): void {
 /**
  * Keeps the caret out of a drawing's lines, where typing would go under it.
  *
- * Coming from below it is put back above the drawing, and from anywhere
- * else after it, so the arrow keys still step over one in both directions.
+ * Coming from below it is put at the drawing's start, and from anywhere else
+ * after it, so the arrow keys still step over one in both directions. Two
+ * spots at a drawing's edge are let be, as typeAtDrawing makes typing there
+ * safe: the very start of its marker line, and its very end when nothing
+ * follows it. A click beside a drawing piled straight on top of another
+ * lands on the second one's start, which is where a new line between the two
+ * gets made.
  */
 function keepCaretOut(body: HTMLTextAreaElement): void {
   if (body.selectionStart !== body.selectionEnd) return;
   const caret = body.selectionStart;
+  const length = body.value.length;
   for (const { start, end } of measure(body).blocks) {
-    if (caret < start || caret > end) continue;
-    const target = lastCaret > end ? Math.max(0, start - 1) : Math.min(body.value.length, end + 1);
+    const inside = caret > start && (caret < end || (caret === end && end < length));
+    if (!inside) continue;
+    const target = lastCaret > end ? start : Math.min(length, end + 1);
     body.setSelectionRange(target, target);
     lastCaret = target;
     return;
   }
   lastCaret = caret;
+}
+
+/**
+ * Makes typing at a drawing's edge open a line of its own, rather than run
+ * into the drawing's text and break it.
+ *
+ * At the start of its marker line, a character goes on a new line above it;
+ * Enter there already pushes the drawing down. At its end, with nothing
+ * after it, the character or Enter goes on a new line below. Returns whether
+ * the key was used.
+ */
+function typeAtDrawing(body: HTMLTextAreaElement, key: string): boolean {
+  if (body.selectionStart !== body.selectionEnd) return false;
+  const caret = body.selectionStart;
+  for (const block of measure(body).blocks) {
+    if (caret === block.start) {
+      if (key === "Enter") return false;
+      replaceText(body, caret, caret, `${key}\n`);
+      body.setSelectionRange(caret + key.length, caret + key.length);
+      return true;
+    }
+    if (caret === block.end && block.end === body.value.length) {
+      replaceText(body, caret, caret, key === "Enter" ? "\n\n" : `\n${key}`);
+      return true;
+    }
+  }
+  return false;
 }
 
 /** How long a drawing stays marked for a second Backspace to delete it. */
@@ -1193,6 +1750,15 @@ function keyAtDrawing(body: HTMLTextAreaElement, key: string): boolean {
       confirmBin(block.id);
       return true;
     }
+    if (key === "Backspace" && caret === block.start && caret > 0) {
+      // Joining the marker onto the line above would break the drawing. An
+      // empty line above is taken away instead; text above, the caret just
+      // steps up onto the end of it.
+      const above = body.value.lastIndexOf("\n", caret - 2) + 1;
+      if (above === caret - 1) replaceText(body, caret - 1, caret, "");
+      else body.setSelectionRange(caret - 1, caret - 1);
+      return true;
+    }
   }
   return false;
 }
@@ -1219,6 +1785,31 @@ export function installDoodles(): void {
   document.addEventListener(
     "keydown",
     (event) => {
+      // While a question is up, Escape closes it and Enter gives the answer it
+      // marks, wherever the focus is: with the bin's question asked from the
+      // note's text, the caret is still in the note.
+      const question = document.getElementById(CONFIRM_ID);
+      if (question && event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        question.remove();
+        return;
+      }
+      const answer = question?.querySelector<HTMLButtonElement>("[data-enter]");
+      if (answer && event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        answer.click();
+        return;
+      }
+      // Typing in a box of this script's own is that box's business.
+      if (
+        event.key !== "Escape" &&
+        event.target instanceof Element &&
+        event.target.closest(`#${CONFIRM_ID}`)
+      ) {
+        return;
+      }
       const body = noteBody();
       const erase = event.key === "Backspace" || event.key === "Delete";
       if (!erase) armed = null;
@@ -1231,6 +1822,12 @@ export function installDoodles(): void {
       if (body && event.target === body && erase) {
         if (keyAtDrawing(body, event.key)) event.preventDefault();
         else armed = null;
+        return;
+      }
+      const typing =
+        !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === "Enter" || event.key.length === 1);
+      if (body && event.target === body && typing && !event.isComposing) {
+        if (typeAtDrawing(body, event.key)) event.preventDefault();
         return;
       }
       if (event.key === "Escape" && active) {
