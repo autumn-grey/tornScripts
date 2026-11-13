@@ -4,12 +4,12 @@
  * Reads every league tab of the public tournament sheet as CSV, keeps the rows whose
  * driver ID belongs to the API key owner's faction, draws them as an SVG table and
  * renders that to PNG with resvg. Run by .github/workflows/jlt-scoreboard.yml.
+ * The sheet link, title and header picture come from settings.json.
  *
  * Environment:
  *   TORN_API_KEY         key of any faction member (public access is enough)
  *   DISCORD_WEBHOOK_URL  where the PNG is posted
- *   SCHEDULE             the cron line that fired, set by the workflow on scheduled runs
- *   TEST_IDS             comma-separated Torn IDs to use in place of the faction (local testing)
+ *   TEST_IDS            comma-separated Torn IDs to use in place of the faction (local testing)
  *   OUT_FILE             also write the PNG here
  *   DRY_RUN              set to skip the Discord post
  */
@@ -17,10 +17,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Resvg } from '@resvg/resvg-js';
 
-const SHEET_ID = '1M6I_d4vX_2-tbltcn4wYL4DpBNKDmiNn6g10f2YIfUU';
-const TITLE = 'JLT AUTUMN 2026 LIVE RESULTS';
-const TIME_ZONE = 'Australia/Sydney';
-const POST_HOUR = 11;
+const here = (path) => fileURLToPath(new URL(path, import.meta.url));
+
+const SETTINGS = JSON.parse(readFileSync(here('settings.json'), 'utf8'));
+const SHEET_ID = SETTINGS.sheetLink.match(/\/d\/([\w-]+)/)?.[1];
+if (!SHEET_ID) throw new Error(`settings.json: no sheet ID in sheetLink "${SETTINGS.sheetLink}".`);
+const TITLE = SETTINGS.title;
+const HEADER_FILE = here(SETTINGS.headerPicture);
 
 // Only tabs whose top cell is a league name count. CW and DETAILS are not leagues.
 const LEAGUE_NAME = /^L\d+-[A-Z]+$/;
@@ -29,28 +32,11 @@ const LEAGUE_NAME = /^L\d+-[A-Z]+$/;
 const HEADING_ROW = 3;
 const TRACK_ROW = 2;
 
-const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const FONTS = [
   here('node_modules/@expo-google-fonts/roboto-condensed/400Regular/RobotoCondensed_400Regular.ttf'),
   here('node_modules/@expo-google-fonts/roboto-condensed/700Bold/RobotoCondensed_700Bold.ttf'),
   here('node_modules/@expo-google-fonts/fjalla-one/400Regular/FjallaOne_400Regular.ttf'),
 ];
-
-/** Returns true when a scheduled run should go ahead, false when it is the wrong DST half. */
-function isPostingHour() {
-  const schedule = process.env.SCHEDULE;
-  if (!schedule) return true;
-  // GitHub cron is UTC with no DST, so the workflow fires at both candidate UTC hours
-  // and the run whose hour lands on 11:00 in Sydney is the one that posts. Runs are
-  // often late, which is why this checks the hour that was scheduled, not the clock.
-  const utcHour = Number(schedule.trim().split(/\s+/)[1]);
-  const at = new Date();
-  at.setUTCHours(utcHour, 0, 0, 0);
-  const sydneyHour = Number(
-    new Intl.DateTimeFormat('en-AU', { timeZone: TIME_ZONE, hour: 'numeric', hourCycle: 'h23' }).format(at),
-  );
-  return sydneyHour === POST_HOUR;
-}
 
 /** Fetches a URL and returns its body as text, throwing on a non-OK status. */
 async function getText(url) {
@@ -193,8 +179,10 @@ function drawSvg(rows, tracks, updated) {
   const summaryW = nameW + timeW + pointsW + posW;
   const width = pad * 2 + summaryW + tracks.length * (timeW + pointsW);
 
-  const header = readFileSync(here('header.png')).toString('base64');
-  const headerH = Math.round(width / 4); // header.png is 800 x 200
+  const headerPng = readFileSync(HEADER_FILE);
+  // A PNG stores its width and height as big-endian integers at bytes 16 and 20.
+  const headerH = Math.round((width * headerPng.readUInt32BE(20)) / headerPng.readUInt32BE(16));
+  const header = headerPng.toString('base64');
   const titleY = headerH;
   const titleH = 76;
   const raceY = titleY + titleH + 16;
@@ -282,10 +270,6 @@ async function postToDiscord(png) {
 }
 
 async function main() {
-  if (!isPostingHour()) {
-    console.log('Not 11:00 in Sydney for this trigger; the other trigger covers today.');
-    return;
-  }
   const [leagues, ids] = await Promise.all([readLeagues(), factionIds()]);
   const tracks = leagues[0]?.tracks ?? [];
   const rows = leagues
@@ -297,7 +281,7 @@ async function main() {
   if (!rows.length) throw new Error('No faction members found in the sheet.');
 
   const updated = 'Updated ' + new Intl.DateTimeFormat('en-AU', {
-    timeZone: TIME_ZONE, day: 'numeric', month: 'short', year: 'numeric',
+    timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric',
   }).format(new Date());
   const png = toPng(drawSvg(rows, tracks, updated));
   if (process.env.OUT_FILE) writeFileSync(process.env.OUT_FILE, png);

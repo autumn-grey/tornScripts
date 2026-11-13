@@ -1,12 +1,9 @@
-# Posts the faction's JLT Autumn 2026 scoreboard to Discord at 11:00 Sydney time each day.
+# Posts the faction's tournament scoreboard to Discord at 00:00 UTC each day.
 name: JLT scoreboard
 
 on:
   schedule:
-    # 11:00 in Sydney is 00:00 UTC under daylight saving and 01:00 UTC outside it.
-    # Both fire; the script posts only from the one that matches today's offset.
     - cron: '0 0 * * *'
-    - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
@@ -25,4 +22,3 @@ jobs:
         env:
           TORN_API_KEY: ${{ secrets.TORN_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          SCHEDULE: ${{ github.event.schedule }}
