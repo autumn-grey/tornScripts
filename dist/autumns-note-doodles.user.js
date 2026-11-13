@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Doodles
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.0.1
 // @description  Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script
 // @author       AutumnGrey
 // @license      MIT
@@ -679,6 +679,21 @@
     );
     panel.append(question, buttons);
     document.body.appendChild(panel);
+    placeConfirm(panel);
+  }
+  function placeConfirm(panel) {
+    const notes = full ? null : document.querySelector(SELECTORS.panel);
+    const area = notes?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight);
+    const left = Math.min(
+      Math.max(4, area.left + area.width / 2 - panel.offsetWidth / 2),
+      innerWidth - panel.offsetWidth - 4
+    );
+    const top = Math.min(
+      Math.max(4, area.top + area.height / 2 - panel.offsetHeight / 2),
+      innerHeight - panel.offsetHeight - 4
+    );
+    panel.style.setProperty("left", `${left}px`, "important");
+    panel.style.setProperty("top", `${top}px`, "important");
   }
   function toolbar() {
     let bar = document.getElementById(TOOLBAR_ID);
@@ -1366,10 +1381,8 @@ ${brush}
   }
   #doodle-confirm {
     position: fixed;
-    top: 50%;
-    left: 50%;
     z-index: 2147483003;
-    transform: translate(-50%, -50%);
+    max-width: 320px;
     padding: 14px 16px;
     border-radius: 6px;
     background: #2e2e2e;

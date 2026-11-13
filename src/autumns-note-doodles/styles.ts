@@ -252,10 +252,8 @@ const CSS = `
   }
   #doodle-confirm {
     position: fixed;
-    top: 50%;
-    left: 50%;
     z-index: 2147483003;
-    transform: translate(-50%, -50%);
+    max-width: 320px;
     padding: 14px 16px;
     border-radius: 6px;
     background: #2e2e2e;

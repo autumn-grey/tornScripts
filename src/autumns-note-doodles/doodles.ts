@@ -693,6 +693,26 @@ function confirmBin(id: string | null = active): void {
   );
   panel.append(question, buttons);
   document.body.appendChild(panel);
+  placeConfirm(panel);
+}
+
+/**
+ * Centres the bin's question over the Notes window, where the drawing is,
+ * or over the screen in full screen. Kept on screen when Notes sits at an edge.
+ */
+function placeConfirm(panel: HTMLElement): void {
+  const notes = full ? null : document.querySelector(SELECTORS.panel);
+  const area = notes?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth, innerHeight);
+  const left = Math.min(
+    Math.max(4, area.left + area.width / 2 - panel.offsetWidth / 2),
+    innerWidth - panel.offsetWidth - 4,
+  );
+  const top = Math.min(
+    Math.max(4, area.top + area.height / 2 - panel.offsetHeight / 2),
+    innerHeight - panel.offsetHeight - 4,
+  );
+  panel.style.setProperty("left", `${left}px`, "important");
+  panel.style.setProperty("top", `${top}px`, "important");
 }
 
 /** Returns the toolbar, made on first use. */
