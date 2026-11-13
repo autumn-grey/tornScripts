@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.22.18
+// @version      0.23.5
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -912,7 +912,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.22.18");
+    root.setAttribute(RUNNING_ATTR, "0.23.5");
     return true;
   }
   async function w3bOneTabOn() {
@@ -5074,7 +5074,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.22.18");
+    document.documentElement.setAttribute("data-aue", "0.23.5");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
