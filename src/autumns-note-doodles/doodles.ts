@@ -1309,8 +1309,13 @@ const ICONS = {
 </g>`,
   // A page with its corner folded and a plus on it.
   newPage: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Zm4 18H6V4h7v5h5v11Zm-7-9h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z",
-  // An arrow curling round clockwise.
-  rotate: "M15.55 5.55 11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45ZM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02ZM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03Zm3.89-2.42 1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48Z",
+  // A picture (sun and hills) with an arrow curling over it clockwise, so it
+  // reads as turning the picture rather than as trying again.
+  rotate: `<path fill-rule="evenodd" d="M3.5 8h10a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 2 19.5v-10A1.5 1.5 0 0 1 3.5 8Z
+M4.8 12a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0-2.6 0Z
+M3.5 19.5 7 15l2 2.5 2-2.5 2.5 4.5Z"/>
+<path d="M11.5 4.5H15.5A4.5 4.5 0 0 1 20 9V10.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+<path d="M16.8 10.2 20 14l3.2-3.8Z"/>`,
   bin: "M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h1.5v-8H10Zm2.5 0v8H14v-8h-1.5Z",
   expand: "M3 3h7v2.5H6.8l4 4-1.8 1.8-4-4V11H2.5V3Zm18 0v8h-2.5V7.3l-4 4-1.8-1.8 4-4H13V3h8ZM3 21v-8h2.5v3.7l4-4 1.8 1.8-4 4H11V21H3Zm18 0h-8v-2.5h3.7l-4-4 1.8-1.8 4 4V13H21v8Z",
 };
