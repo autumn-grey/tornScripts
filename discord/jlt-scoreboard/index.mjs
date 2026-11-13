@@ -123,7 +123,40 @@ function parseLeague(rows) {
       races: races.map((r) => ({ time: row[r.timeCol]?.trim() ?? '', points: row[r.pointsCol]?.trim() ?? '' })),
     });
   }
+  for (const r of results) {
+    r.racesDone = r.races.filter((race) => race.time).length;
+    r.timeMs = parseTime(r.time);
+  }
   return { league, tracks: races.map((r) => r.track), results };
+}
+
+/** Converts a sheet time like "02:19:07.490" to milliseconds, or Infinity when blank. */
+function parseTime(text) {
+  const m = text.match(/^(\d+):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+  if (!m) return Infinity;
+  return ((Number(m[1]) * 60 + Number(m[2])) * 60 + Number(m[3])) * 1000 + Number((m[4] ?? '0').padEnd(3, '0').slice(0, 3));
+}
+
+/**
+ * Sets leaguePos on every driver: their rank by total time among all drivers in the same
+ * numbered league (tabs 1A to 1F are league 1). A missed race makes a total shorter, so
+ * drivers who have run more races rank ahead of those who have run fewer, and time only
+ * decides between drivers with the same number of races. Equal totals share a position.
+ */
+function rankLeagueTimes(leagues) {
+  const groups = new Map();
+  for (const l of leagues) {
+    if (!groups.has(l.group)) groups.set(l.group, []);
+    groups.get(l.group).push(...l.results);
+  }
+  for (const drivers of groups.values()) {
+    const better = (a, b) => b.racesDone - a.racesDone || a.timeMs - b.timeMs;
+    drivers.sort(better);
+    drivers.forEach((d, i) => {
+      const prev = drivers[i - 1];
+      d.leaguePos = prev && better(prev, d) === 0 ? prev.leaguePos : i + 1;
+    });
+  }
 }
 
 /** Reads every league tab, a few at a time so Google does not throttle us. */
@@ -131,9 +164,12 @@ async function readLeagues() {
   const tabs = await listTabs();
   const leagues = [];
   for (let i = 0; i < tabs.length; i += 6) {
-    const batch = tabs.slice(i, i + 6).map(async ({ gid }) => {
+    const batch = tabs.slice(i, i + 6).map(async ({ name, gid }) => {
       const csv = await getText(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`);
-      return parseLeague(parseCsv(csv));
+      const league = parseLeague(parseCsv(csv));
+      // The tab name's leading number is the league; the letter after it is the division.
+      if (league) league.group = name.match(/^\d+/)?.[0] ?? name;
+      return league;
     });
     for (const league of await Promise.all(batch)) if (league) leagues.push(league);
   }
@@ -178,12 +214,13 @@ const COLOURS = {
 /** Draws the scoreboard as an SVG string. */
 function drawSvg(rows, tracks, updated) {
   const nameW = 250;
+  const leaguePosW = 116;
   const timeW = 150;
   const pointsW = 64;
   const posW = 56;
   const pad = 24;
   const rowH = 54;
-  const summaryW = nameW + timeW + pointsW + posW;
+  const summaryW = nameW + leaguePosW + timeW + pointsW + posW;
   const width = pad * 2 + summaryW + tracks.length * (timeW + pointsW);
 
   const headerPng = readFileSync(HEADER_FILE);
@@ -214,9 +251,10 @@ function drawSvg(rows, tracks, updated) {
   const x0 = pad;
   const cols = [
     { x: x0, w: nameW, label: 'DRIVER', align: 'start' },
-    { x: x0 + nameW, w: timeW, label: 'TM' },
-    { x: x0 + nameW + timeW, w: pointsW, label: 'PT' },
-    { x: x0 + nameW + timeW + pointsW, w: posW, label: '#' },
+    { x: x0 + nameW, w: leaguePosW, label: 'LEAGUE POS' },
+    { x: x0 + nameW + leaguePosW, w: timeW, label: 'TM' },
+    { x: x0 + nameW + leaguePosW + timeW, w: pointsW, label: 'PT' },
+    { x: x0 + nameW + leaguePosW + timeW + pointsW, w: posW, label: '#' },
   ];
   tracks.forEach((track, i) => {
     const x = x0 + summaryW + i * (timeW + pointsW);
@@ -239,12 +277,13 @@ function drawSvg(rows, tracks, updated) {
     out.push(`<line x1="${x0}" y1="${y + rowH}" x2="${width - pad}" y2="${y + rowH}" stroke="${COLOURS.rule}" stroke-width="1"/>`);
     text(x0 + 14, mid - 10, r.name, { size: 22, weight: 700, anchor: 'start' });
     text(x0 + 14, mid + 13, `${r.league} (${r.drivers} drivers)`, { size: 15, fill: COLOURS.subtext, anchor: 'start' });
-    text(cols[1].x + timeW / 2, mid, r.time || '-', { size: 20 });
-    text(cols[2].x + pointsW / 2, mid, r.points, { size: 21, weight: 700 });
-    text(cols[3].x + posW / 2, mid, r.position || '-', { size: 20 });
+    text(cols[1].x + leaguePosW / 2, mid, r.leaguePos ?? '-', { size: 20 });
+    text(cols[2].x + timeW / 2, mid, r.time || '-', { size: 20 });
+    text(cols[3].x + pointsW / 2, mid, r.points, { size: 21, weight: 700 });
+    text(cols[4].x + posW / 2, mid, r.position || '-', { size: 20 });
     r.races.forEach((race, j) => {
-      const tc = cols[4 + j * 2];
-      const pc = cols[5 + j * 2];
+      const tc = cols[5 + j * 2];
+      const pc = cols[6 + j * 2];
       text(tc.x + timeW / 2, mid, race.time || '-', { size: 19, fill: race.time ? COLOURS.text : COLOURS.empty });
       text(pc.x + pointsW / 2, mid, race.points || '-', { size: 20, fill: race.points ? COLOURS.text : COLOURS.empty });
     });
@@ -296,6 +335,7 @@ function readState() {
 
 async function main() {
   const [leagues, ids] = await Promise.all([readLeagues(), factionIds()]);
+  rankLeagueTimes(leagues);
   const tracks = leagues[0]?.tracks ?? [];
   const rows = leagues
     .flatMap((l) => l.results)
