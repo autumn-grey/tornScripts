@@ -300,6 +300,33 @@ const CSS = `
     bottom: calc(100% + 6px);
     left: 0;
   }
+  /* The drawing as a plain picture, to press and hold and copy. */
+  #doodle-picture {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483004;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.85);
+  }
+  #doodle-picture img {
+    max-width: 92vw;
+    max-height: 80vh;
+    box-shadow: 0 0 10px 4px rgba(150, 210, 255, 0.6);
+    /* iOS hides its own copy menu on pictures unless told to show it. */
+    -webkit-touch-callout: default;
+    -webkit-user-select: auto;
+    user-select: auto;
+  }
+  #doodle-picture p {
+    margin: 0;
+    color: #fff !important;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+  }
   #doodle-confirm {
     position: fixed;
     z-index: 2147483003;

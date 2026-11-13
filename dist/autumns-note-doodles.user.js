@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Doodles
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.15
+// @version      1.0.19
 // @description  Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script
 // @author       AutumnGrey
 // @license      MIT
@@ -30,25 +30,100 @@
   }
 
   // src/autumns-note-doodles/storage.ts
-  var PREFIX = "AND_DRAWING_";
-  var OLD_PREFIX = "AUE_DRAWING_";
+  var DB_NAME = "autumns-note-doodles";
+  var STORE = "drawings";
+  var OLD_PREFIXES = ["AND_DRAWING_", "AUE_DRAWING_"];
   var MOBILE_QUERY = "(max-width: 784px)";
   function isMobileView() {
     return matchMedia(MOBILE_QUERY).matches;
   }
-  function readPicture(id) {
+  var opened = null;
+  function database() {
+    opened ?? (opened = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    }));
+    return opened;
+  }
+  async function run(mode, ask) {
+    const db = await database();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE, mode);
+      const request = ask(transaction.objectStore(STORE));
+      transaction.oncomplete = () => resolve(request.result);
+      transaction.onerror = () => reject(transaction.error ?? request.error);
+      transaction.onabort = () => reject(transaction.error ?? new Error("aborted"));
+    });
+  }
+  async function readPicture(id) {
     try {
-      return localStorage.getItem(PREFIX + id) ?? localStorage.getItem(OLD_PREFIX + id) ?? "";
+      const stored = await run("readonly", (store) => store.get(id));
+      if (stored) return stored;
     } catch {
-      return "";
+    }
+    return oldPicture(id);
+  }
+  async function writePicture(id, picture) {
+    try {
+      await run("readwrite", (store) => store.put(picture, id));
+      forgetOld(id);
+      return true;
+    } catch {
+      return false;
     }
   }
-  function writePicture(id, picture) {
-    try {
-      localStorage.setItem(PREFIX + id, picture);
-      localStorage.removeItem(OLD_PREFIX + id);
-    } catch {
+  function oldPicture(id) {
+    for (const prefix of OLD_PREFIXES) {
+      let text = null;
+      try {
+        text = localStorage.getItem(prefix + id);
+      } catch {
+      }
+      if (text) return dataUrlToBlob(text);
     }
+    return null;
+  }
+  function forgetOld(id) {
+    for (const prefix of OLD_PREFIXES) {
+      try {
+        localStorage.removeItem(prefix + id);
+      } catch {
+      }
+    }
+  }
+  async function moveOldPictures() {
+    const found = [];
+    try {
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index) ?? "";
+        const prefix = OLD_PREFIXES.find((one) => key.startsWith(one));
+        const text = prefix ? localStorage.getItem(key) : null;
+        if (prefix && text) found.push({ id: key.slice(prefix.length), text });
+      }
+    } catch {
+      return 0;
+    }
+    let moved = 0;
+    for (const { id, text } of found) {
+      try {
+        const existing = await run("readonly", (store) => store.get(id));
+        if (!existing) await run("readwrite", (store) => store.put(dataUrlToBlob(text), id));
+        forgetOld(id);
+        moved += 1;
+      } catch {
+      }
+    }
+    return moved;
+  }
+  function dataUrlToBlob(text) {
+    const [head = "", body = ""] = text.split(",", 2);
+    const type = /data:([^;,]+)/.exec(head)?.[1] ?? "image/png";
+    const bytes = atob(body);
+    const array = new Uint8Array(bytes.length);
+    for (let index = 0; index < bytes.length; index += 1) array[index] = bytes.charCodeAt(index);
+    return new Blob([array], { type });
   }
 
   // src/autumns-note-doodles/doodles.ts
@@ -66,6 +141,7 @@
   var TOOLBAR_ID = "doodle-toolbar";
   var FULL_ID = "doodle-full";
   var CONFIRM_ID = "doodle-confirm";
+  var PICTURE_ID = "doodle-picture";
   var FRAME_CLASS = "doodle-frame";
   var ACTIVE_CLASS = "doodle-active";
   var ON_CLASS = "doodle-on";
@@ -445,15 +521,15 @@ ${RESERVED}`.repeat(reserve)}`;
     replaceText(body, lineEnd, lineEnd, text);
     log("notes draw: added drawing", id);
     activate(id);
-    return id;
+    return { id, lead, tail };
   }
   function newDrawing() {
     const body = noteBody();
     if (!body) return;
     const before = active;
     const open = active ? blockFor(active) : null;
-    const id = insertDrawing(body, open ? open.end : void 0);
-    undoStack.push({ created: id, before });
+    const { id, lead, tail } = insertDrawing(body, open ? open.end : void 0);
+    undoStack.push({ kind: "created", id, lead, tail, before });
     focusOn = { id, tries: 30 };
   }
   function removeDrawing(id) {
@@ -463,13 +539,13 @@ ${RESERVED}`.repeat(reserve)}`;
     if (active === id) release();
     replaceText(body, block.start, Math.min(body.value.length, block.end + 1), "");
   }
-  function storedPicture(id) {
-    return readPicture(id);
-  }
   function storePicture(id, canvas) {
-    const picture = canvas.toDataURL("image/png");
-    writePicture(id, picture);
-    if (storedPicture(id) !== picture) setStatus("Not saved: browser storage is full");
+    canvas.toBlob((picture) => {
+      if (!picture) return;
+      void writePicture(id, picture).then((kept) => {
+        if (!kept) setStatus("Not saved: browser storage is full");
+      });
+    }, "image/png");
   }
   function blank(canvas) {
     const context = canvas.getContext("2d");
@@ -514,12 +590,17 @@ ${RESERVED}`.repeat(reserve)}`;
     });
     element.append(canvas, expand);
     layer2.appendChild(element);
-    const picture = storedPicture(block.id);
-    if (picture) {
+    void readPicture(block.id).then((picture) => {
+      if (!picture) return;
+      const address = URL.createObjectURL(picture);
       const image = new Image();
-      image.onload = () => canvas.getContext("2d")?.drawImage(image, 0, 0);
-      image.src = picture;
-    }
+      image.onload = () => {
+        canvas.getContext("2d")?.drawImage(image, 0, 0);
+        URL.revokeObjectURL(address);
+      };
+      image.onerror = () => URL.revokeObjectURL(address);
+      image.src = address;
+    });
     wireCanvas(block.id, element, canvas);
     const frame = { element, canvas };
     frames.set(block.id, frame);
@@ -746,13 +827,35 @@ ${RESERVED}`.repeat(reserve)}`;
   function copyPicture() {
     const canvas = activeCanvas();
     if (!canvas) return;
+    if (inPda() || typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+      showPicture(canvas);
+      return;
+    }
     const png = new Promise(
       (resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("no image")), "image/png")
     );
     navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(() => setStatus("Copied")).catch((error) => {
       log("notes draw: copy failed", error);
-      setStatus("Copy failed");
+      showPicture(canvas);
     });
+  }
+  function inPda() {
+    return "flutter_inappwebview" in window;
+  }
+  function showPicture(canvas, words = "Press and hold to copy") {
+    document.getElementById(PICTURE_ID)?.remove();
+    const cover = document.createElement("div");
+    cover.id = PICTURE_ID;
+    const picture = document.createElement("img");
+    picture.src = canvas.toDataURL("image/png");
+    picture.alt = "Drawing";
+    const label = document.createElement("p");
+    label.textContent = words;
+    cover.append(picture, label);
+    cover.addEventListener("click", (event) => {
+      if (event.target !== picture) cover.remove();
+    });
+    document.body.appendChild(cover);
   }
   function downloadPicture(name) {
     const canvas = activeCanvas();
@@ -765,6 +868,11 @@ ${RESERVED}`.repeat(reserve)}`;
   }
   function askName() {
     if (!active) return;
+    const canvas = activeCanvas();
+    if (inPda() && canvas) {
+      showPicture(canvas, "Press and hold to save");
+      return;
+    }
     document.getElementById(CONFIRM_ID)?.remove();
     const panel = document.createElement("div");
     panel.id = CONFIRM_ID;
@@ -801,9 +909,8 @@ ${RESERVED}`.repeat(reserve)}`;
     if (!active) return;
     const last = undoStack[undoStack.length - 1];
     if (back && last && !(last instanceof ImageData)) {
-      const { created, before } = last;
-      removeDrawing(created);
-      if (before && blockFor(before)) activate(before);
+      undoStack.pop();
+      undoEdit(last);
       return;
     }
     const canvas = activeCanvas();
@@ -822,6 +929,30 @@ ${RESERVED}`.repeat(reserve)}`;
     context.putImageData(state, 0, 0);
     storePicture(active, canvas);
   }
+  function undoEdit(edit) {
+    const body = noteBody();
+    const block = body ? blockFor(edit.id) : null;
+    if (!body || !block) return;
+    const value = body.value;
+    if (edit.kind === "created") {
+      const start2 = value.slice(block.start - edit.lead.length, block.start) === edit.lead ? block.start - edit.lead.length : block.start;
+      const end = value.slice(block.end, block.end + edit.tail.length) === edit.tail ? block.end + edit.tail.length : Math.min(value.length, block.end + 1);
+      release();
+      replaceText(body, start2, end, "");
+      if (edit.before && blockFor(edit.before)) activate(edit.before);
+      return;
+    }
+    replaceText(body, block.start, block.end, edit.oldText);
+    const canvas = activeCanvas();
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context || !active) return;
+    canvas.width = edit.image.width;
+    canvas.height = edit.image.height;
+    context.putImageData(edit.image, 0, 0);
+    storePicture(active, canvas);
+    redoStack = [];
+    syncToolbar();
+  }
   function clearPicture() {
     const canvas = activeCanvas();
     if (!canvas || !active) return;
@@ -835,8 +966,15 @@ ${RESERVED}`.repeat(reserve)}`;
     const canvas = activeCanvas();
     if (!body || !block || !canvas || !active) return;
     if (block.shape === shape && block.named) return;
-    replaceText(body, block.start, block.end, blockText(active, shape, linesToReserve(body, shape)));
-    remember(canvas);
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const oldText = body.value.slice(block.start, block.end);
+    const newText = blockText(active, shape, linesToReserve(body, shape));
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    replaceText(body, block.start, block.end, newText);
+    undoStack.push({ kind: "reshaped", id: active, oldText, image });
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack = [];
     if (reshape(canvas, shape)) storePicture(active, canvas);
     syncToolbar();
   }
@@ -1445,6 +1583,13 @@ ${key}`);
     document.addEventListener(
       "keydown",
       (event) => {
+        const picture = document.getElementById(PICTURE_ID);
+        if (picture && event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          picture.remove();
+          return;
+        }
         const question = document.getElementById(CONFIRM_ID);
         if (question && event.key === "Escape") {
           event.preventDefault();
@@ -1503,7 +1648,7 @@ ${key}`);
         armed = null;
         const target = event.target instanceof Element ? event.target : null;
         onDrawing = !!target?.closest(
-          `#${TOOLBAR_ID}, #${LAYER_ID}, #${FULL_ID}, #${CONFIRM_ID}, #${ICON_ID}`
+          `#${TOOLBAR_ID}, #${LAYER_ID}, #${FULL_ID}, #${CONFIRM_ID}, #${PICTURE_ID}, #${ICON_ID}`
         );
         if (target?.closest(`#${TOOLBAR_ID}`)) return;
         closePopups();
@@ -1812,6 +1957,33 @@ ${key}`);
     bottom: calc(100% + 6px);
     left: 0;
   }
+  /* The drawing as a plain picture, to press and hold and copy. */
+  #doodle-picture {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483004;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.85);
+  }
+  #doodle-picture img {
+    max-width: 92vw;
+    max-height: 80vh;
+    box-shadow: 0 0 10px 4px rgba(150, 210, 255, 0.6);
+    /* iOS hides its own copy menu on pictures unless told to show it. */
+    -webkit-touch-callout: default;
+    -webkit-user-select: auto;
+    user-select: auto;
+  }
+  #doodle-picture p {
+    margin: 0;
+    color: #fff !important;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+  }
   #doodle-confirm {
     position: fixed;
     z-index: 2147483003;
@@ -1866,6 +2038,9 @@ ${key}`);
     try {
       injectStyles();
       installDoodles();
+      void moveOldPictures().then((moved) => {
+        if (moved > 0) log("moved", moved, "drawings out of localStorage");
+      });
     } catch (error) {
       log("failed to start", error);
     }

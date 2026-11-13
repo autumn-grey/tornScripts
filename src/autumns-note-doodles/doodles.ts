@@ -32,6 +32,8 @@ const LAYER_ID = "doodle-layer";
 const TOOLBAR_ID = "doodle-toolbar";
 const FULL_ID = "doodle-full";
 const CONFIRM_ID = "doodle-confirm";
+/** The drawing shown as a plain picture, for copying where the clipboard will not take one. */
+const PICTURE_ID = "doodle-picture";
 const FRAME_CLASS = "doodle-frame";
 const ACTIVE_CLASS = "doodle-active";
 const ON_CLASS = "doodle-on";
@@ -137,10 +139,19 @@ let colour = "#000000";
 let size = SIZE_DEFAULT;
 let tool: Tool = "pen";
 /**
- * One step back: how the canvas looked, or the making of the drawing itself,
- * which undoing takes away again, back to the drawing that was open before.
+ * One step back. How the canvas looked; or a change to the note's text,
+ * taken back exactly so no line it added is left behind: the making of a
+ * drawing, with the line breaks put either side of it (back to the drawing
+ * open before), or a change of its shape (with its old lines and canvas).
+ *
+ * The drawing is found by its id when the step is undone, not by where it
+ * was or what its lines said: typing above it moves it, and opening it again
+ * in a resized Notes re-cuts its lines.
  */
-type Step = ImageData | { created: string; before: string | null };
+type Step =
+  | ImageData
+  | { kind: "created"; id: string; lead: string; tail: string; before: string | null }
+  | { kind: "reshaped"; id: string; oldText: string; image: ImageData };
 let undoStack: Step[] = [];
 let redoStack: ImageData[] = [];
 /** Whether the drawing tools are out, with or without a drawing open. */
@@ -452,7 +463,10 @@ function refit(id: string): void {
  * Puts a new drawing on its own line after a point in the text (the caret,
  * unless one is given) and opens it. Returns its id.
  */
-function insertDrawing(body: HTMLTextAreaElement, after?: number): string {
+function insertDrawing(
+  body: HTMLTextAreaElement,
+  after?: number,
+): { id: string; lead: string; tail: string } {
   const value = body.value;
   const caret = after ?? (document.activeElement === body ? body.selectionEnd : value.length);
   let lineEnd = value.indexOf("\n", caret);
@@ -467,7 +481,7 @@ function insertDrawing(body: HTMLTextAreaElement, after?: number): string {
   replaceText(body, lineEnd, lineEnd, text);
   log("notes draw: added drawing", id);
   activate(id);
-  return id;
+  return { id, lead, tail };
 }
 
 /**
@@ -479,8 +493,8 @@ function newDrawing(): void {
   if (!body) return;
   const before = active;
   const open = active ? blockFor(active) : null;
-  const id = insertDrawing(body, open ? open.end : undefined);
-  undoStack.push({ created: id, before });
+  const { id, lead, tail } = insertDrawing(body, open ? open.end : undefined);
+  undoStack.push({ kind: "created", id, lead, tail, before });
   focusOn = { id, tries: 30 };
 }
 
@@ -494,16 +508,14 @@ function removeDrawing(id: string): void {
   replaceText(body, block.start, Math.min(body.value.length, block.end + 1), "");
 }
 
-/** Returns a drawing's stored picture, or "" when this browser has none. */
-function storedPicture(id: string): string {
-  return readPicture(id);
-}
-
 /** Keeps a drawing's picture, saying so on the toolbar when the browser will not. */
 function storePicture(id: string, canvas: HTMLCanvasElement): void {
-  const picture = canvas.toDataURL("image/png");
-  writePicture(id, picture);
-  if (storedPicture(id) !== picture) setStatus("Not saved: browser storage is full");
+  canvas.toBlob((picture) => {
+    if (!picture) return;
+    void writePicture(id, picture).then((kept) => {
+      if (!kept) setStatus("Not saved: browser storage is full");
+    });
+  }, "image/png");
 }
 
 /** Fills a canvas with the background colour. */
@@ -556,13 +568,18 @@ function frameFor(block: Block, layer: HTMLElement): Frame {
   element.append(canvas, expand);
   layer.appendChild(element);
 
-  const picture = storedPicture(block.id);
-  if (picture) {
+  void readPicture(block.id).then((picture) => {
+    if (!picture) return;
+    const address = URL.createObjectURL(picture);
     const image = new Image();
-    // At its own size, not stretched: the first drawings were a wider shape.
-    image.onload = () => canvas.getContext("2d")?.drawImage(image, 0, 0);
-    image.src = picture;
-  }
+    image.onload = () => {
+      // At its own size, not stretched: the first drawings were a wider shape.
+      canvas.getContext("2d")?.drawImage(image, 0, 0);
+      URL.revokeObjectURL(address);
+    };
+    image.onerror = () => URL.revokeObjectURL(address);
+    image.src = address;
+  });
   wireCanvas(block.id, element, canvas);
   const frame = { element, canvas };
   frames.set(block.id, frame);
@@ -851,6 +868,13 @@ function setStatus(text: string): void {
 function copyPicture(): void {
   const canvas = activeCanvas();
   if (!canvas) return;
+  // Torn PDA's web view will not let a page put a picture on the clipboard,
+  // but its own press-and-hold menu on a picture copies one fine. So there,
+  // and wherever the clipboard refuses, the drawing is shown as a picture.
+  if (inPda() || typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    showPicture(canvas);
+    return;
+  }
   // The blob is handed over as a promise so the write still counts as part
   // of the click; Safari refuses a clipboard write made after an await.
   const png = new Promise<Blob>((resolve, reject) =>
@@ -861,8 +885,35 @@ function copyPicture(): void {
     .then(() => setStatus("Copied"))
     .catch((error: unknown) => {
       log("notes draw: copy failed", error);
-      setStatus("Copy failed");
+      showPicture(canvas);
     });
+}
+
+/** Whether this is Torn PDA, whose web view carries its bridge to the app. */
+function inPda(): boolean {
+  return "flutter_inappwebview" in window;
+}
+
+/**
+ * Shows the drawing as a plain picture over the page, to be pressed and held
+ * and copied or saved with the device's own menu, under a line saying which.
+ * A canvas offers no such menu; a picture does. A tap off it, or Escape, puts
+ * it away.
+ */
+function showPicture(canvas: HTMLCanvasElement, words = "Press and hold to copy"): void {
+  document.getElementById(PICTURE_ID)?.remove();
+  const cover = document.createElement("div");
+  cover.id = PICTURE_ID;
+  const picture = document.createElement("img");
+  picture.src = canvas.toDataURL("image/png");
+  picture.alt = "Drawing";
+  const label = document.createElement("p");
+  label.textContent = words;
+  cover.append(picture, label);
+  cover.addEventListener("click", (event) => {
+    if (event.target !== picture) cover.remove();
+  });
+  document.body.appendChild(cover);
 }
 
 /** Saves the open drawing as a PNG file. */
@@ -878,9 +929,20 @@ function downloadPicture(name: string): void {
   link.click();
 }
 
-/** Asks what to call the open drawing, and saves it once a name is given. */
+/**
+ * Asks what to call the open drawing, and saves it once a name is given.
+ *
+ * Not in Torn PDA: its web view does nothing with a download a page starts,
+ * so there the drawing is shown as a picture for the phone's own Save image.
+ * The phone names that file itself, so no name is asked for.
+ */
 function askName(): void {
   if (!active) return;
+  const canvas = activeCanvas();
+  if (inPda() && canvas) {
+    showPicture(canvas, "Press and hold to save");
+    return;
+  }
   document.getElementById(CONFIRM_ID)?.remove();
   const panel = document.createElement("div");
   panel.id = CONFIRM_ID;
@@ -920,10 +982,8 @@ function step(back: boolean): void {
   if (!active) return;
   const last = undoStack[undoStack.length - 1];
   if (back && last && !(last instanceof ImageData)) {
-    // Undoing the drawing's making: it goes, and the one open before opens.
-    const { created, before } = last;
-    removeDrawing(created);
-    if (before && blockFor(before)) activate(before);
+    undoStack.pop();
+    undoEdit(last);
     return;
   }
   const canvas = activeCanvas();
@@ -944,6 +1004,38 @@ function step(back: boolean): void {
   storePicture(active, canvas);
 }
 
+/** Takes back a change this script made to the note's text, putting back exactly what was there. */
+function undoEdit(edit: Exclude<Step, ImageData>): void {
+  const body = noteBody();
+  const block = body ? blockFor(edit.id) : null;
+  if (!body || !block) return;
+  const value = body.value;
+  if (edit.kind === "created") {
+    // The drawing's own lines, and the line breaks put either side of them,
+    // as long as those are still there to take.
+    const start = value.slice(block.start - edit.lead.length, block.start) === edit.lead
+      ? block.start - edit.lead.length
+      : block.start;
+    const end = value.slice(block.end, block.end + edit.tail.length) === edit.tail
+      ? block.end + edit.tail.length
+      : Math.min(value.length, block.end + 1);
+    release();
+    replaceText(body, start, end, "");
+    if (edit.before && blockFor(edit.before)) activate(edit.before);
+    return;
+  }
+  replaceText(body, block.start, block.end, edit.oldText);
+  const canvas = activeCanvas();
+  const context = canvas?.getContext("2d");
+  if (!canvas || !context || !active) return;
+  canvas.width = edit.image.width;
+  canvas.height = edit.image.height;
+  context.putImageData(edit.image, 0, 0);
+  storePicture(active, canvas);
+  redoStack = [];
+  syncToolbar();
+}
+
 /** Empties the open drawing. */
 function clearPicture(): void {
   const canvas = activeCanvas();
@@ -960,10 +1052,15 @@ function setShape(shape: ShapeKey): void {
   const canvas = activeCanvas();
   if (!body || !block || !canvas || !active) return;
   if (block.shape === shape && block.named) return;
-  replaceText(body, block.start, block.end, blockText(active, shape, linesToReserve(body, shape)));
-  // The strokes before a change of shape stay undoable; stepping back to one
-  // puts the canvas back to the size it was then.
-  remember(canvas);
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const oldText = body.value.slice(block.start, block.end);
+  const newText = blockText(active, shape, linesToReserve(body, shape));
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+  replaceText(body, block.start, block.end, newText);
+  undoStack.push({ kind: "reshaped", id: active, oldText, image });
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = [];
   if (reshape(canvas, shape)) storePicture(active, canvas);
   syncToolbar();
 }
@@ -1788,6 +1885,13 @@ export function installDoodles(): void {
       // While a question is up, Escape closes it and Enter gives the answer it
       // marks, wherever the focus is: with the bin's question asked from the
       // note's text, the caret is still in the note.
+      const picture = document.getElementById(PICTURE_ID);
+      if (picture && event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        picture.remove();
+        return;
+      }
       const question = document.getElementById(CONFIRM_ID);
       if (question && event.key === "Escape") {
         event.preventDefault();
@@ -1858,7 +1962,7 @@ export function installDoodles(): void {
       armed = null;
       const target = event.target instanceof Element ? event.target : null;
       onDrawing = !!target?.closest(
-        `#${TOOLBAR_ID}, #${LAYER_ID}, #${FULL_ID}, #${CONFIRM_ID}, #${ICON_ID}`,
+        `#${TOOLBAR_ID}, #${LAYER_ID}, #${FULL_ID}, #${CONFIRM_ID}, #${PICTURE_ID}, #${ICON_ID}`,
       );
       if (target?.closest(`#${TOOLBAR_ID}`)) return;
       closePopups();
