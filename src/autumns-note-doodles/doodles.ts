@@ -1466,24 +1466,18 @@ function toolbar(): HTMLElement {
   // on top, and what is done with the drawing underneath.
   const tools = document.createElement("div");
   tools.className = "doodle-row";
-  // Undo and Redo sit at the top right, Rotate and the shape at the bottom
-  // right; the first of each pair carries the push that sends it there.
-  const undo = iconButton("Undo", ICONS.undo, () => step(true));
-  undo.classList.add("doodle-push");
+  // Seven to a row, every button the same width, so the rows line up as
+  // columns: Clear under the paint bucket, Rotate and the shape under Undo
+  // and Redo.
   tools.append(
     withPopup("colour", colourButton, grid),
     withPopup("size", sizeButton, slider),
     toolFor("Pen", ICONS.pen, "pen"),
     toolFor("Eraser", ICONS.eraser, "eraser"),
     toolFor("Paint bucket", ICONS.bucket, "bucket"),
-    iconButton("Clear", ICONS.sweep, clearPicture),
-    undo,
+    iconButton("Undo", ICONS.undo, () => step(true)),
     iconButton("Redo", ICONS.redo, () => step(false)),
   );
-  const rotate = iconButton("Rotate", ICONS.rotate, rotatePicture);
-  rotate.classList.add("doodle-push");
-  const shapeHolder = withPopup("shape", shapeButton, shapes);
-  shapeHolder.classList.add("doodle-popup-right");
   const actions = document.createElement("div");
   actions.className = "doodle-row";
   actions.append(
@@ -1491,9 +1485,10 @@ function toolbar(): HTMLElement {
     iconButton("Copy", ICONS.copy, copyPicture),
     iconButton("Save", ICONS.download, askName),
     iconButton("Bin", ICONS.bin, () => confirmBin()),
+    iconButton("Clear", ICONS.sweep, clearPicture),
+    iconButton("Rotate", ICONS.rotate, rotatePicture),
+    withPopup("shape", shapeButton, shapes),
     status,
-    rotate,
-    shapeHolder,
   );
   bar.append(tools, actions);
   document.body.appendChild(bar);

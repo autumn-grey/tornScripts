@@ -132,21 +132,6 @@ const CSS = `
   .doodle-row + .doodle-row {
     margin-top: 4px;
   }
-  /* Sends a group of buttons to the right of its row. */
-  .doodle-push {
-    margin-left: auto !important;
-  }
-  .doodle-popup-right .doodle-popup {
-    left: auto;
-    right: 0;
-  }
-  /* Docked in full screen the rows stack or centre, so nothing is pushed. */
-  #doodle-toolbar.doodle-docked .doodle-push {
-    margin-left: 0 !important;
-  }
-  #doodle-toolbar.doodle-docked .doodle-popup-right .doodle-popup {
-    right: auto;
-  }
   .doodle-holder {
     position: relative;
     display: inline-flex;
@@ -157,7 +142,8 @@ const CSS = `
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
+    /* The width of the icon buttons, so the two rows line up. */
+    width: 30px;
     height: 24px;
     padding: 0;
     border: 2px solid #777;

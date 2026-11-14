@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Doodles
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.25
+// @version      1.0.26
 // @description  Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script
 // @author       AutumnGrey
 // @license      MIT
@@ -1343,22 +1343,15 @@ M3.5 19.5 7 15l2 2.5 2-2.5 2.5 4.5Z"/>
     status.className = "doodle-status";
     const tools = document.createElement("div");
     tools.className = "doodle-row";
-    const undo = iconButton("Undo", ICONS.undo, () => step(true));
-    undo.classList.add("doodle-push");
     tools.append(
       withPopup("colour", colourButton, grid),
       withPopup("size", sizeButton, slider),
       toolFor("Pen", ICONS.pen, "pen"),
       toolFor("Eraser", ICONS.eraser, "eraser"),
       toolFor("Paint bucket", ICONS.bucket, "bucket"),
-      iconButton("Clear", ICONS.sweep, clearPicture),
-      undo,
+      iconButton("Undo", ICONS.undo, () => step(true)),
       iconButton("Redo", ICONS.redo, () => step(false))
     );
-    const rotate = iconButton("Rotate", ICONS.rotate, rotatePicture);
-    rotate.classList.add("doodle-push");
-    const shapeHolder = withPopup("shape", shapeButton, shapes);
-    shapeHolder.classList.add("doodle-popup-right");
     const actions = document.createElement("div");
     actions.className = "doodle-row";
     actions.append(
@@ -1366,9 +1359,10 @@ M3.5 19.5 7 15l2 2.5 2-2.5 2.5 4.5Z"/>
       iconButton("Copy", ICONS.copy, copyPicture),
       iconButton("Save", ICONS.download, askName),
       iconButton("Bin", ICONS.bin, () => confirmBin()),
-      status,
-      rotate,
-      shapeHolder
+      iconButton("Clear", ICONS.sweep, clearPicture),
+      iconButton("Rotate", ICONS.rotate, rotatePicture),
+      withPopup("shape", shapeButton, shapes),
+      status
     );
     bar.append(tools, actions);
     document.body.appendChild(bar);
@@ -1978,21 +1972,6 @@ ${key}`);
   .doodle-row + .doodle-row {
     margin-top: 4px;
   }
-  /* Sends a group of buttons to the right of its row. */
-  .doodle-push {
-    margin-left: auto !important;
-  }
-  .doodle-popup-right .doodle-popup {
-    left: auto;
-    right: 0;
-  }
-  /* Docked in full screen the rows stack or centre, so nothing is pushed. */
-  #doodle-toolbar.doodle-docked .doodle-push {
-    margin-left: 0 !important;
-  }
-  #doodle-toolbar.doodle-docked .doodle-popup-right .doodle-popup {
-    right: auto;
-  }
   .doodle-holder {
     position: relative;
     display: inline-flex;
@@ -2003,7 +1982,8 @@ ${key}`);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
+    /* The width of the icon buttons, so the two rows line up. */
+    width: 30px;
     height: 24px;
     padding: 0;
     border: 2px solid #777;
