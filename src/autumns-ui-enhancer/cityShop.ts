@@ -9,11 +9,15 @@
 
 import {
   CityShop,
+  clearKeyRejection,
   fetchCityShops,
   forgetStock,
+  keyRejection,
   loadStock,
+  noteKeyFailure,
   readCheckedItems,
   readStock,
+  throwIfApiError,
 } from "./cityStock";
 import { log } from "./debug";
 import { onlyOurs } from "./ownChanges";
@@ -156,6 +160,7 @@ function readState(): ShopState | null {
 export function forgetCityShopCount(): void {
   writeSetting(STATE_SETTING, "");
   forgetStock();
+  clearKeyRejection();
 }
 
 /** One log entry, as far as this feature reads it. */
@@ -172,8 +177,8 @@ async function fetchShopBuys(key: string, from: number, limit: number): Promise<
     key,
   });
   const response = await fetch(`${LOG_URL}?${params}`, { credentials: "omit" });
-  const body = (await response.json()) as { error?: { error?: string }; log?: unknown };
-  if (body.error) throw new Error(body.error.error ?? "API error");
+  const body = (await response.json()) as { error?: { code?: number; error?: string }; log?: unknown };
+  throwIfApiError(body);
   const entries = Array.isArray(body.log) ? (body.log as LogEntry[]) : [];
   log("city shop: log entries", entries);
   return entries;
@@ -248,7 +253,7 @@ function noteRestocks(before: CityShop[], after: CityShop[]): void {
 /** Brings the count up to date, asking the API only when the stored one is stale or forced. */
 async function refresh(force = false): Promise<void> {
   const key = readSetting(API_KEY_SETTING, "").trim();
-  if (!key || !isEnabled(CITY_SHOP_ALERT)) {
+  if (!key || !isEnabled(CITY_SHOP_ALERT) || keyRejection()) {
     bought = null;
     return;
   }
@@ -286,6 +291,7 @@ async function refresh(force = false): Promise<void> {
     log("city shop:", bought, "bought today");
   } catch (error) {
     log("city shop: could not read the count", error);
+    noteKeyFailure(error);
   }
 }
 
@@ -414,10 +420,10 @@ function watchedStock(): CityShop[] {
     .filter((shop) => shop.items.length > 0);
 }
 
-/** Whether the purchase count or the stock check is on but has no API key to fetch with. */
+/** Whether the purchase count or the stock check is on but has no usable API key to fetch with. */
 function needsKey(): boolean {
   const wanted = isEnabled(CITY_SHOP_ALERT) || isEnabled(CITY_SHOP_STOCK);
-  return wanted && readSetting(API_KEY_SETTING, "").trim() === "";
+  return wanted && (readSetting(API_KEY_SETTING, "").trim() === "" || keyRejection() !== "");
 }
 
 /** Opens the settings panel on the preferences page, where the key is entered. */
@@ -438,8 +444,9 @@ function fillTip(tip: HTMLElement): void {
     const here = document.createElement("span");
     here.className = "aue-tip-link";
     here.textContent = "click here";
+    const rejected = keyRejection();
     message.append(
-      "This feature requires an API key. Please ",
+      rejected ? `Torn refused the API key (${rejected}). Please ` : "This feature requires an API key. Please ",
       here,
       " to open Autumn's UI Enhancer settings.",
     );

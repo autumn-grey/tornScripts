@@ -93,6 +93,9 @@ export const CITY_SHOP_STOCK: Feature = {
 /** Where the API key is kept. */
 export const API_KEY_SETTING = "API_KEY";
 
+/** Torn's reason for refusing the stored key, kept until Check passes a key again. */
+export const KEY_REJECTED_SETTING = "API_KEY_REJECTED";
+
 /** Where the ids of the city shop items whose stock is shown are kept, as JSON. */
 export const STOCK_ITEMS_SETTING = "CITY_SHOP_STOCK_ITEMS";
 

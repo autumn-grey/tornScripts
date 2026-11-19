@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faction Elimination Team Checker
 // @namespace    https://github.com/autumn-grey
-// @version      1.3.1
+// @version      1.3.2
 // @description  Adds a collapsible panel to the faction page showing which elimination team each faction member is on, with eliminated teams greyed out.
 // @author       AutumnGrey
 // @license      MIT
@@ -16,6 +16,13 @@
 
 "use strict";
 (() => {
+  // src/shared/apiKey.ts
+  var KEY_SHAPE = /^[A-Za-z0-9]{16}$/;
+  var BAD_KEY_SHAPE = "API keys are 16 letters and numbers";
+  function isKeyShaped(key) {
+    return KEY_SHAPE.test(key);
+  }
+
   // src/faction-elimination-team-checker/debug.ts
   var DEBUG_KEY = "ET_DEBUG";
   function debugging() {
@@ -944,7 +951,12 @@
     hint.textContent = "Entering a key scans the whole faction, which takes about a minute. After that, eliminations are checked on their own every 12 hours or by pressing refresh teams. Pressing check for leavers will see if any members have left a team since the last scan, unfortunately members who left before your first scan cannot be checked with an API (unless someone knows a way?)";
     field.appendChild(hint);
     const keyEntered = () => {
-      if (input.value.trim() === readApiKey()) return;
+      const key = input.value.trim();
+      if (key === readApiKey()) return;
+      if (key !== "" && !isKeyShaped(key)) {
+        setStatus("error", BAD_KEY_SHAPE);
+        return;
+      }
       writeApiKey(input.value);
       void scanMembers({ forceTeams: true });
     };

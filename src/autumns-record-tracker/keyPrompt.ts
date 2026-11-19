@@ -6,8 +6,11 @@ import { ApiError } from "./api";
 export const SETTINGS_FLAG = "art-settings";
 const SETTINGS_URL = `https://www.torn.com/preferences.php?${SETTINGS_FLAG}=1`;
 
-/** Torn's error codes for a key that is wrong or cannot read what was asked. */
-const KEY_ERRORS = new Set([2, 16]);
+/**
+ * Torn's error codes for a key that cannot work until the player acts: empty,
+ * wrong, owner in federal jail, inactive for a week, access too low, paused.
+ */
+const KEY_ERRORS = new Set([1, 2, 10, 13, 16, 18]);
 
 /** Returns whether an error means the key needs replacing, not a retry. */
 export function isKeyProblem(error: unknown): boolean {

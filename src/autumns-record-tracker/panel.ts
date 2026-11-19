@@ -4,6 +4,7 @@
 // join the bottom of it. Without it, they get a panel of their own that looks
 // the same, which steps aside if the Enhancer's panel turns up later.
 
+import { BAD_KEY_SHAPE, isKeyShaped } from "../shared/apiKey";
 import { API_KEY_CREATE_URL, checkApiKey } from "./api";
 import { SETTINGS_FLAG } from "./keyPrompt";
 import {
@@ -110,6 +111,11 @@ function buildApiKeyRow(): HTMLElement {
       writeSetting(API_KEY_SETTING, "");
       result.textContent = "Removed";
       result.className = "art-key-result";
+      return;
+    }
+    if (!isKeyShaped(key)) {
+      result.textContent = BAD_KEY_SHAPE;
+      result.className = "art-key-result art-bad";
       return;
     }
     check.disabled = true;

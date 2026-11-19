@@ -1,3 +1,4 @@
+import { BAD_KEY_SHAPE, isKeyShaped } from "../shared/apiKey";
 import {
   ApiError,
   factionIdFromUrl,
@@ -532,7 +533,12 @@ function buildControls(): HTMLElement {
   // Do not drop the comparison: Enter and the blur that follows it would
   // otherwise start the scan twice.
   const keyEntered = (): void => {
-    if (input.value.trim() === readApiKey()) return;
+    const key = input.value.trim();
+    if (key === readApiKey()) return;
+    if (key !== "" && !isKeyShaped(key)) {
+      setStatus("error", BAD_KEY_SHAPE);
+      return;
+    }
     writeApiKey(input.value);
     void scanMembers({ forceTeams: true });
   };

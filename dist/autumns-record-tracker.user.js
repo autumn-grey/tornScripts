@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Record Tracker
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.5
+// @version      1.0.6
 // @description  Displays your progress towards achieving all merits requiring points purchases, estimates your level progress and allows you to see all car classes' record lists.
 // @author       AutumnGrey
 // @license      MIT
@@ -165,7 +165,7 @@
   // src/autumns-record-tracker/keyPrompt.ts
   var SETTINGS_FLAG = "art-settings";
   var SETTINGS_URL = `https://www.torn.com/preferences.php?${SETTINGS_FLAG}=1`;
-  var KEY_ERRORS = /* @__PURE__ */ new Set([2, 16]);
+  var KEY_ERRORS = /* @__PURE__ */ new Set([1, 2, 10, 13, 16, 18]);
   function isKeyProblem(error) {
     return error instanceof ApiError && error.code !== null && KEY_ERRORS.has(error.code);
   }
@@ -989,6 +989,13 @@
     new MutationObserver(place).observe(document.body, { childList: true, subtree: true });
   }
 
+  // src/shared/apiKey.ts
+  var KEY_SHAPE = /^[A-Za-z0-9]{16}$/;
+  var BAD_KEY_SHAPE = "API keys are 16 letters and numbers";
+  function isKeyShaped(key) {
+    return KEY_SHAPE.test(key);
+  }
+
   // src/autumns-record-tracker/panel.ts
   var SELECTORS2 = {
     // The UI Enhancer's panel body, which the rows join the bottom of.
@@ -1063,6 +1070,11 @@
         writeSetting(API_KEY_SETTING, "");
         result.textContent = "Removed";
         result.className = "art-key-result";
+        return;
+      }
+      if (!isKeyShaped(key)) {
+        result.textContent = BAD_KEY_SHAPE;
+        result.className = "art-key-result art-bad";
         return;
       }
       check.disabled = true;

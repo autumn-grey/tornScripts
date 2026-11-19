@@ -2,7 +2,52 @@
 // torn/cityshops, and which of those items the player has picked to watch.
 
 import { log } from "./debug";
-import { STOCK_ITEMS_SETTING, readSetting, writeSetting } from "./settings";
+import { KEY_REJECTED_SETTING, STOCK_ITEMS_SETTING, readSetting, writeSetting } from "./settings";
+
+/** Torn's error, carried with its code. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly code: number | null,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Torn's error codes that mean the key cannot work until the player acts:
+ * empty, wrong, owner in federal jail, inactive for a week, access too low,
+ * paused. Asking again with the same key only adds failed calls.
+ */
+const DEAD_KEY_CODES = new Set([1, 2, 10, 13, 16, 18]);
+
+/** Throws Torn's error when a reply is one, keeping its code. */
+export function throwIfApiError(body: { error?: { code?: number; error?: string } }): void {
+  if (body.error) throw new ApiError(body.error.error ?? "API error", body.error.code ?? null);
+}
+
+/** Returns why Torn refused the stored key, or "" while it has not. */
+export function keyRejection(): string {
+  return readSetting(KEY_REJECTED_SETTING, "");
+}
+
+/**
+ * Stops every timed call with the stored key when Torn has refused it for good.
+ *
+ * Only the background refreshes record this. A failed Check is about a key
+ * that was never stored, and must not stop the one that was.
+ */
+export function noteKeyFailure(error: unknown): void {
+  if (!(error instanceof ApiError) || error.code === null) return;
+  if (!DEAD_KEY_CODES.has(error.code)) return;
+  log("city shop: Torn refused the key, so no more calls until it is checked again -", error.message);
+  writeSetting(KEY_REJECTED_SETTING, error.message);
+}
+
+/** Lets the timed calls run again, once a key has been checked or removed. */
+export function clearKeyRejection(): void {
+  writeSetting(KEY_REJECTED_SETTING, "");
+}
 
 const STOCK_URL = "https://api.torn.com/v2/torn/cityshops";
 /** Where the last fetched stock is kept, so every page load does not ask. */
@@ -94,9 +139,9 @@ export async function fetchCityShops(key: string): Promise<CityShop[]> {
   const params = new URLSearchParams({ key });
   const response = await fetch(`${STOCK_URL}?${params}`, { credentials: "omit" });
   const body = (await response.json()) as Record<string, unknown> & {
-    error?: { error?: string };
+    error?: { code?: number; error?: string };
   };
-  if (body.error) throw new Error(body.error.error ?? "API error");
+  throwIfApiError(body);
   return parseShops(body);
 }
 
@@ -115,6 +160,7 @@ export function readStock(): StockState | null {
 export async function loadStock(key: string, maxAgeMs: number): Promise<CityShop[] | null> {
   const stored = readStock();
   if (stored && Date.now() - stored.fetchedAt < maxAgeMs) return stored.shops;
+  if (keyRejection()) return stored?.shops ?? null;
   try {
     const shops = await fetchCityShops(key);
     // Fetched every 20 seconds, so only a change is worth a line in the log.
@@ -123,6 +169,7 @@ export async function loadStock(key: string, maxAgeMs: number): Promise<CityShop
     return shops;
   } catch (error) {
     log("city shop: could not read the stock", error);
+    noteKeyFailure(error);
     return stored?.shops ?? null;
   }
 }

@@ -1,5 +1,6 @@
 // The "Autumn's Scripts" switch panel on preferences.php.
 
+import { BAD_KEY_SHAPE, isKeyShaped } from "../shared/apiKey";
 import { checkApiKey, forgetCityShopCount } from "./cityShop";
 import { CityShop, fetchCityShops, readCheckedItems, readStock, writeCheckedItems } from "./cityStock";
 import {
@@ -230,6 +231,11 @@ function buildApiKeyRow(): HTMLElement {
       forgetCityShopCount();
       result.textContent = "Removed";
       result.className = "aue-key-result";
+      return;
+    }
+    if (!isKeyShaped(key)) {
+      result.textContent = BAD_KEY_SHAPE;
+      result.className = "aue-key-result aue-key-bad";
       return;
     }
     check.disabled = true;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.23.6
+// @version      0.23.7
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -104,6 +104,7 @@
     defaultOn: true
   };
   var API_KEY_SETTING = "API_KEY";
+  var KEY_REJECTED_SETTING = "API_KEY_REJECTED";
   var STOCK_ITEMS_SETTING = "CITY_SHOP_STOCK_ITEMS";
   var PANEL_OPEN_SETTING = "PANEL_OPEN";
   var STOCK_LIST_OPEN_SETTING = "CITY_SHOP_STOCK_LIST_OPEN";
@@ -152,6 +153,28 @@
   }
 
   // src/autumns-ui-enhancer/cityStock.ts
+  var ApiError = class extends Error {
+    constructor(message, code) {
+      super(message);
+      this.code = code;
+    }
+  };
+  var DEAD_KEY_CODES = /* @__PURE__ */ new Set([1, 2, 10, 13, 16, 18]);
+  function throwIfApiError(body) {
+    if (body.error) throw new ApiError(body.error.error ?? "API error", body.error.code ?? null);
+  }
+  function keyRejection() {
+    return readSetting(KEY_REJECTED_SETTING, "");
+  }
+  function noteKeyFailure(error) {
+    if (!(error instanceof ApiError) || error.code === null) return;
+    if (!DEAD_KEY_CODES.has(error.code)) return;
+    log("city shop: Torn refused the key, so no more calls until it is checked again -", error.message);
+    writeSetting(KEY_REJECTED_SETTING, error.message);
+  }
+  function clearKeyRejection() {
+    writeSetting(KEY_REJECTED_SETTING, "");
+  }
   var STOCK_URL = "https://api.torn.com/v2/torn/cityshops";
   var STOCK_STATE_SETTING = "CITY_SHOP_STOCK_STATE";
   var CITY_URL = "https://www.torn.com/city.php";
@@ -198,7 +221,7 @@
     const params = new URLSearchParams({ key });
     const response = await fetch(`${STOCK_URL}?${params}`, { credentials: "omit" });
     const body = await response.json();
-    if (body.error) throw new Error(body.error.error ?? "API error");
+    throwIfApiError(body);
     return parseShops(body);
   }
   function readStock() {
@@ -213,6 +236,7 @@
   async function loadStock(key, maxAgeMs) {
     const stored = readStock();
     if (stored && Date.now() - stored.fetchedAt < maxAgeMs) return stored.shops;
+    if (keyRejection()) return stored?.shops ?? null;
     try {
       const shops = await fetchCityShops(key);
       if (JSON.stringify(shops) !== JSON.stringify(stored?.shops)) log("city shop: stock changed", shops);
@@ -220,6 +244,7 @@
       return shops;
     } catch (error) {
       log("city shop: could not read the stock", error);
+      noteKeyFailure(error);
       return stored?.shops ?? null;
     }
   }
@@ -340,6 +365,7 @@
   function forgetCityShopCount() {
     writeSetting(STATE_SETTING, "");
     forgetStock();
+    clearKeyRejection();
   }
   async function fetchShopBuys(key, from, limit) {
     const params = new URLSearchParams({
@@ -350,7 +376,7 @@
     });
     const response = await fetch(`${LOG_URL}?${params}`, { credentials: "omit" });
     const body = await response.json();
-    if (body.error) throw new Error(body.error.error ?? "API error");
+    throwIfApiError(body);
     const entries = Array.isArray(body.log) ? body.log : [];
     log("city shop: log entries", entries);
     return entries;
@@ -412,7 +438,7 @@
   }
   async function refresh(force = false) {
     const key = readSetting(API_KEY_SETTING, "").trim();
-    if (!key || !isEnabled(CITY_SHOP_ALERT)) {
+    if (!key || !isEnabled(CITY_SHOP_ALERT) || keyRejection()) {
       bought = null;
       return;
     }
@@ -443,6 +469,7 @@
       log("city shop:", bought, "bought today");
     } catch (error) {
       log("city shop: could not read the count", error);
+      noteKeyFailure(error);
     }
   }
   function onPurchase(quantity) {
@@ -539,7 +566,7 @@
   }
   function needsKey() {
     const wanted = isEnabled(CITY_SHOP_ALERT) || isEnabled(CITY_SHOP_STOCK);
-    return wanted && readSetting(API_KEY_SETTING, "").trim() === "";
+    return wanted && (readSetting(API_KEY_SETTING, "").trim() === "" || keyRejection() !== "");
   }
   function openSettings() {
     writeSetting(PANEL_OPEN_SETTING, "1");
@@ -554,8 +581,9 @@
       const here = document.createElement("span");
       here.className = "aue-tip-link";
       here.textContent = "click here";
+      const rejected = keyRejection();
       message.append(
-        "This feature requires an API key. Please ",
+        rejected ? `Torn refused the API key (${rejected}). Please ` : "This feature requires an API key. Please ",
         here,
         " to open Autumn's UI Enhancer settings."
       );
@@ -912,7 +940,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.23.6");
+    root.setAttribute(RUNNING_ATTR, "0.23.7");
     return true;
   }
   async function w3bOneTabOn() {
@@ -3569,6 +3597,13 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     patchScrollTop();
   }
 
+  // src/shared/apiKey.ts
+  var KEY_SHAPE = /^[A-Za-z0-9]{16}$/;
+  var BAD_KEY_SHAPE = "API keys are 16 letters and numbers";
+  function isKeyShaped(key) {
+    return KEY_SHAPE.test(key);
+  }
+
   // src/autumns-ui-enhancer/styles.ts
   var STYLE_ID = "aue-styles";
   var PANEL_ID = "aue-prefs-panel";
@@ -4491,7 +4526,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.23.6");
+    document.documentElement.setAttribute("data-aue", "0.23.7");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -4698,6 +4733,11 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
         forgetCityShopCount();
         result.textContent = "Removed";
         result.className = "aue-key-result";
+        return;
+      }
+      if (!isKeyShaped(key)) {
+        result.textContent = BAD_KEY_SHAPE;
+        result.className = "aue-key-result aue-key-bad";
         return;
       }
       check.disabled = true;
