@@ -1,9 +1,14 @@
 // Where the drawings are kept in this browser, and the one layout fact read from Torn.
 //
-// Pictures go in IndexedDB, as PNG blobs. They were first kept in
-// localStorage as text, which holds about 5 MB for the whole of torn.com,
-// shared with Torn and every other script; a few busy drawings filled it
-// and the rest would not save. IndexedDB allows hundreds of megabytes.
+// Drawings go in IndexedDB: each a record of its layers, every layer's
+// pixels a PNG blob. Drawings from before layers are a single PNG blob, read
+// as one layer over white. They were first kept in localStorage as text,
+// which holds about 5 MB for the whole of torn.com, shared with Torn and
+// every other script; a few busy drawings filled it and the rest would not
+// save. IndexedDB allows hundreds of megabytes.
+
+import type { Blend } from "./layers";
+import type { TextSpec } from "./text";
 
 const DB_NAME = "autumns-note-doodles";
 const STORE = "drawings";
@@ -45,10 +50,32 @@ async function run<T>(mode: IDBTransactionMode, ask: (store: IDBObjectStore) => 
   });
 }
 
-/** Returns a drawing's stored picture, or null when this browser has none. */
-export async function readPicture(id: string): Promise<Blob | null> {
+/** One layer as stored: its settings, and its pixels as a PNG. */
+export interface StoredLayer {
+  name: string;
+  png: Blob;
+  visible: boolean;
+  opacity: number;
+  blend: Blend;
+  clip: boolean;
+  locked: boolean;
+  /** Missing on layers saved before text. */
+  text?: TextSpec | null;
+}
+
+/** A drawing as stored: its background, its layers from the bottom up, and which one was being drawn on. */
+export interface StoredDrawing {
+  version: 2;
+  background: string | null;
+  layers: StoredLayer[];
+  current: number;
+  next: number;
+}
+
+/** Returns a drawing as stored: a layered record, a lone picture from before layers, or null when there is none. */
+export async function readDrawing(id: string): Promise<StoredDrawing | Blob | null> {
   try {
-    const stored = await run<Blob | undefined>("readonly", (store) => store.get(id));
+    const stored = await run<StoredDrawing | Blob | undefined>("readonly", (store) => store.get(id));
     if (stored) return stored;
   } catch {
     // Falls through to the old store, in case the database cannot be opened.
@@ -56,10 +83,10 @@ export async function readPicture(id: string): Promise<Blob | null> {
   return oldPicture(id);
 }
 
-/** Stores a drawing's picture. Returns whether it was kept. */
-export async function writePicture(id: string, picture: Blob): Promise<boolean> {
+/** Stores a drawing. Returns whether it was kept. */
+export async function writeDrawing(id: string, drawing: StoredDrawing): Promise<boolean> {
   try {
-    await run("readwrite", (store) => store.put(picture, id));
+    await run("readwrite", (store) => store.put(drawing, id));
     forgetOld(id);
     return true;
   } catch {
