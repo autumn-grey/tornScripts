@@ -43,7 +43,7 @@ export const CHAT_SIDE_BUTTON: Feature = {
 
 export const LIST_DISPLAY_EXTENSION: Feature = {
   key: "LIST_DISPLAY_EXTENSION",
-  label: "List Display Extension",
+  label: "Show More on Lists",
   defaultOn: true,
 };
 

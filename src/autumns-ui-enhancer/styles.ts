@@ -178,34 +178,10 @@ const CSS = `
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55) !important;
   }
 
-  .aue-per-page {
+  .aue-show-more {
     display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 8px;
-    margin: 0 0 6px;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 12px;
-    color: inherit;
-  }
-  .aue-per-page-status {
-    font-size: 11px;
-    opacity: 0.75;
-    font-variant-numeric: tabular-nums;
-  }
-  .aue-per-page-select {
-    padding: 2px 6px;
-    border: 1px solid rgba(0, 0, 0, 0.5);
-    border-radius: 4px;
-    background: #f2f2f2;
-    color: #000;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .aue-per-page-select option {
-    background: #fff;
-    color: #000;
+    justify-content: center;
+    margin: 8px 0;
   }
 
   .aue-sort {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.23.5
+// @version      0.23.6
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -66,7 +66,7 @@
   };
   var LIST_DISPLAY_EXTENSION = {
     key: "LIST_DISPLAY_EXTENSION",
-    label: "List Display Extension",
+    label: "Show More on Lists",
     defaultOn: true
   };
   var LIST_SORTING = {
@@ -602,12 +602,12 @@
     const tip = box(TIP_ID);
     refill(tip, fillTip);
     tip.hidden = false;
-    const place2 = icon.getBoundingClientRect();
+    const place = icon.getBoundingClientRect();
     const width = tip.offsetWidth;
-    const centre = place2.left + place2.width / 2;
+    const centre = place.left + place.width / 2;
     const left = Math.min(Math.max(4, centre - width / 2), innerWidth - width - 4);
     tip.style.left = `${left + scrollX}px`;
-    tip.style.top = `${place2.top + scrollY - tip.offsetHeight - 8}px`;
+    tip.style.top = `${place.top + scrollY - tip.offsetHeight - 8}px`;
     tip.style.setProperty("--aue-arrow-left", `${centre - left}px`);
   }
   function hideTip() {
@@ -619,14 +619,14 @@
     const list = box(STOCK_ID);
     refill(list, fillStock);
     list.hidden = false;
-    const place2 = icon.getBoundingClientRect();
+    const place = icon.getBoundingClientRect();
     const width = list.offsetWidth;
     const left = Math.min(
-      Math.max(4, place2.left + place2.width / 2 - width / 2),
+      Math.max(4, place.left + place.width / 2 - width / 2),
       innerWidth - width - 4
     );
     list.style.left = `${left + scrollX}px`;
-    list.style.top = `${place2.bottom + scrollY + 6}px`;
+    list.style.top = `${place.bottom + scrollY + 6}px`;
   }
   function closeStock() {
     const list = document.getElementById(STOCK_ID);
@@ -651,14 +651,14 @@
     const shown = alert ?? box(ALERT_ID);
     refill(shown, fillAlert);
     shown.hidden = false;
-    const place2 = link.getBoundingClientRect();
+    const place = link.getBoundingClientRect();
     const width = shown.offsetWidth;
     const left = Math.min(
-      Math.max(4, place2.left + place2.width / 2 - width / 2),
+      Math.max(4, place.left + place.width / 2 - width / 2),
       innerWidth - width - 4
     );
     shown.style.left = `${left + scrollX}px`;
-    shown.style.top = `${place2.bottom + scrollY + 6}px`;
+    shown.style.top = `${place.bottom + scrollY + 6}px`;
   }
   function dismissAlert() {
     if (restocked.length === 0) return;
@@ -912,7 +912,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.23.5");
+    root.setAttribute(RUNNING_ATTR, "0.23.6");
     return true;
   }
   async function w3bOneTabOn() {
@@ -937,7 +937,7 @@
   function installClashCheck(checkMarkers) {
     for (const clash of waiting.splice(0)) addToPopup(clash);
     if (!checkMarkers) return;
-    for (const delay2 of CHECK_AFTER_MS) setTimeout(() => void checkKnown(), delay2);
+    for (const delay of CHECK_AFTER_MS) setTimeout(() => void checkKnown(), delay);
   }
 
   // src/autumns-ui-enhancer/tornForms.ts
@@ -1091,10 +1091,10 @@
     const label = document.createElement("span");
     label.className = "opt-name";
     label.append("Display ");
-    const more = document.createElement("span");
-    more.className = "t-hide";
-    more.textContent = "this Item";
-    label.appendChild(more);
+    const more2 = document.createElement("span");
+    more2.className = "t-hide";
+    more2.textContent = "this Item";
+    label.appendChild(more2);
     wrap.append(button, label);
     item.appendChild(wrap);
     return item;
@@ -1714,62 +1714,35 @@
   // src/autumns-ui-enhancer/listDisplay.ts
   var PAGINATION_SELECTOR = ".pagination";
   var PAGE_LINK_SELECTOR = "a.page-number[page]";
-  var PAGE_GAP_SELECTOR = "span.points";
-  var ARROW_PREV_SELECTOR = "i.pagination-left";
-  var ARROW_NEXT_SELECTOR = "i.pagination-right";
-  var ARROW_DISABLED_CLASS = "disable";
   var SPACER_CLASS = "clear";
   var ROW_CONTAINER_SELECTOR = "ul, ol, tbody";
   var NOT_A_LIST = "#sidebarroot, #header-root, .header-wrapper-top, .header-wrapper-bottom, #chatRoot, .content-title, .breadcrumbs";
   var CONTENT_ROOT_SELECTOR = ".content-wrapper, #mainContainer";
-  var MAX_REQUESTS = 5;
-  var THROTTLE_MS = 150;
   var SETTLE_MS2 = 150;
   var MAX_SETTLE_MS = 1e3;
-  var SIZE_SETTING = "ITEMS_PER_PAGE";
-  var CONTROL_ID = "aue-per-page";
-  var SELECT_ID = "aue-per-page-select";
-  var STATUS_CLASS = "aue-per-page-status";
+  var CONTROL_ID = "aue-show-more";
   var EXTRA_ROW_ATTR = "data-aue-extra";
-  var PAGER_STATE_ATTR = "data-aue-pager";
-  var OWN_LINK_ATTR = "data-aue-page";
-  var PAGING_HOLD_MS = 8e3;
-  var POST_IN_HASH = /[?&]to=(\d+)/;
+  var SHOW_MORE_LABEL = "Show more";
+  var LOADING_LABEL = "Loading";
+  var FAILED_LABEL = "Nothing more to show";
   var START_IN_BODY = /(^|&)start=\d+/;
   var START_IN_URL = /([?&])start=\d+/;
   var START_IN_HASH = /[?&]start=(\d+)/;
+  var START_IN_LINK = /(?:^|[?&#])start=(\d+)/;
   var lastRequest = null;
   var ownRequest = false;
-  var generation = 0;
   var writing = false;
-  var filling = null;
-  var failedFills = /* @__PURE__ */ new Set();
-  var FETCH_BUDGET = 12;
-  var fetchBudget = FETCH_BUDGET;
-  var saidNoRequest = false;
-  var primed = /* @__PURE__ */ new WeakSet();
+  var generation = 0;
   var requestKey = null;
+  var onRequestCaptured = null;
+  var more = null;
+  var pageSteps = /* @__PURE__ */ new WeakMap();
   function listKey() {
     return location.hash.replace(START_IN_HASH, "");
   }
   function requestLanded() {
     requestKey = listKey();
     onRequestCaptured?.();
-  }
-  var trustedSetting = null;
-  var pagingUntil = 0;
-  var realigned = /* @__PURE__ */ new Set();
-  var pendingPost = null;
-  var onRequestCaptured = null;
-  var originalPagers = /* @__PURE__ */ new WeakMap();
-  var basePageCounts = /* @__PURE__ */ new WeakMap();
-  var pageSteps = /* @__PURE__ */ new WeakMap();
-  var START_IN_LINK = /(?:^|[?&#])start=(\d+)/;
-  function newGeneration() {
-    generation += 1;
-    failedFills.clear();
-    fetchBudget = FETCH_BUDGET;
-    saidNoRequest = false;
   }
   function isPlausibleStep(step) {
     return Number.isInteger(step) && step >= 1 && step <= 100;
@@ -1796,7 +1769,7 @@
     }
     return null;
   }
-  function hasLaterPages(widget) {
+  function pagerPages(widget) {
     let active = 1;
     let last = 1;
     for (const link of widget.querySelectorAll(PAGE_LINK_SELECTOR)) {
@@ -1805,18 +1778,19 @@
       if (link.classList.contains("active")) active = page;
       if (page > last) last = page;
     }
-    return last > active;
+    return { active, last };
   }
   function pageStepFor(widget, container) {
     const cached = pageSteps.get(widget);
     if (cached !== void 0) return cached;
     let step = stepFromLinks(widget);
     let how = "its page links";
-    if (step === null && container && hasLaterPages(widget)) {
+    if (step === null && container) {
+      const { active, last } = pagerPages(widget);
       const own = rowsOf(container).filter(
         (row) => !row.hasAttribute(EXTRA_ROW_ATTR)
       ).length;
-      if (isPlausibleStep(own) && own > 1) {
+      if (last > active && isPlausibleStep(own) && own > 1) {
         step = own;
         how = "the rows on a full page";
       }
@@ -1830,27 +1804,11 @@
     log("step:", step, "rows per request, read from", how, "-", hrefs.join(" "));
     return step;
   }
-  function adoptStep(widget, step) {
-    if (pageSteps.has(widget)) return;
-    pageSteps.set(widget, step);
-  }
-  function sizeChoices(step) {
-    return Array.from({ length: MAX_REQUESTS }, (_, index) => step * (index + 1));
-  }
-  function sizeSetting() {
-    return `${SIZE_SETTING}:${location.pathname}`;
-  }
-  function pageSize(step) {
-    const stored = Number(readSetting(sizeSetting(), String(step)));
-    const wanted = Number.isFinite(stored) && stored > 0 ? stored : step;
-    const requests = Math.min(
-      MAX_REQUESTS,
-      Math.max(1, Math.round(wanted / step))
-    );
-    return step * requests;
-  }
   function redact(text) {
     return text.replace(/=[^&]*/g, "=*");
+  }
+  function hashParams() {
+    return location.hash.replace(/^#\/?/, "").split("&").filter((pair) => pair.includes("=") && !pair.startsWith("start="));
   }
   function rememberRequest(method, url, body) {
     let address;
@@ -1860,15 +1818,19 @@
       return false;
     }
     if (address.origin !== location.origin) return false;
-    if (body !== null && START_IN_BODY.test(body)) {
-      if (address.pathname !== location.pathname) return false;
-      lastRequest = { method: method || "POST", url, body, offsetIn: "body" };
-      requestKey = null;
-      log("capture: list request to", address.pathname, redact(body));
-      return true;
+    if (address.pathname !== location.pathname) return false;
+    if (body !== null) {
+      const pairs = body.split("&");
+      const route = hashParams();
+      const repeatsRoute = route.length > 0 && route.every((pair) => pairs.includes(pair));
+      if (START_IN_BODY.test(body) || repeatsRoute) {
+        lastRequest = { method: method || "POST", url, body, offsetIn: "body" };
+        requestKey = null;
+        log("capture: list request to", address.pathname, redact(body));
+        return true;
+      }
     }
     if (START_IN_URL.test(address.search)) {
-      if (address.pathname !== location.pathname) return false;
       if (lastRequest?.offsetIn === "body") return false;
       lastRequest = { method: method || "GET", url, body, offsetIn: "url" };
       requestKey = null;
@@ -1897,9 +1859,7 @@
           typeof body === "string" ? body : null
         );
         if (captured) {
-          this.addEventListener("loadend", requestLanded, {
-            once: true
-          });
+          this.addEventListener("loadend", requestLanded, { once: true });
         }
       }
       sendOriginal.call(this, body);
@@ -1988,12 +1948,7 @@
             pagerBlock: node,
             block: sibling,
             container,
-            // A pager with no offsets in its links may still be measurable
-            // from the rows it has in front of it.
-            step: step ?? pageStepFor(widget, container),
-            pagerIsAbove: Boolean(
-              node.compareDocumentPosition(sibling) & Node.DOCUMENT_POSITION_FOLLOWING
-            )
+            step: step ?? pageStepFor(widget, container)
           };
         }
       }
@@ -2020,266 +1975,12 @@
     }
     return below;
   }
-  function hashTemplate(widget) {
-    const link = widget.querySelector(PAGE_LINK_SELECTOR);
-    let href = link?.getAttribute("href") ?? "";
-    if (href.length < 2 || href[0] !== "#") {
-      href = location.hash.replace(START_IN_HASH, "");
+  function shownStart(widget, step) {
+    if (widget.querySelector(`${PAGE_LINK_SELECTOR}.active`)) {
+      return (pagerPages(widget).active - 1) * step;
     }
-    if (href.length < 2) return null;
-    href = href.replace(START_IN_HASH, "");
-    return /[?&]$/.test(href) ? href : `${href}&`;
-  }
-  function currentStart() {
     const match = START_IN_HASH.exec(location.hash);
     return match ? Number(match[1]) : 0;
-  }
-  function goToPage(widget, page, size) {
-    const template = hashTemplate(widget);
-    if (!template) {
-      log("page: no hash to build on, so this list cannot be paged by us");
-      return;
-    }
-    const start2 = Math.max(0, page - 1) * size;
-    log("page: going to page", page, "- start", start2);
-    removeAllExtraRows();
-    newGeneration();
-    const hash = `${template}start=${start2}`;
-    const step = pageStepFor(widget);
-    const clicked2 = step !== null && pagedByClicks(widget);
-    if (clicked2) clickTornPage(widget, start2, step);
-    else if (location.hash === hash) return;
-    if (location.hash !== hash) location.hash = hash;
-    if (trustedSetting === sizeSetting()) {
-      pagingUntil = Date.now() + PAGING_HOLD_MS;
-      holdPagers();
-    }
-  }
-  function pagedByClicks(widget) {
-    const href = widget.querySelector(`${PAGE_LINK_SELECTOR}[href]`)?.getAttribute("href") ?? "";
-    return href !== "" && href[0] !== "#";
-  }
-  var passingClick = false;
-  function clickTornPage(widget, start2, step) {
-    const source = widget.querySelector(PAGE_LINK_SELECTOR);
-    if (!source) return;
-    const proxy = source.cloneNode(true);
-    proxy.removeAttribute(OWN_LINK_ATTR);
-    proxy.classList.remove("active", "first", "last");
-    proxy.setAttribute("page", String(start2 / step + 1));
-    const base = (source.getAttribute("href") ?? "").replace(/[?&]start=\d+/, "");
-    proxy.setAttribute("href", `${base}${base.includes("#") ? "&" : "#"}start=${start2}`);
-    proxy.style.display = "none";
-    writing = true;
-    widget.appendChild(proxy);
-    passingClick = true;
-    try {
-      proxy.click();
-    } finally {
-      passingClick = false;
-      proxy.remove();
-      writing = false;
-    }
-  }
-  function holdPagers() {
-    if (Date.now() > pagingUntil) return;
-    const target = findTarget();
-    if (!target || target.step === null) return;
-    if (pageSize(target.step) <= target.step) return;
-    syncPagers(target.step, true);
-  }
-  function syncPagers(step, renumber) {
-    writing = true;
-    for (const widget of document.querySelectorAll(
-      PAGINATION_SELECTOR
-    )) {
-      if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
-      const own = pageStepFor(widget) ?? step;
-      adoptStep(widget, own);
-      if (renumber && isShown(widget)) rewritePager(widget, pageSize(own), own);
-      else restorePager(widget);
-    }
-    writing = false;
-  }
-  function realign(start2, size) {
-    const aligned = Math.floor(start2 / size) * size;
-    const post = POST_IN_HASH.exec(location.hash)?.[1];
-    if (post) pendingPost = { id: post, at: Date.now() };
-    log("page: start", start2, "is mid-page at", size, "a page, moving to", aligned);
-    realigned.add(location.hash);
-    removeAllExtraRows();
-    newGeneration();
-    location.hash = location.hash.replace(START_IN_HASH, (match) => match.replace(/\d+$/, String(aligned))).replace(POST_IN_HASH, "");
-  }
-  function rowHolding(container, id) {
-    const ending = new RegExp(`(?:^|\\D)${id}$`);
-    const holds = (element) => [...element.attributes].some(
-      (attribute) => (attribute.name === "id" || attribute.name.startsWith("data-")) && ending.test(attribute.value)
-    );
-    const rows = rowsOf(container);
-    return rows.find(holds) ?? rows.find((row) => [...row.querySelectorAll("*")].some(holds)) ?? null;
-  }
-  function scrollToPendingPost(container) {
-    if (!pendingPost) return;
-    const { id, at } = pendingPost;
-    pendingPost = null;
-    if (Date.now() - at > 3e4) return;
-    const row = rowHolding(container, id);
-    if (!row) {
-      log("page: post", id, "is not in this page's rows");
-      return;
-    }
-    setTimeout(() => row.scrollIntoView({ block: "start" }), Math.max(0, at + 1200 - Date.now()));
-  }
-  function basePageCount(widget) {
-    const stored = basePageCounts.get(widget);
-    if (stored !== void 0) return stored;
-    const links = [
-      ...widget.querySelectorAll(PAGE_LINK_SELECTOR)
-    ];
-    if (links.length === 0) return null;
-    const pageOf = (link) => Number(link.getAttribute("page")) || 1;
-    const last = widget.querySelector(`${PAGE_LINK_SELECTOR}.last`);
-    const pages = last ? pageOf(last) : Math.max(1, ...links.map(pageOf));
-    if (last) basePageCounts.set(widget, pages);
-    log(
-      "pager: Torn reports",
-      pages,
-      "pages",
-      last ? "" : "(pager unfinished, not cached)"
-    );
-    return pages;
-  }
-  function pagerModel(widget, size, step) {
-    const basePages = basePageCount(widget);
-    if (basePages === null) return null;
-    const total = Math.max(1, Math.ceil(basePages * step / size));
-    const current = Math.min(total, Math.floor(currentStart() / size) + 1);
-    return { base: basePages, current, total };
-  }
-  function pagesToShow(model) {
-    const wanted = /* @__PURE__ */ new Set([1, model.total]);
-    for (let page = model.current - 2; page <= model.current + 2; page += 1) {
-      if (page >= 1 && page <= model.total) wanted.add(page);
-    }
-    return [...wanted].sort((a, b) => a - b);
-  }
-  function unhide(element) {
-    element.style.removeProperty("display");
-  }
-  function rewritePager(widget, size, step) {
-    const tornsAgain = widget.querySelector(`${PAGE_LINK_SELECTOR}:not([${OWN_LINK_ATTR}])`) !== null;
-    if (tornsAgain && originalPagers.has(widget)) {
-      originalPagers.delete(widget);
-      basePageCounts.delete(widget);
-      widget.removeAttribute(PAGER_STATE_ATTR);
-    }
-    const model = pagerModel(widget, size, step);
-    if (!model) return;
-    const state = `${size}:${model.current}:${model.total}`;
-    if (widget.getAttribute(PAGER_STATE_ATTR) === state) return;
-    log(
-      "pager: page",
-      model.current,
-      "of",
-      model.total,
-      "at",
-      size,
-      "per page, in steps of",
-      step
-    );
-    if (!originalPagers.has(widget)) {
-      originalPagers.set(widget, widget.innerHTML);
-      basePageCounts.set(widget, model.base);
-    }
-    const template = widget.querySelector(PAGE_LINK_SELECTOR);
-    const gap = widget.querySelector(PAGE_GAP_SELECTOR);
-    if (!template) return;
-    const nextArrow = widget.querySelector(ARROW_NEXT_SELECTOR)?.closest("a");
-    const anchorPoint = nextArrow ?? widget.querySelector(".pagination-r") ?? null;
-    const blank = template.cloneNode(true);
-    const blankGap = gap?.cloneNode(true) ?? null;
-    unhide(blank);
-    if (blankGap instanceof HTMLElement) unhide(blankGap);
-    for (const old of widget.querySelectorAll(
-      `${PAGE_LINK_SELECTOR}, ${PAGE_GAP_SELECTOR}`
-    )) {
-      old.remove();
-    }
-    const pages = pagesToShow(model);
-    const fragment = document.createDocumentFragment();
-    let previous = 0;
-    for (const page of pages) {
-      if (previous !== 0 && page !== previous + 1 && blankGap) {
-        fragment.appendChild(blankGap.cloneNode(true));
-      }
-      const link = blank.cloneNode(true);
-      link.setAttribute("page", String(page));
-      link.setAttribute(OWN_LINK_ATTR, "");
-      link.classList.remove("first", "last", "active");
-      if (page === 1) link.classList.add("first");
-      if (page === model.total) link.classList.add("last");
-      if (page === model.current) link.classList.add("active");
-      const number = link.querySelector(".page-nb") ?? link;
-      number.textContent = String(page);
-      fragment.appendChild(link);
-      previous = page;
-    }
-    if (anchorPoint) widget.insertBefore(fragment, anchorPoint);
-    else widget.appendChild(fragment);
-    const prev = widget.querySelector(ARROW_PREV_SELECTOR);
-    const next = widget.querySelector(ARROW_NEXT_SELECTOR);
-    prev?.classList.toggle(ARROW_DISABLED_CLASS, model.current <= 1);
-    next?.classList.toggle(ARROW_DISABLED_CLASS, model.current >= model.total);
-    widget.setAttribute(PAGER_STATE_ATTR, state);
-  }
-  function restorePager(widget) {
-    const original = originalPagers.get(widget);
-    if (original === void 0) return;
-    widget.innerHTML = original;
-    widget.removeAttribute(PAGER_STATE_ATTR);
-    originalPagers.delete(widget);
-    basePageCounts.delete(widget);
-  }
-  function installPagerClicks() {
-    document.addEventListener(
-      "click",
-      (event) => {
-        if (passingClick || !isEnabled(LIST_DISPLAY_EXTENSION)) return;
-        const target = event.target;
-        if (!(target instanceof Element)) return;
-        const link = target.closest("a");
-        const widget = link?.closest(PAGINATION_SELECTOR);
-        if (!link || !widget) return;
-        const state = widget.getAttribute(PAGER_STATE_ATTR);
-        const step = pageStepFor(widget);
-        if (state === null || step === null) return;
-        const size = Number(state.split(":")[0]);
-        if (!Number.isInteger(size) || size <= step) return;
-        const model = pagerModel(widget, size, step);
-        if (!model) return;
-        let page = null;
-        const pageAttribute = link.getAttribute("page");
-        if (pageAttribute !== null) {
-          if (!link.hasAttribute(OWN_LINK_ATTR)) return;
-          page = Number(pageAttribute);
-        } else if (link.querySelector(ARROW_PREV_SELECTOR)) {
-          page = model.current - 1;
-        } else if (link.querySelector(ARROW_NEXT_SELECTOR)) {
-          page = model.current + 1;
-        }
-        if (page === null || Number.isNaN(page)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        if (page < 1 || page > model.total || page === model.current) return;
-        goToPage(widget, page, size);
-      },
-      true
-    );
-  }
-  function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
   function matchingContainer(parsed, live) {
     const sameTag = [
@@ -2334,16 +2035,14 @@
   }
   async function fetchRows(start2, live) {
     if (!lastRequest) return [];
-    if (fetchBudget <= 0) {
-      log("fetch: this page has had its allowance, so nothing more is asked for");
-      return [];
-    }
-    fetchBudget -= 1;
     const { offsetIn } = lastRequest;
     const method = lastRequest.method.toUpperCase();
     const at = (_match, lead) => `${lead}start=${start2}`;
     const url = offsetIn === "url" ? lastRequest.url.replace(START_IN_URL, at) : lastRequest.url;
-    const body = offsetIn === "body" && lastRequest.body !== null ? lastRequest.body.replace(START_IN_BODY, at) : lastRequest.body;
+    let body = lastRequest.body;
+    if (offsetIn === "body" && body !== null) {
+      body = START_IN_BODY.test(body) ? body.replace(START_IN_BODY, at) : `${body}&start=${start2}`;
+    }
     const headers = {
       "X-Requested-With": "XMLHttpRequest"
     };
@@ -2414,366 +2113,110 @@
     writing = true;
     for (const row of extra) row.remove();
     writing = false;
-    log("page: took back", extra.length, "added rows before moving");
+    log("more: took back", extra.length, "added rows");
   }
-  function removeExtraRows(container) {
-    for (const row of container.querySelectorAll(`[${EXTRA_ROW_ATTR}]`)) {
-      row.remove();
-    }
+  function reset() {
+    removeAllExtraRows();
+    more = null;
+    generation += 1;
   }
-  async function fillList(target, size, step) {
-    const { container } = target;
-    const have = rowsOf(container).length;
-    if (have >= size) return;
-    if (!container.isConnected) return;
-    const start2 = currentStart();
-    const key = `${generation}:${start2}:${size}`;
-    if (filling && filling.key === key && filling.container === container) return;
-    if (failedFills.has(key)) return;
-    if (have < step) {
-      const ended = !hasLaterPages(target.widget);
-      if (ended) failedFills.add(key);
-      log(
-        "fill: skipped -",
-        have,
-        "rows is short of",
-        step,
-        ended ? "- this is the end" : "- the list is still filling in"
-      );
+  function haveRequest() {
+    return lastRequest !== null && requestKey === listKey();
+  }
+  async function loadMore(button) {
+    const state = more;
+    if (!state || state.loading || state.done) return;
+    const target = findTarget();
+    if (!target || target.container !== state.container || target.step === null) return;
+    const { container, step } = target;
+    const mine = generation;
+    state.loading = true;
+    button.disabled = true;
+    button.textContent = LOADING_LABEL;
+    const rows = await fetchRows(state.next, container);
+    state.loading = false;
+    if (mine !== generation || !container.isConnected) {
+      log("more: abandoned, the list moved on");
       return;
     }
-    const mine = generation;
-    filling = { key, container };
-    let added = 0;
-    let abandoned = false;
-    const requests = Math.ceil(size / step);
-    log(
-      "fill:",
-      have,
-      "rows present, want",
-      size,
-      "-",
-      requests - 1,
-      "more request(s)"
-    );
     const spacer = container.querySelector(`:scope > .${SPACER_CLASS}`);
+    writing = true;
     try {
-      for (let index = 1; index < requests; index += 1) {
-        setStatus(`Loading ${index + 1}/${requests}`);
-        const rows = await fetchRows(start2 + index * step, container);
-        if (mine !== generation) {
-          log("fill: abandoned, the page moved on");
-          abandoned = true;
-          return;
-        }
-        if (!container.isConnected) {
-          log("fill: abandoned, Torn replaced the list");
-          abandoned = true;
-          return;
-        }
-        if (rows.length === 0) {
-          log("fill: stopped, that request returned no rows");
-          break;
-        }
-        writing = true;
-        try {
-          for (const row of rows) {
-            disarm(row).setAttribute(EXTRA_ROW_ATTR, "");
-            if (spacer) container.insertBefore(row, spacer);
-            else container.appendChild(row);
-            added += 1;
-          }
-        } catch (problem) {
-          log("fill: stopped, that row would not go in -", problem);
-          break;
-        } finally {
-          writing = false;
-        }
-        if (rows.length < step) break;
-        if (index + 1 < requests) await delay(THROTTLE_MS);
-        if (mine !== generation) {
-          abandoned = true;
-          return;
-        }
+      for (const row of rows) {
+        disarm(row).setAttribute(EXTRA_ROW_ATTR, "");
+        if (spacer) container.insertBefore(row, spacer);
+        else container.appendChild(row);
       }
-      log("fill: done,", rowsOf(container).length, "rows now showing");
     } finally {
       writing = false;
-      if (added === 0 && !abandoned) {
-        failedFills.add(key);
-        log("fill: nothing came back, so this page is left as Torn sent it");
-      }
-      if (filling && filling.container === container && filling.key === key) {
-        filling = null;
-      }
-      setStatus("");
     }
-  }
-  function setStatus(text) {
-    const status = document.querySelector(`.${STATUS_CLASS}`);
-    if (status) status.textContent = text;
-  }
-  function buildControl(step) {
-    const bar = document.createElement("div");
-    bar.id = CONTROL_ID;
-    bar.className = "aue-per-page";
-    bar.dataset.aueStep = String(step);
-    const status = document.createElement("span");
-    status.className = STATUS_CLASS;
-    bar.appendChild(status);
-    const label = document.createElement("label");
-    label.className = "aue-per-page-label";
-    label.htmlFor = SELECT_ID;
-    label.textContent = "Items per page";
-    bar.appendChild(label);
-    const select = document.createElement("select");
-    select.id = SELECT_ID;
-    select.className = "aue-per-page-select";
-    for (const size of sizeChoices(step)) {
-      const option = document.createElement("option");
-      option.value = String(size);
-      option.textContent = String(size);
-      select.appendChild(option);
-    }
-    select.value = String(pageSize(step));
-    select.addEventListener("change", () => onSizeChange(Number(select.value)));
-    bar.appendChild(select);
-    return bar;
-  }
-  function onSizeChange(chosen) {
-    writeSetting(sizeSetting(), String(chosen));
-    newGeneration();
-    setStatus("");
-    const target = findTarget();
-    if (!target || target.step === null) return;
-    const size = pageSize(target.step);
-    writing = true;
-    removeExtraRows(target.container);
-    writing = false;
-    syncPagers(target.step, false);
-    const page = Math.floor(currentStart() / size) + 1;
-    const before = location.hash;
-    goToPage(target.widget, page, size);
-    if (location.hash === before) setTimeout(() => void apply2(), 0);
-  }
-  var OWN_SIZE_LABEL = "per page";
-  function offersOnlyNumbers(select) {
-    if (select.options.length === 0) return false;
-    return [...select.options].every(
-      (option) => /^\d+$/.test((option.textContent ?? "").trim())
-    );
-  }
-  function labelledPerPage(select) {
-    const nearby = [];
-    const collectSiblings = (of) => {
-      for (const sibling of of?.parentElement?.childNodes ?? []) {
-        if (sibling === of) continue;
-        if (sibling instanceof Element && sibling.closest(`#${CONTROL_ID}`)) {
-          continue;
-        }
-        nearby.push(sibling.textContent ?? "");
-      }
-    };
-    collectSiblings(select);
-    collectSiblings(select.parentElement);
-    if (select.id) {
-      const label = document.querySelector(
-        `label[for="${CSS.escape(select.id)}"]`
-      );
-      if (label && !label.closest(`#${CONTROL_ID}`)) {
-        nearby.push(label.textContent ?? "");
-      }
-    }
-    return nearby.join(" ").toLowerCase().includes(OWN_SIZE_LABEL);
-  }
-  function tornSetsTheSizeHere(target) {
-    let scope = target.block.parentElement;
-    while (scope && !scope.contains(target.pagerBlock)) {
-      scope = scope.parentElement;
-    }
-    if (!scope) return false;
-    for (const select of scope.querySelectorAll("select")) {
-      if (select.closest(`#${CONTROL_ID}`)) continue;
-      if (offersOnlyNumbers(select) && labelledPerPage(select)) return true;
-    }
-    return false;
-  }
-  var TOP_PAGER_ATTR = "data-aue-top-pager";
-  function tornsOwnPager() {
-    for (const widget of document.querySelectorAll(
-      PAGINATION_SELECTOR
-    )) {
-      if (widget.hasAttribute(TOP_PAGER_ATTR) || !isShown(widget)) continue;
-      if (widget.querySelector(PAGE_LINK_SELECTOR)) return widget;
-    }
-    return null;
-  }
-  function ensureTopPager(target, step) {
-    let existing = document.querySelector(`[${TOP_PAGER_ATTR}]`);
-    if (existing && existing !== target.widget && existing.nextElementSibling !== target.block) {
-      removeTopPager();
-      existing = null;
-    }
-    if (!existing && target.pagerIsAbove) return null;
-    const source = existing === target.widget ? tornsOwnPager() : target.widget;
-    if (!source) return existing;
-    const stamp = String(generation);
-    if (existing && existing.getAttribute(TOP_PAGER_ATTR) === stamp) {
-      return existing;
-    }
-    const markup = originalPagers.get(source) ?? source.innerHTML;
-    const copy = existing ?? source.cloneNode(false);
-    writing = true;
-    copy.innerHTML = markup;
-    copy.setAttribute(TOP_PAGER_ATTR, stamp);
-    copy.removeAttribute(PAGER_STATE_ATTR);
-    originalPagers.delete(copy);
-    basePageCounts.delete(copy);
-    if (!copy.isConnected) target.block.insertAdjacentElement("beforebegin", copy);
-    writing = false;
-    adoptStep(copy, step);
-    return copy;
-  }
-  function removeTopPager() {
-    const copy = document.querySelector(`[${TOP_PAGER_ATTR}]`);
-    if (!copy) return;
-    writing = true;
-    copy.remove();
-    writing = false;
-  }
-  function ensureControl(anchor, step) {
-    const stale = document.getElementById(CONTROL_ID);
-    if (stale instanceof HTMLElement && stale.dataset.aueStep !== String(step)) {
-      writing = true;
-      stale.remove();
-      writing = false;
-    }
-    const existing = document.getElementById(CONTROL_ID);
-    if (existing) {
-      const select = existing.querySelector(`#${SELECT_ID}`);
-      const wanted = String(pageSize(step));
-      if (select && select.value !== wanted) select.value = wanted;
-      if (existing.nextElementSibling === anchor) return;
-      writing = true;
-      anchor.insertAdjacentElement("beforebegin", existing);
-      writing = false;
+    log("more: added", rows.length, "rows from start", state.next);
+    state.next += step;
+    const lastStart = (pagerPages(target.widget).last - 1) * step;
+    if (rows.length < step || state.next > lastStart) state.done = true;
+    if (rows.length === 0) {
+      button.textContent = FAILED_LABEL;
       return;
     }
+    button.disabled = false;
+    button.textContent = SHOW_MORE_LABEL;
+    if (state.done) removeControl();
+  }
+  function buildControl() {
+    const bar = document.createElement("div");
+    bar.id = CONTROL_ID;
+    bar.className = "aue-show-more";
+    const button = tornButton(SHOW_MORE_LABEL, "aue-show-more-button");
+    button.addEventListener("click", () => void loadMore(button));
+    bar.appendChild(button);
+    return bar;
+  }
+  function ensureControl(target) {
+    const existing = document.getElementById(CONTROL_ID) ?? buildControl();
+    if (target.block.nextElementSibling === existing) return;
     writing = true;
-    anchor.insertAdjacentElement("beforebegin", buildControl(step));
+    target.block.insertAdjacentElement("afterend", existing);
     writing = false;
   }
   function removeControl() {
-    placed = false;
-    document.getElementById(CONTROL_ID)?.remove();
+    const control = document.getElementById(CONTROL_ID);
+    if (!control) return;
+    writing = true;
+    control.remove();
+    writing = false;
   }
-  var VANISH_GRACE_MS = 2e3;
-  var missingSince = 0;
-  var placed = false;
-  function primeRequest(target, size) {
-    if (primed.has(target.block) || START_IN_HASH.test(location.hash)) return;
-    if (pagedByClicks(target.widget)) return;
-    primed.add(target.block);
-    log("prime: asking Torn for this list so its request can be replayed");
-    goToPage(target.widget, Math.floor(currentStart() / size) + 1, size);
-  }
-  function place(target, step) {
-    missingSince = 0;
-    const topPager = ensureTopPager(target, step);
-    ensureControl(topPager ?? target.pagerBlock, step);
-    placed = true;
-  }
-  function withdraw(reason) {
-    if (!placed) {
-      removeControl();
-      removeTopPager();
-      return;
-    }
-    if (missingSince === 0) {
-      missingSince = Date.now();
-      log("apply:", reason, "- holding the control a moment");
-    }
-    if (Date.now() - missingSince < VANISH_GRACE_MS) {
-      setTimeout(() => void apply2(), VANISH_GRACE_MS);
-      return;
-    }
-    log("apply:", reason, "- taking the control away");
-    placed = false;
-    missingSince = 0;
-    removeControl();
-    removeTopPager();
-  }
-  function restoreControl() {
-    if (!placed || document.getElementById(CONTROL_ID)) return;
-    const target = findTarget();
-    if (!target || target.step === null) return;
-    log("apply: Torn's redraw took the control, putting it back");
-    place(target, target.step);
-  }
-  async function apply2() {
+  function apply2() {
     if (!isEnabled(LIST_DISPLAY_EXTENSION)) {
       removeControl();
-      removeTopPager();
+      if (more) reset();
       return;
     }
     const target = findTarget();
-    if (!target) {
-      withdraw("no list on the page");
-      return;
-    }
-    const step = target.step;
-    if (step === null) {
-      withdraw("cannot tell how many rows this list sends");
-      return;
-    }
-    if (tornSetsTheSizeHere(target)) {
-      log("apply: Torn sets the page size on this list, so leaving it to it");
+    if (!target || target.step === null) {
       removeControl();
-      removeTopPager();
       return;
     }
-    place(target, step);
-    const size = pageSize(step);
-    if (size <= step) {
-      writing = true;
-      removeExtraRows(target.container);
-      writing = false;
-      syncPagers(step, false);
+    const { step } = target;
+    const base = shownStart(target.widget, step);
+    if (!more || more.container !== target.container || more.base !== base) {
+      if (more) reset();
+      const lastStart = (pagerPages(target.widget).last - 1) * step;
+      more = {
+        container: target.container,
+        base,
+        next: base + step,
+        done: base + step > lastStart,
+        loading: false
+      };
+    }
+    if (more.done || !haveRequest()) {
+      const control = document.getElementById(CONTROL_ID);
+      if (!control?.querySelector("button:disabled")) removeControl();
       return;
     }
-    const start2 = currentStart();
-    if (start2 % size !== 0 && !realigned.has(location.hash)) {
-      realign(start2, size);
-      return;
-    }
-    const holding = Date.now() < pagingUntil;
-    if (!lastRequest || requestKey !== listKey()) {
-      if (!saidNoRequest) {
-        saidNoRequest = true;
-        log("apply: no list request to replay yet, leaving the page alone");
-      }
-      writing = true;
-      removeExtraRows(target.container);
-      writing = false;
-      if (!holding) syncPagers(step, false);
-      primeRequest(target, size);
-      return;
-    }
-    await fillList(target, size, step);
-    if (filling && filling.container === target.container) return;
-    const filled2 = rowsOf(target.container).length;
-    if (filled2 <= step) {
-      if (holding) return;
-      log("fill: still", filled2, "rows, so Torn's own pager stands");
-    } else {
-      trustedSetting = sizeSetting();
-      pagingUntil = 0;
-      scrollToPendingPost(target.container);
-    }
-    syncPagers(step, filled2 > step);
+    ensureControl(target);
   }
   function installListDisplay() {
-    installPagerClicks();
     let timer = 0;
     let deadline = 0;
     const schedule = () => {
@@ -2783,7 +2226,7 @@
       timer = window.setTimeout(
         () => {
           deadline = 0;
-          void apply2();
+          apply2();
         },
         Math.max(0, Math.min(SETTLE_MS2, deadline - now))
       );
@@ -2791,13 +2234,11 @@
     onRequestCaptured = schedule;
     new MutationObserver(() => {
       if (writing) return;
-      restoreControl();
-      holdPagers();
       schedule();
     }).observe(document.body, { childList: true, subtree: true });
     addEventListener("hashchange", () => {
-      removeAllExtraRows();
-      newGeneration();
+      reset();
+      removeControl();
       schedule();
     });
     schedule();
@@ -3342,9 +2783,9 @@
     if (panel >= 0) return panel;
     const chat = bar.findIndex((barId) => belongsTo(id, barId));
     if (chat >= 0) {
-      const place2 = PANEL_ORDER.length + chat;
-      lastSlots.set(item, place2);
-      return place2;
+      const place = PANEL_ORDER.length + chat;
+      lastSlots.set(item, place);
+      return place;
     }
     return lastSlots.get(item) ?? PANEL_ORDER.length + bar.length;
   }
@@ -3418,16 +2859,16 @@
       return;
     }
     const gap = spacingGap(items, first.width);
-    const placed2 = [];
+    const placed = [];
     let used = 0;
     for (const chat of visible) {
       const natural = side === "left" ? containerWidth - chat.width : containerWidth - chat.width + chat.torn;
       const target = side === "left" ? used : containerWidth - used - chat.width;
       setOffset(chat.wrapper, target - natural);
-      placed2.push(`${windowIdOf(chat.wrapper) || "?"}@${Math.round(target)}`);
+      placed.push(`${windowIdOf(chat.wrapper) || "?"}@${Math.round(target)}`);
       used += chat.width + gap;
     }
-    const summary = `${side}: ${placed2.join(" ")}`;
+    const summary = `${side}: ${placed.join(" ")}`;
     if (summary !== lastLayout) {
       lastLayout = summary;
       log("layout", summary);
@@ -4306,34 +3747,10 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55) !important;
   }
 
-  .aue-per-page {
+  .aue-show-more {
     display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 8px;
-    margin: 0 0 6px;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 12px;
-    color: inherit;
-  }
-  .aue-per-page-status {
-    font-size: 11px;
-    opacity: 0.75;
-    font-variant-numeric: tabular-nums;
-  }
-  .aue-per-page-select {
-    padding: 2px 6px;
-    border: 1px solid rgba(0, 0, 0, 0.5);
-    border-radius: 4px;
-    background: #f2f2f2;
-    color: #000;
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .aue-per-page-select option {
-    background: #fff;
-    color: #000;
+    justify-content: center;
+    margin: 8px 0;
   }
 
   .aue-sort {
@@ -5074,7 +4491,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.23.5");
+    document.documentElement.setAttribute("data-aue", "0.23.6");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -5544,13 +4961,13 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     fillField(userBox, recipient);
     log("send: recipient", recipient, "into", userBox);
     if (recipient === defaultRecipient()) void nameTheRecipient(userBox);
-    for (const delay2 of REFILL_DELAYS_MS) {
+    for (const delay of REFILL_DELAYS_MS) {
       setTimeout(() => {
         if (userBox.isConnected && userBox.value === "") {
           fillField(userBox, recipient);
           log("send: recipient put back after Torn cleared it");
         }
-      }, delay2);
+      }, delay);
     }
     return true;
   }
