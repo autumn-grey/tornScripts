@@ -1,0 +1,9 @@
+{
+  "name": "Autumn's Note Backup",
+  "version": "1.0.0",
+  "description": "Keeps a copy of every Torn note you open or edit in your browser, so a deleted or overwritten note can be brought back",
+  "match": "https://www.torn.com/*",
+  "grant": "none",
+  "run-at": "document-idle",
+  "noframes": true
+}
