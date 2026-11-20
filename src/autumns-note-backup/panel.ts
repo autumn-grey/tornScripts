@@ -2,7 +2,7 @@
 // backed up, its versions, and a preview to copy or restore from.
 
 import { log } from "./debug";
-import { backup, flush, noteIsOpen, pickerTitles, replaceBody, SELECTORS } from "./notes";
+import { flush, noteIsOpen, pickerTitles, restore, SELECTORS } from "./notes";
 import { allVersions, importVersions, type Reason, type Version } from "./store";
 
 export const ICON_ID = "anb-icon";
@@ -198,8 +198,8 @@ async function copyVersion(target: HTMLButtonElement): Promise<void> {
 }
 
 /**
- * Puts the version in the preview into the note open in Torn, in place of
- * its text. Takes two presses, and saves what it replaces first.
+ * Puts the version in the preview into the note open in Torn, title and
+ * text. Takes two presses, and saves what it replaces first.
  */
 async function restoreVersion(target: HTMLButtonElement): Promise<void> {
   const version = currentVersion();
@@ -210,8 +210,7 @@ async function restoreVersion(target: HTMLButtonElement): Promise<void> {
     return;
   }
   delete target.dataset.armed;
-  await backup("restored");
-  if (replaceBody(version.body)) {
+  if (await restore(version)) {
     flash(target, "Restored");
     await refresh();
   } else {

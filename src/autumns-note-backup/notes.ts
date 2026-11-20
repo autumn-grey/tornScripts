@@ -10,7 +10,7 @@
 // already on screen; this script sends no requests at all.
 
 import { log } from "./debug";
-import { addVersion, latestWithTitle, prune, putVersion, type Reason, versionsOf } from "./store";
+import { addVersion, latestWithTitle, prune, putVersion, type Reason, type Version, versionsOf } from "./store";
 
 // Every selector this script matches on, from the live Notes window.
 export const SELECTORS = {
@@ -230,22 +230,52 @@ export function watchNotes(): void {
 }
 
 /**
- * Puts text in the open note's body, as one edit its own undo can take back.
- * Returns false when no note is open.
+ * Puts text in one of Torn's note fields, as one edit its own undo can take back.
  *
- * execCommand is the one way to change a textarea that both React and the
- * textarea's undo history pick up; setting the value misses both.
+ * execCommand is the one way to change a field that both React and the
+ * field's undo history pick up; setting the value misses both.
  */
-export function replaceBody(text: string): boolean {
-  const body = document.querySelector<HTMLTextAreaElement>(SELECTORS.body);
-  if (!body) return false;
-  body.focus({ preventScroll: true });
-  body.select();
-  if (!document.execCommand("insertText", false, text)) {
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-    setter?.call(body, text);
-    body.dispatchEvent(new Event("input", { bubbles: true }));
+function replaceValue(field: HTMLInputElement | HTMLTextAreaElement, text: string): void {
+  if (field.value === text) return;
+  field.focus({ preventScroll: true });
+  field.select();
+  // Inserting nothing does not count as an edit, so an empty value is a delete.
+  const done = text === "" ? document.execCommand("delete") : document.execCommand("insertText", false, text);
+  if (!done) {
+    const proto = field instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
   }
+}
+
+/**
+ * Puts a version's title and text in the note open in Torn, saving what it
+ * replaces first. Returns false when no note is open.
+ *
+ * The open note then carries on as the restored note, under its key, so a
+ * deleted note brought back into a new one keeps its history in one place.
+ */
+export async function restore(version: Version): Promise<boolean> {
+  const title = document.querySelector<HTMLInputElement>(SELECTORS.title);
+  const body = document.querySelector<HTMLTextAreaElement>(SELECTORS.body);
+  if (!title || !body) return false;
+  await backup("restored");
+  // Each field's input event saves it under the open note's key as typing
+  // would; that is put right just below, before the save is due.
+  replaceValue(title, version.title);
+  replaceValue(body, version.body);
+  body.blur();
+  const restored = { key: version.note, title: title.value, body: body.value };
+  open = restored;
+  candidate = null;
+  window.clearTimeout(pendingTimer);
+  pending = null;
+  await enqueue(async () => {
+    if (!latest.has(restored.key) && version.id !== undefined) {
+      latest.set(restored.key, { id: version.id, title: version.title, body: version.body, reason: version.reason });
+    }
+    await write(restored, "edited");
+  });
   return true;
 }
 

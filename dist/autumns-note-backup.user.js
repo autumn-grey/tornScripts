@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Backup
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.0.1
 // @description  Keeps a copy of every Torn note you open or edit in your browser, so a deleted or overwritten note can be brought back
 // @author       AutumnGrey
 // @license      MIT
@@ -252,16 +252,36 @@ ${value.body}`;
     window.setInterval(check, CHECK_MS);
     check();
   }
-  function replaceBody(text) {
-    const body = document.querySelector(SELECTORS.body);
-    if (!body) return false;
-    body.focus({ preventScroll: true });
-    body.select();
-    if (!document.execCommand("insertText", false, text)) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-      setter?.call(body, text);
-      body.dispatchEvent(new Event("input", { bubbles: true }));
+  function replaceValue(field, text) {
+    if (field.value === text) return;
+    field.focus({ preventScroll: true });
+    field.select();
+    const done = text === "" ? document.execCommand("delete") : document.execCommand("insertText", false, text);
+    if (!done) {
+      const proto = field instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
     }
+  }
+  async function restore(version) {
+    const title = document.querySelector(SELECTORS.title);
+    const body = document.querySelector(SELECTORS.body);
+    if (!title || !body) return false;
+    await backup("restored");
+    replaceValue(title, version.title);
+    replaceValue(body, version.body);
+    body.blur();
+    const restored = { key: version.note, title: title.value, body: body.value };
+    open = restored;
+    candidate = null;
+    window.clearTimeout(pendingTimer);
+    pending = null;
+    await enqueue(async () => {
+      if (!latest.has(restored.key) && version.id !== void 0) {
+        latest.set(restored.key, { id: version.id, title: version.title, body: version.body, reason: version.reason });
+      }
+      await write(restored, "edited");
+    });
     return true;
   }
   function noteIsOpen() {
@@ -380,8 +400,8 @@ ${value.body}`;
       versionList.append(row);
     }
     preview.value = currentVersion()?.body ?? "";
-    const restore = panel.querySelector(".anb-restore");
-    if (restore) restore.disabled = !currentVersion() || !noteIsOpen();
+    const restore2 = panel.querySelector(".anb-restore");
+    if (restore2) restore2.disabled = !currentVersion() || !noteIsOpen();
   }
   async function exportAll(target) {
     const versions = (await allVersions()).map(({ id: _id, ...rest }) => rest);
@@ -436,8 +456,7 @@ ${value.body}`;
       return;
     }
     delete target.dataset.armed;
-    await backup("restored");
-    if (replaceBody(version.body)) {
+    if (await restore(version)) {
       flash(target, "Restored");
       await refresh();
     } else {
@@ -462,9 +481,9 @@ ${value.body}`;
     preview.spellcheck = false;
     main.append(make("div", "anb-list anb-notes"), make("div", "anb-list anb-versions"), preview);
     const foot = make("div", "anb-foot");
-    const restore = button("Restore", (self) => void restoreVersion(self));
-    restore.classList.add("anb-restore");
-    foot.append(button("Copy", (self) => void copyVersion(self)), restore);
+    const restore2 = button("Restore", (self) => void restoreVersion(self));
+    restore2.classList.add("anb-restore");
+    foot.append(button("Copy", (self) => void copyVersion(self)), restore2);
     box.append(head, main, foot);
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) hidePanel();
