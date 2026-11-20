@@ -1,0 +1,9 @@
+{
+  "name": "Chat Enhanced - Summary ENHANCED",
+  "version": "1.0.4",
+  "description": "Summarises chat but better",
+  "match": "https://www.torn.com/*",
+  "grant": "none",
+  "run-at": "document-idle",
+  "noframes": true
+}
