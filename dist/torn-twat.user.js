@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornTwat
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.1
+// @version      1.0.3
 // @description  T.W.A.T., the Torn War Analysis Tool, for The ZOO - Night Shift's lost ranked wars. Music: "Blame It on the Boogie" Sega Genesis remix (https://www.youtube.com/watch?v=-d3loT714ZM) and "Kiss From a Rose" by seals (https://www.youtube.com/watch?v=G76nKGWRLPU). Font: IBM 3270 by Ricardo Banffy and contributors, BSD 3-Clause (https://github.com/rbanffy/3270font).
 // @author       AutumnGrey
 // @license      MIT
@@ -148,42 +148,63 @@
     const left = read("left");
     return left.some((m) => m.id === CULPRIT_ID) ? left : read("right");
   }
-  function dataUriBytes(uri) {
-    const bin = atob(uri.slice(uri.indexOf(",") + 1));
+  function base64Bytes(b64) {
+    const bin = atob(b64.trim());
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes.buffer;
   }
-  function gmBytes(url) {
+  function dataUriBytes(uri) {
+    return base64Bytes(uri.slice(uri.indexOf(",") + 1));
+  }
+  function gmBase64Bytes(url) {
     return new Promise(
       (resolve, reject) => GM_xmlhttpRequest({
-        url,
+        url: `${url}.b64`,
         method: "GET",
-        responseType: "arraybuffer",
-        // Torn PDA's version only returns text, so anything but real bytes counts as a failure.
-        onload: (r) => r.status === 200 && r.response instanceof ArrayBuffer ? resolve(r.response) : reject(new Error(`HTTP ${r.status}, no binary body`)),
-        onerror: reject,
-        ontimeout: reject
+        onload: (r) => {
+          if (r.status !== 200) return reject(new Error(`HTTP ${r.status}`));
+          try {
+            resolve(base64Bytes(String(r.responseText ?? r.response ?? "")));
+          } catch (e) {
+            reject(e);
+          }
+        },
+        onerror: () => reject(new Error("request error")),
+        ontimeout: () => reject(new Error("timed out"))
       })
     );
+  }
+  function reason(e) {
+    return (e instanceof Error ? e.message : String(e)).slice(0, 40);
   }
   var bytesCache = /* @__PURE__ */ new Map();
   function resourceBytes(name) {
     let p = bytesCache.get(name);
     if (!p) {
       p = (async () => {
+        const why = [];
         try {
           const url = GM_getResourceURL(name, false);
           if (url?.startsWith("data:")) return dataUriBytes(url);
           if (url) return await (await fetch(url)).arrayBuffer();
-        } catch {
+          why.push("no resource");
+        } catch (e) {
+          why.push(`resource: ${reason(e)}`);
         }
         try {
           const res = await fetch(RESOURCES[name]);
           if (res.ok) return await res.arrayBuffer();
-        } catch {
+          why.push(`direct: HTTP ${res.status}`);
+        } catch (e) {
+          why.push(`direct: ${reason(e)}`);
         }
-        return gmBytes(RESOURCES[name]);
+        try {
+          return await gmBase64Bytes(RESOURCES[name]);
+        } catch (e) {
+          why.push(`text: ${reason(e)}`);
+        }
+        throw new Error(why.join("; "));
       })();
       bytesCache.set(name, p);
       p.catch(() => bytesCache.delete(name));
@@ -212,6 +233,8 @@
       this.raf = 0;
       /** Show time the script has scheduled up to. */
       this.cue = 0;
+      /** Why the music could not play, or null when it is playing. */
+      this.audioError = null;
       this.tick = () => {
         if (this.cancelled) return;
         const now = this.now();
@@ -228,6 +251,7 @@
         void this.ctx.resume();
       } catch (e) {
         console.warn("[TornTwat] no audio", e);
+        this.audioError = `no audio device (${reason(e)})`;
         this.ctx = null;
       }
     }
@@ -245,6 +269,7 @@
         } catch (e) {
           if (e === CANCELLED) throw e;
           console.warn("[TornTwat] audio did not load, running silent", e);
+          this.audioError = e instanceof Error ? e.message : String(e);
           void this.ctx?.close();
           this.ctx = null;
         }
@@ -603,6 +628,7 @@ button:hover, button:focus-visible { background: var(--green); color: #000; text
 .out { height: 100%; overflow: hidden; }
 .ln { white-space: pre; overflow: hidden; }
 .dim { color: var(--dim); }
+.wrap.ln { white-space: pre-wrap; }
 .bright { color: #b6ffc8; }
 .inverse { background: var(--green); color: #000; text-shadow: none; display: inline-block; }
 /* Hard on/off flashing at an even rate. Opacity on its own layer is redrawn by the graphics card,
@@ -716,7 +742,7 @@ pre { margin: 0; font: inherit; line-height: 1; white-space: pre; }
       name.textContent = "Torn War Analysis Tool™";
       const ver = document.createElement("div");
       ver.className = "dim";
-      ver.textContent = `v${"1.0.1"} 2026`;
+      ver.textContent = `v${"1.0.3"} 2026`;
       const go = document.createElement("button");
       go.className = "go";
       go.textContent = "Initiate Analysis";
@@ -737,6 +763,7 @@ pre { margin: 0; font: inherit; line-height: 1; white-space: pre; }
       t.line("INITIALISING...", "dim");
       void run.start().then(() => {
         out.replaceChildren();
+        if (run.audioError) t.line(`SOUND CARD FAULT: ${run.audioError}`, "dim wrap");
         return show(screen, out, run, members);
       }).catch((e) => {
         if (e !== CANCELLED) console.error("[TornTwat]", e);

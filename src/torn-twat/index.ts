@@ -94,30 +94,46 @@ function zooMembers(report: Element): Member[] {
 // ---------------------------------------------------------------------------------------------
 // Resources
 
-/** Decodes a base64 data: URI into bytes. */
-function dataUriBytes(uri: string): ArrayBuffer {
-  const bin = atob(uri.slice(uri.indexOf(",") + 1));
+/** Decodes base64 text into bytes. */
+function base64Bytes(b64: string): ArrayBuffer {
+  const bin = atob(b64.trim());
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes.buffer;
 }
 
-/** Downloads a file with the userscript manager, which Torn's page rules cannot block. */
-function gmBytes(url: string): Promise<ArrayBuffer> {
+/** Decodes a base64 data: URI into bytes. */
+function dataUriBytes(uri: string): ArrayBuffer {
+  return base64Bytes(uri.slice(uri.indexOf(",") + 1));
+}
+
+/**
+ * Downloads the base64 text copy of a file (the same path plus .b64) with the userscript manager.
+ * Torn PDA's GM_xmlhttpRequest goes through the app rather than the page, so Torn's page rules
+ * cannot block it, but it only hands back text; binary arrives mangled, hence the text copies.
+ */
+function gmBase64Bytes(url: string): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) =>
     GM_xmlhttpRequest({
-      url,
+      url: `${url}.b64`,
       method: "GET",
-      responseType: "arraybuffer",
-      // Torn PDA's version only returns text, so anything but real bytes counts as a failure.
-      onload: (r) =>
-        r.status === 200 && r.response instanceof ArrayBuffer
-          ? resolve(r.response)
-          : reject(new Error(`HTTP ${r.status}, no binary body`)),
-      onerror: reject,
-      ontimeout: reject,
+      onload: (r) => {
+        if (r.status !== 200) return reject(new Error(`HTTP ${r.status}`));
+        try {
+          resolve(base64Bytes(String(r.responseText ?? r.response ?? "")));
+        } catch (e) {
+          reject(e);
+        }
+      },
+      onerror: () => reject(new Error("request error")),
+      ontimeout: () => reject(new Error("timed out")),
     }),
   );
+}
+
+/** A short reason for a failure, for the terminal line that reports it. */
+function reason(e: unknown): string {
+  return (e instanceof Error ? e.message : String(e)).slice(0, 40);
 }
 
 const bytesCache = new Map<ResourceName, Promise<ArrayBuffer>>();
@@ -125,29 +141,38 @@ const bytesCache = new Map<ResourceName, Promise<ArrayBuffer>>();
 /**
  * The bytes of an @resource file. Tampermonkey keeps @resource files with the script, so on desktop
  * this reads a local copy and never reaches the downloads below. Torn PDA has no @resource support,
- * so there the file comes straight from GitHub, which allows requests from any site.
+ * so there the file is downloaded: first directly from GitHub, then as text through PDA.
  * Raw bytes rather than a URL are used throughout because Torn's page may refuse blob: or data:
  * URLs as media and font sources; decoded bytes are not checked.
+ * When every route fails, the error lists why each one did.
  */
 function resourceBytes(name: ResourceName): Promise<ArrayBuffer> {
   let p = bytesCache.get(name);
   if (!p) {
     p = (async () => {
+      const why: string[] = [];
       try {
         // The second argument asks Tampermonkey for a data: URI instead of a blob: URL.
         const url = (GM_getResourceURL as (n: string, blob?: boolean) => string)(name, false);
         if (url?.startsWith("data:")) return dataUriBytes(url);
         if (url) return await (await fetch(url)).arrayBuffer();
-      } catch {
-        // No @resource support (Torn PDA): fall through to downloading it.
+        why.push("no resource");
+      } catch (e) {
+        why.push(`resource: ${reason(e)}`);
       }
       try {
         const res = await fetch(RESOURCES[name]);
         if (res.ok) return await res.arrayBuffer();
-      } catch {
-        // Blocked by the page; the userscript manager's own request is the last try.
+        why.push(`direct: HTTP ${res.status}`);
+      } catch (e) {
+        why.push(`direct: ${reason(e)}`);
       }
-      return gmBytes(RESOURCES[name]);
+      try {
+        return await gmBase64Bytes(RESOURCES[name]);
+      } catch (e) {
+        why.push(`text: ${reason(e)}`);
+      }
+      throw new Error(why.join("; "));
     })();
     bytesCache.set(name, p);
     p.catch(() => bytesCache.delete(name));
@@ -191,6 +216,8 @@ class Run {
   private raf = 0;
   /** Show time the script has scheduled up to. */
   cue = 0;
+  /** Why the music could not play, or null when it is playing. */
+  audioError: string | null = null;
 
   /** Sets up audio inside the click that started the show; browsers only allow sound after one. */
   constructor(muted: boolean) {
@@ -202,6 +229,7 @@ class Run {
       void this.ctx.resume();
     } catch (e) {
       console.warn("[TornTwat] no audio", e);
+      this.audioError = `no audio device (${reason(e)})`;
       this.ctx = null;
     }
   }
@@ -221,6 +249,7 @@ class Run {
       } catch (e) {
         if (e === CANCELLED) throw e;
         console.warn("[TornTwat] audio did not load, running silent", e);
+        this.audioError = e instanceof Error ? e.message : String(e);
         void this.ctx?.close();
         this.ctx = null;
       }
@@ -645,6 +674,7 @@ button:hover, button:focus-visible { background: var(--green); color: #000; text
 .out { height: 100%; overflow: hidden; }
 .ln { white-space: pre; overflow: hidden; }
 .dim { color: var(--dim); }
+.wrap.ln { white-space: pre-wrap; }
 .bright { color: #b6ffc8; }
 .inverse { background: var(--green); color: #000; text-shadow: none; display: inline-block; }
 /* Hard on/off flashing at an even rate. Opacity on its own layer is redrawn by the graphics card,
@@ -796,6 +826,8 @@ class Panel {
       .start()
       .then(() => {
         out.replaceChildren();
+        // Said in the terminal's own voice, so a phone with no console can still show why it is silent.
+        if (run.audioError) t.line(`SOUND CARD FAULT: ${run.audioError}`, "dim wrap");
         return show(screen, out, run, members);
       })
       .catch((e) => {
