@@ -644,7 +644,7 @@ pre { margin: 0; font: inherit; line-height: 1; white-space: pre; }
         if (document.hidden) this.run?.pause();
         else this.run?.resume();
       });
-      this.home();
+      this.collapse();
     }
     /** Sizes the text so a screen's worth of columns fits the width Torn gives us (phones are narrow). */
     fit() {

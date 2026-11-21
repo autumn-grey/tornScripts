@@ -659,7 +659,7 @@ pre { margin: 0; font: inherit; line-height: 1; white-space: pre; }
 const ICON_SOUND = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9c1.5 1.5 1.5 4.5 0 6M19 6c3 3 3 9 0 12"/></svg>`;
 const ICON_MUTED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9l6 6M22 9l-6 6"/></svg>`;
 
-/** The terminal panel: home screen, the running show, and the collapsed title. */
+/** The terminal panel: the collapsed title it starts as, the home screen, and the running show. */
 class Panel {
   private root: ShadowRoot;
   private wrap: HTMLDivElement;
@@ -687,7 +687,7 @@ class Panel {
       if (document.hidden) this.run?.pause();
       else this.run?.resume();
     });
-    this.home();
+    this.collapse();
   }
 
   /** Sizes the text so a screen's worth of columns fits the width Torn gives us (phones are narrow). */
