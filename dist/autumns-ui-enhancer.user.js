@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.23.17
+// @version      0.23.18
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -940,7 +940,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.23.17");
+    root.setAttribute(RUNNING_ATTR, "0.23.18");
     return true;
   }
   async function w3bOneTabOn() {
@@ -1739,6 +1739,317 @@
     return rows;
   }
 
+  // src/autumns-ui-enhancer/newsTicker.ts
+  var BAR_SELECTOR = ".header-bottom-text.news-ticker-new";
+  var SLIDE_SELECTOR = ".news-ticker-slide";
+  var SCROLLER_SELECTOR = ".scroll-wrap";
+  var HEADLINE_SELECTOR = ".headline";
+  var BAR_CLASS = "aue-ticker-bar";
+  var NAV_ID = "aue-ticker-nav";
+  var OVERLAY_ID = "aue-ticker-overlay";
+  var ACTIVE_SLIDE = /enter-done|enter-active|swiper-slide-active/;
+  var MATCH_MIN_LENGTH = 8;
+  var MANUAL_CLASS = "aue-ticker-manual";
+  var OVERFLOW_SLACK = 4;
+  var SCROLL_SPEED = 34;
+  var HOLD_MS = 1500;
+  var MANUAL_IDLE_MS = 45e3;
+  var seen2 = [];
+  var manualIndex = null;
+  var manualAt = 0;
+  var writing = false;
+  function isHeadlineList(value) {
+    return Array.isArray(value) && value.length > 0 && typeof value[0] === "object" && value[0] !== null && "headline" in value[0];
+  }
+  function digForList(value, depth) {
+    if (isHeadlineList(value)) return value;
+    if (!value || typeof value !== "object" || depth > 3) return null;
+    if (value instanceof Element) return null;
+    let keys;
+    try {
+      keys = Object.keys(value);
+    } catch {
+      return null;
+    }
+    for (const key of keys.slice(0, 30)) {
+      let child;
+      try {
+        child = value[key];
+      } catch {
+        continue;
+      }
+      const found = digForList(child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  function readHeadlines(bar) {
+    try {
+      const key = Object.keys(bar).find(
+        (name) => name.startsWith("__reactFiber$")
+      );
+      if (!key) return null;
+      let node = bar[key];
+      for (let depth = 0; node && depth < 30; depth += 1) {
+        let list = digForList(node.memoizedProps, 0);
+        if (!list) {
+          let hook = node.memoizedState;
+          for (let i = 0; hook && i < 15 && !list; i += 1) {
+            list = digForList(hook.memoizedState, 1);
+            hook = hook.next;
+          }
+        }
+        if (list) {
+          return list.map((item) => ({
+            id: String(item.ID ?? item.headline),
+            html: String(item.headline ?? ""),
+            link: typeof item.link === "string" && item.link ? item.link : null,
+            endTime: Number(item.endTime) || 0
+          }));
+        }
+        node = node.return;
+      }
+    } catch {
+    }
+    return null;
+  }
+  function headlines(bar) {
+    return readHeadlines(bar) ?? seen2;
+  }
+  function liveHeadline(bar) {
+    const slides = Array.from(bar.querySelectorAll(SLIDE_SELECTOR)).reverse();
+    const slide = slides.find((item) => ACTIVE_SLIDE.test(item.className));
+    return (slide ?? slides[0])?.querySelector(HEADLINE_SELECTOR) ?? bar.querySelector(HEADLINE_SELECTOR);
+  }
+  function compareText(html) {
+    const box2 = document.createElement("div");
+    box2.innerHTML = html;
+    return (box2.textContent ?? "").replace(/[[d:s]+]s*$/, "").replace(/s+/g, " ").trim().toLowerCase();
+  }
+  function remember(bar) {
+    const headline = liveHeadline(bar);
+    const html = headline?.innerHTML ?? "";
+    if (!html) return;
+    const id = headline?.textContent?.trim() ?? html;
+    if (seen2.some((item) => item.id === id)) return;
+    const link = bar.querySelector(`${SLIDE_SELECTOR} a`);
+    seen2.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
+  }
+  function liveIndex(bar, list) {
+    const showing = compareText(liveHeadline(bar)?.innerHTML ?? "");
+    if (!showing) return 0;
+    const at = list.findIndex((item) => {
+      const text = compareText(item.html);
+      if (text.length < MATCH_MIN_LENGTH) return text === showing;
+      return showing.startsWith(text) || text.startsWith(showing);
+    });
+    return at === -1 ? 0 : at;
+  }
+  var scroller = null;
+  var scrollKey = "";
+  var startedAt = 0;
+  var pausedAt = 0;
+  var pointerOver = false;
+  function marqueeKey(box2) {
+    return `${box2.scrollWidth}:${box2.clientWidth}:${box2.textContent?.length ?? 0}`;
+  }
+  function tick(now) {
+    requestAnimationFrame(tick);
+    const box2 = scroller;
+    if (!box2 || !box2.isConnected) return;
+    const distance = box2.scrollWidth - box2.clientWidth;
+    if (distance <= OVERFLOW_SLACK) {
+      box2.scrollLeft = 0;
+      return;
+    }
+    const key = marqueeKey(box2);
+    if (key !== scrollKey) {
+      scrollKey = key;
+      startedAt = now;
+      box2.scrollLeft = 0;
+      return;
+    }
+    if (pointerOver || document.hidden) {
+      pausedAt = pausedAt || now;
+      return;
+    }
+    if (pausedAt) {
+      startedAt += now - pausedAt;
+      pausedAt = 0;
+    }
+    const travel = distance / SCROLL_SPEED * 1e3;
+    const cycle = 2 * (travel + HOLD_MS);
+    const at = (now - startedAt) % cycle;
+    if (at < HOLD_MS) box2.scrollLeft = 0;
+    else if (at < HOLD_MS + travel) {
+      box2.scrollLeft = distance * (at - HOLD_MS) / travel;
+    } else if (at < 2 * HOLD_MS + travel) box2.scrollLeft = distance;
+    else {
+      box2.scrollLeft = distance * (1 - (at - 2 * HOLD_MS - travel) / travel);
+    }
+  }
+  function watchScroller(box2) {
+    if (box2 === scroller) return;
+    scroller = box2;
+    scrollKey = "";
+    pausedAt = 0;
+  }
+  function buildArrow(step) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `aue-ticker-arrow aue-ticker-arrow-${step === -1 ? "prev" : "next"}`;
+    button.setAttribute(
+      "aria-label",
+      step === -1 ? "Previous headline" : "Next headline"
+    );
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      stepBy(step);
+    });
+    return button;
+  }
+  function ensureNav(bar) {
+    bar.classList.add(BAR_CLASS);
+    if (bar.querySelector(`#${NAV_ID}`)) return;
+    writing = true;
+    const nav = document.createElement("div");
+    nav.id = NAV_ID;
+    nav.appendChild(buildArrow(-1));
+    nav.appendChild(buildArrow(1));
+    bar.appendChild(nav);
+    writing = false;
+  }
+  function stepBy(step) {
+    const bar = document.querySelector(BAR_SELECTOR);
+    if (!bar) return;
+    const list = headlines(bar);
+    if (list.length === 0) return;
+    const from = manualIndex ?? liveIndex(bar, list);
+    manualIndex = (from + step + list.length) % list.length;
+    manualAt = Date.now();
+    log("ticker: showing headline", manualIndex + 1, "of", list.length);
+    render(bar);
+  }
+  function toLive(bar) {
+    manualIndex = null;
+    writing = true;
+    bar.classList.remove(MANUAL_CLASS);
+    bar.querySelector(`#${OVERLAY_ID}`)?.remove();
+    writing = false;
+    watchScroller(bar.querySelector(SCROLLER_SELECTOR));
+  }
+  function countdownText2(endTime) {
+    const left = Math.max(0, endTime - Math.floor(Date.now() / 1e3));
+    const pad = (value) => String(value).padStart(2, "0");
+    const days = Math.floor(left / 86400);
+    const hours = Math.floor(left % 86400 / 3600);
+    return ` [${days}:${pad(hours)}:${pad(Math.floor(left % 3600 / 60))}:${pad(left % 60)}]`;
+  }
+  function render(bar) {
+    const list = headlines(bar);
+    if (manualIndex === null || list.length === 0) {
+      toLive(bar);
+      return;
+    }
+    const item = list[Math.min(manualIndex, list.length - 1)];
+    if (!item) {
+      toLive(bar);
+      return;
+    }
+    writing = true;
+    bar.classList.add(MANUAL_CLASS);
+    let overlay = bar.querySelector(`#${OVERLAY_ID}`);
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = OVERLAY_ID;
+      bar.appendChild(overlay);
+    }
+    const text = document.createElement("span");
+    text.className = "aue-ticker-text";
+    text.innerHTML = item.html;
+    if (item.endTime > 0) {
+      const countdown = document.createElement("span");
+      countdown.className = "aue-ticker-countdown";
+      countdown.textContent = countdownText2(item.endTime);
+      text.appendChild(countdown);
+    }
+    overlay.replaceChildren(
+      item.link ? wrapInLink(text, item.link) : text
+    );
+    writing = false;
+    watchScroller(overlay);
+  }
+  function wrapInLink(text, href) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.className = "aue-ticker-link";
+    link.appendChild(text);
+    return link;
+  }
+  function apply2() {
+    const bar = document.querySelector(BAR_SELECTOR);
+    if (!bar) return;
+    if (!isEnabled(NEWS_TICKER)) {
+      if (bar.querySelector(`#${NAV_ID}`)) {
+        writing = true;
+        bar.querySelector(`#${NAV_ID}`)?.remove();
+        bar.classList.remove(BAR_CLASS);
+        writing = false;
+        toLive(bar);
+      }
+      watchScroller(null);
+      return;
+    }
+    ensureNav(bar);
+    remember(bar);
+    if (manualIndex === null) {
+      watchScroller(bar.querySelector(SCROLLER_SELECTOR));
+    } else if (!bar.querySelector(`#${OVERLAY_ID}`)) {
+      render(bar);
+    }
+  }
+  function installNewsTicker() {
+    requestAnimationFrame(tick);
+    addEventListener(
+      "pointerover",
+      (event) => {
+        const target = event.target;
+        pointerOver = target instanceof Element && target.closest(BAR_SELECTOR) !== null;
+      },
+      true
+    );
+    addEventListener("pointerleave", () => pointerOver = false, true);
+    let timer = 0;
+    const schedule = () => {
+      if (writing) return;
+      clearTimeout(timer);
+      timer = window.setTimeout(apply2, 120);
+    };
+    new MutationObserver((records) => {
+      if (!onlyOurs(records)) schedule();
+    }).observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    setInterval(() => {
+      const bar = document.querySelector(BAR_SELECTOR);
+      if (!bar || manualIndex === null) return;
+      if (Date.now() - manualAt > MANUAL_IDLE_MS) {
+        log("ticker: idle, back to Torn's rotation");
+        toLive(bar);
+        return;
+      }
+      const list = headlines(bar);
+      const item = list[Math.min(manualIndex, list.length - 1)];
+      const countdown = bar.querySelector(`#${OVERLAY_ID} .aue-ticker-countdown`);
+      if (item && item.endTime > 0 && countdown) {
+        countdown.textContent = countdownText2(item.endTime);
+      }
+    }, 1e3);
+    apply2();
+  }
+
   // src/autumns-ui-enhancer/listDisplay.ts
   var PAGINATION_SELECTOR = ".pagination";
   var PAGE_LINK_SELECTOR = "a.page-number[page]";
@@ -1755,6 +2066,7 @@
   var MORE_BUTTON_CLASS = "aue-pager-more";
   var MORE_BUTTON_GAP_PX = 10;
   var TOP_BUTTON_ID = "aue-back-to-top";
+  var TOP_BUTTON_MARGIN_PX = 10;
   var RANGE_CLASS = "aue-page-range";
   var EXTRA_ROW_ATTR = "data-aue-extra";
   var PAGER_STATE_ATTR = "data-aue-pager";
@@ -2165,6 +2477,8 @@
       if (!existing) return;
       existing.remove();
       forgetOwnChanges();
+      removeEventListener("scroll", placeTopButton);
+      removeEventListener("resize", placeTopButton);
       return;
     }
     if (existing) return;
@@ -2177,6 +2491,16 @@
     button.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
     document.body.appendChild(button);
     forgetOwnChanges();
+    placeTopButton();
+    addEventListener("scroll", placeTopButton, { passive: true });
+    addEventListener("resize", placeTopButton, { passive: true });
+  }
+  function placeTopButton() {
+    const button = document.getElementById(TOP_BUTTON_ID);
+    if (!button) return;
+    const ticker = document.querySelector(BAR_SELECTOR);
+    const below = ticker ? ticker.getBoundingClientRect().bottom : 0;
+    button.style.top = `${Math.max(below, 0) + TOP_BUTTON_MARGIN_PX}px`;
   }
   function setButtons(text, disabled) {
     for (const button of document.querySelectorAll(`.${MORE_BUTTON_CLASS}`)) {
@@ -2520,7 +2844,7 @@
     if (!withLinks.some(isShown)) return `${withLinks.length} pager(s) with links, all hidden`;
     return "a pager is shown, but no list of rows was found beside it";
   }
-  function apply2() {
+  function apply3() {
     if (!isEnabled(LIST_DISPLAY_EXTENSION)) {
       removeButtons();
       restorePagers();
@@ -2582,7 +2906,7 @@
       timer = window.setTimeout(
         () => {
           deadline = 0;
-          apply2();
+          apply3();
         },
         Math.max(0, Math.min(SETTLE_MS2, deadline - now))
       );
@@ -2612,7 +2936,7 @@
   var DESCENDING_CLASS = "aue-sort-desc";
   var WIRED_ATTR = "data-aue-sort";
   var sorts = /* @__PURE__ */ new WeakMap();
-  var writing = false;
+  var writing2 = false;
   function clean(text) {
     return (text ?? "").replace(/\s+/g, " ").trim();
   }
@@ -2751,23 +3075,23 @@
       return a.localeCompare(b, void 0, { numeric: true }) * direction;
     });
     if (sorted.every((row, at) => row === rows[at])) return;
-    writing = true;
+    writing2 = true;
     table.reorder(sorted);
-    writing = false;
+    writing2 = false;
     log("sort: column", state.id, state.descending ? "descending" : "ascending");
   }
   function paint(table) {
     const state = sorts.get(table.container);
-    writing = true;
+    writing2 = true;
     for (const column of table.columns) {
       const active = state?.id === column.id;
       column.cell.classList.toggle(ACTIVE_CLASS, active);
       column.cell.classList.toggle(DESCENDING_CLASS, active && state.descending);
     }
-    writing = false;
+    writing2 = false;
   }
   function wire(table) {
-    writing = true;
+    writing2 = true;
     for (const column of table.columns) {
       if (!column.cell.querySelector(`.${MARK_CLASS}`)) {
         const mark = document.createElement("span");
@@ -2790,10 +3114,10 @@
         paint(table);
       });
     }
-    writing = false;
+    writing2 = false;
   }
   function unwire(table) {
-    writing = true;
+    writing2 = true;
     for (const column of table.columns) {
       column.cell.classList.remove(
         SORTABLE_CLASS,
@@ -2802,7 +3126,7 @@
       );
       column.cell.querySelector(`.${MARK_CLASS}`)?.remove();
     }
-    writing = false;
+    writing2 = false;
   }
   function pass() {
     const enabled = isEnabled(LIST_SORTING);
@@ -2820,7 +3144,7 @@
   function installListSort() {
     let timer = 0;
     const schedule = () => {
-      if (writing) return;
+      if (writing2) return;
       clearTimeout(timer);
       timer = window.setTimeout(pass, SETTLE_MS3);
     };
@@ -3268,14 +3592,14 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     const hidden = readSet(HIDDEN_KEY);
     hidden.add(id);
     writeSet(HIDDEN_KEY, hidden);
-    apply3();
+    apply4();
     log("chat:", id, "hidden in this tab only");
   }
   function show(id) {
     const hidden = readSet(HIDDEN_KEY);
     hidden.delete(id);
     writeSet(HIDDEN_KEY, hidden);
-    apply3();
+    apply4();
     log("chat:", id, "back in this tab");
   }
   function forget(id) {
@@ -3286,7 +3610,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     writeSet(HIDDEN_KEY, hidden);
     writeSet(KNOWN_KEY, known);
   }
-  function apply3() {
+  function apply4() {
     if (!isEnabled(INDEPENDENT_CHAT_TABS)) {
       for (const hiddenWindow of document.querySelectorAll(`.${HIDDEN_CLASS}`)) {
         setHidden(hiddenWindow, false);
@@ -3460,7 +3784,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     passTimer = window.setTimeout(
       () => {
         passDeadline = 0;
-        apply3();
+        apply4();
       },
       Math.max(0, Math.min(SETTLE_MS4, passDeadline - now))
     );
@@ -3501,7 +3825,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     if (texts.length === 0) return;
     menuOpen = { texts, until: Date.now() + MENU_OPEN_MS };
     log("chat: picked from the private chats list:", texts);
-    apply3();
+    apply4();
   }
   function installLocalChat() {
     addEventListener("click", onClick, true);
@@ -3513,317 +3837,6 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       if (!rowIsWatched) queueRelayout();
       schedulePass();
     }).observe(document.body, { childList: true, subtree: true });
-    apply3();
-  }
-
-  // src/autumns-ui-enhancer/newsTicker.ts
-  var BAR_SELECTOR = ".header-bottom-text.news-ticker-new";
-  var SLIDE_SELECTOR = ".news-ticker-slide";
-  var SCROLLER_SELECTOR = ".scroll-wrap";
-  var HEADLINE_SELECTOR = ".headline";
-  var BAR_CLASS = "aue-ticker-bar";
-  var NAV_ID = "aue-ticker-nav";
-  var OVERLAY_ID = "aue-ticker-overlay";
-  var ACTIVE_SLIDE = /enter-done|enter-active|swiper-slide-active/;
-  var MATCH_MIN_LENGTH = 8;
-  var MANUAL_CLASS = "aue-ticker-manual";
-  var OVERFLOW_SLACK = 4;
-  var SCROLL_SPEED = 34;
-  var HOLD_MS = 1500;
-  var MANUAL_IDLE_MS = 45e3;
-  var seen2 = [];
-  var manualIndex = null;
-  var manualAt = 0;
-  var writing2 = false;
-  function isHeadlineList(value) {
-    return Array.isArray(value) && value.length > 0 && typeof value[0] === "object" && value[0] !== null && "headline" in value[0];
-  }
-  function digForList(value, depth) {
-    if (isHeadlineList(value)) return value;
-    if (!value || typeof value !== "object" || depth > 3) return null;
-    if (value instanceof Element) return null;
-    let keys;
-    try {
-      keys = Object.keys(value);
-    } catch {
-      return null;
-    }
-    for (const key of keys.slice(0, 30)) {
-      let child;
-      try {
-        child = value[key];
-      } catch {
-        continue;
-      }
-      const found = digForList(child, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-  function readHeadlines(bar) {
-    try {
-      const key = Object.keys(bar).find(
-        (name) => name.startsWith("__reactFiber$")
-      );
-      if (!key) return null;
-      let node = bar[key];
-      for (let depth = 0; node && depth < 30; depth += 1) {
-        let list = digForList(node.memoizedProps, 0);
-        if (!list) {
-          let hook = node.memoizedState;
-          for (let i = 0; hook && i < 15 && !list; i += 1) {
-            list = digForList(hook.memoizedState, 1);
-            hook = hook.next;
-          }
-        }
-        if (list) {
-          return list.map((item) => ({
-            id: String(item.ID ?? item.headline),
-            html: String(item.headline ?? ""),
-            link: typeof item.link === "string" && item.link ? item.link : null,
-            endTime: Number(item.endTime) || 0
-          }));
-        }
-        node = node.return;
-      }
-    } catch {
-    }
-    return null;
-  }
-  function headlines(bar) {
-    return readHeadlines(bar) ?? seen2;
-  }
-  function liveHeadline(bar) {
-    const slides = Array.from(bar.querySelectorAll(SLIDE_SELECTOR)).reverse();
-    const slide = slides.find((item) => ACTIVE_SLIDE.test(item.className));
-    return (slide ?? slides[0])?.querySelector(HEADLINE_SELECTOR) ?? bar.querySelector(HEADLINE_SELECTOR);
-  }
-  function compareText(html) {
-    const box2 = document.createElement("div");
-    box2.innerHTML = html;
-    return (box2.textContent ?? "").replace(/[[d:s]+]s*$/, "").replace(/s+/g, " ").trim().toLowerCase();
-  }
-  function remember(bar) {
-    const headline = liveHeadline(bar);
-    const html = headline?.innerHTML ?? "";
-    if (!html) return;
-    const id = headline?.textContent?.trim() ?? html;
-    if (seen2.some((item) => item.id === id)) return;
-    const link = bar.querySelector(`${SLIDE_SELECTOR} a`);
-    seen2.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
-  }
-  function liveIndex(bar, list) {
-    const showing = compareText(liveHeadline(bar)?.innerHTML ?? "");
-    if (!showing) return 0;
-    const at = list.findIndex((item) => {
-      const text = compareText(item.html);
-      if (text.length < MATCH_MIN_LENGTH) return text === showing;
-      return showing.startsWith(text) || text.startsWith(showing);
-    });
-    return at === -1 ? 0 : at;
-  }
-  var scroller = null;
-  var scrollKey = "";
-  var startedAt = 0;
-  var pausedAt = 0;
-  var pointerOver = false;
-  function marqueeKey(box2) {
-    return `${box2.scrollWidth}:${box2.clientWidth}:${box2.textContent?.length ?? 0}`;
-  }
-  function tick(now) {
-    requestAnimationFrame(tick);
-    const box2 = scroller;
-    if (!box2 || !box2.isConnected) return;
-    const distance = box2.scrollWidth - box2.clientWidth;
-    if (distance <= OVERFLOW_SLACK) {
-      box2.scrollLeft = 0;
-      return;
-    }
-    const key = marqueeKey(box2);
-    if (key !== scrollKey) {
-      scrollKey = key;
-      startedAt = now;
-      box2.scrollLeft = 0;
-      return;
-    }
-    if (pointerOver || document.hidden) {
-      pausedAt = pausedAt || now;
-      return;
-    }
-    if (pausedAt) {
-      startedAt += now - pausedAt;
-      pausedAt = 0;
-    }
-    const travel = distance / SCROLL_SPEED * 1e3;
-    const cycle = 2 * (travel + HOLD_MS);
-    const at = (now - startedAt) % cycle;
-    if (at < HOLD_MS) box2.scrollLeft = 0;
-    else if (at < HOLD_MS + travel) {
-      box2.scrollLeft = distance * (at - HOLD_MS) / travel;
-    } else if (at < 2 * HOLD_MS + travel) box2.scrollLeft = distance;
-    else {
-      box2.scrollLeft = distance * (1 - (at - 2 * HOLD_MS - travel) / travel);
-    }
-  }
-  function watchScroller(box2) {
-    if (box2 === scroller) return;
-    scroller = box2;
-    scrollKey = "";
-    pausedAt = 0;
-  }
-  function buildArrow(step) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `aue-ticker-arrow aue-ticker-arrow-${step === -1 ? "prev" : "next"}`;
-    button.setAttribute(
-      "aria-label",
-      step === -1 ? "Previous headline" : "Next headline"
-    );
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      stepBy(step);
-    });
-    return button;
-  }
-  function ensureNav(bar) {
-    bar.classList.add(BAR_CLASS);
-    if (bar.querySelector(`#${NAV_ID}`)) return;
-    writing2 = true;
-    const nav = document.createElement("div");
-    nav.id = NAV_ID;
-    nav.appendChild(buildArrow(-1));
-    nav.appendChild(buildArrow(1));
-    bar.appendChild(nav);
-    writing2 = false;
-  }
-  function stepBy(step) {
-    const bar = document.querySelector(BAR_SELECTOR);
-    if (!bar) return;
-    const list = headlines(bar);
-    if (list.length === 0) return;
-    const from = manualIndex ?? liveIndex(bar, list);
-    manualIndex = (from + step + list.length) % list.length;
-    manualAt = Date.now();
-    log("ticker: showing headline", manualIndex + 1, "of", list.length);
-    render(bar);
-  }
-  function toLive(bar) {
-    manualIndex = null;
-    writing2 = true;
-    bar.classList.remove(MANUAL_CLASS);
-    bar.querySelector(`#${OVERLAY_ID}`)?.remove();
-    writing2 = false;
-    watchScroller(bar.querySelector(SCROLLER_SELECTOR));
-  }
-  function countdownText2(endTime) {
-    const left = Math.max(0, endTime - Math.floor(Date.now() / 1e3));
-    const pad = (value) => String(value).padStart(2, "0");
-    const days = Math.floor(left / 86400);
-    const hours = Math.floor(left % 86400 / 3600);
-    return ` [${days}:${pad(hours)}:${pad(Math.floor(left % 3600 / 60))}:${pad(left % 60)}]`;
-  }
-  function render(bar) {
-    const list = headlines(bar);
-    if (manualIndex === null || list.length === 0) {
-      toLive(bar);
-      return;
-    }
-    const item = list[Math.min(manualIndex, list.length - 1)];
-    if (!item) {
-      toLive(bar);
-      return;
-    }
-    writing2 = true;
-    bar.classList.add(MANUAL_CLASS);
-    let overlay = bar.querySelector(`#${OVERLAY_ID}`);
-    if (!overlay) {
-      overlay = document.createElement("div");
-      overlay.id = OVERLAY_ID;
-      bar.appendChild(overlay);
-    }
-    const text = document.createElement("span");
-    text.className = "aue-ticker-text";
-    text.innerHTML = item.html;
-    if (item.endTime > 0) {
-      const countdown = document.createElement("span");
-      countdown.className = "aue-ticker-countdown";
-      countdown.textContent = countdownText2(item.endTime);
-      text.appendChild(countdown);
-    }
-    overlay.replaceChildren(
-      item.link ? wrapInLink(text, item.link) : text
-    );
-    writing2 = false;
-    watchScroller(overlay);
-  }
-  function wrapInLink(text, href) {
-    const link = document.createElement("a");
-    link.href = href;
-    link.className = "aue-ticker-link";
-    link.appendChild(text);
-    return link;
-  }
-  function apply4() {
-    const bar = document.querySelector(BAR_SELECTOR);
-    if (!bar) return;
-    if (!isEnabled(NEWS_TICKER)) {
-      if (bar.querySelector(`#${NAV_ID}`)) {
-        writing2 = true;
-        bar.querySelector(`#${NAV_ID}`)?.remove();
-        bar.classList.remove(BAR_CLASS);
-        writing2 = false;
-        toLive(bar);
-      }
-      watchScroller(null);
-      return;
-    }
-    ensureNav(bar);
-    remember(bar);
-    if (manualIndex === null) {
-      watchScroller(bar.querySelector(SCROLLER_SELECTOR));
-    } else if (!bar.querySelector(`#${OVERLAY_ID}`)) {
-      render(bar);
-    }
-  }
-  function installNewsTicker() {
-    requestAnimationFrame(tick);
-    addEventListener(
-      "pointerover",
-      (event) => {
-        const target = event.target;
-        pointerOver = target instanceof Element && target.closest(BAR_SELECTOR) !== null;
-      },
-      true
-    );
-    addEventListener("pointerleave", () => pointerOver = false, true);
-    let timer = 0;
-    const schedule = () => {
-      if (writing2) return;
-      clearTimeout(timer);
-      timer = window.setTimeout(apply4, 120);
-    };
-    new MutationObserver((records) => {
-      if (!onlyOurs(records)) schedule();
-    }).observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-    setInterval(() => {
-      const bar = document.querySelector(BAR_SELECTOR);
-      if (!bar || manualIndex === null) return;
-      if (Date.now() - manualAt > MANUAL_IDLE_MS) {
-        log("ticker: idle, back to Torn's rotation");
-        toLive(bar);
-        return;
-      }
-      const list = headlines(bar);
-      const item = list[Math.min(manualIndex, list.length - 1)];
-      const countdown = bar.querySelector(`#${OVERLAY_ID} .aue-ticker-countdown`);
-      if (item && item.endTime > 0 && countdown) {
-        countdown.textContent = countdownText2(item.endTime);
-      }
-    }, 1e3);
     apply4();
   }
 
@@ -4147,7 +4160,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   #aue-back-to-top {
     position: fixed;
     right: 16px;
-    bottom: 80px;
+    top: 10px;
     z-index: 999990;
     display: flex;
     align-items: center;
@@ -4939,7 +4952,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.23.17");
+    document.documentElement.setAttribute("data-aue", "0.23.18");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;

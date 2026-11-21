@@ -12,6 +12,7 @@
 
 import { log } from "./debug";
 import { rowsFromJson } from "./jsonRows";
+import { BAR_SELECTOR as NEWS_TICKER_SELECTOR } from "./newsTicker";
 import { LIST_DISPLAY_EXTENSION, isEnabled } from "./settings";
 
 /** The pager widget. Pages usually carry two, above and below the list. */
@@ -46,6 +47,8 @@ const MORE_BUTTON_CLASS = "aue-pager-more";
 const MORE_BUTTON_GAP_PX = 10;
 /** The button that goes back to the top of the page once rows have been added. */
 const TOP_BUTTON_ID = "aue-back-to-top";
+/** Space between the back-to-top button and the news ticker, or the top of the screen. */
+const TOP_BUTTON_MARGIN_PX = 10;
 /** Marks the page link standing for the loaded run, "4-9", which needs to widen to fit. */
 const RANGE_CLASS = "aue-page-range";
 /** Marks a row this script appended, so it can be told from Torn's own. */
@@ -711,6 +714,8 @@ function showTopButton(show: boolean): void {
     if (!existing) return;
     existing.remove();
     forgetOwnChanges();
+    removeEventListener("scroll", placeTopButton);
+    removeEventListener("resize", placeTopButton);
     return;
   }
   if (existing) return;
@@ -723,6 +728,24 @@ function showTopButton(show: boolean): void {
   button.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
   document.body.appendChild(button);
   forgetOwnChanges();
+  placeTopButton();
+  addEventListener("scroll", placeTopButton, { passive: true });
+  addEventListener("resize", placeTopButton, { passive: true });
+}
+
+/**
+ * Keeps the back-to-top button at the top right, just under the news ticker.
+ *
+ * The bottom right is where Torn's chat sits. The ticker scrolls away with
+ * the header, so once it is gone the button stays a little below the top of
+ * the screen.
+ */
+function placeTopButton(): void {
+  const button = document.getElementById(TOP_BUTTON_ID);
+  if (!button) return;
+  const ticker = document.querySelector(NEWS_TICKER_SELECTOR);
+  const below = ticker ? ticker.getBoundingClientRect().bottom : 0;
+  button.style.top = `${Math.max(below, 0) + TOP_BUTTON_MARGIN_PX}px`;
 }
 
 /** Sets the text of every Show more button, and whether they can be clicked. */

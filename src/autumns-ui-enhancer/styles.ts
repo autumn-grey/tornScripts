@@ -215,7 +215,7 @@ const CSS = `
   #aue-back-to-top {
     position: fixed;
     right: 16px;
-    bottom: 80px;
+    top: 10px;
     z-index: 999990;
     display: flex;
     align-items: center;

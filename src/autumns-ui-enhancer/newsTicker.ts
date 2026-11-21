@@ -5,7 +5,7 @@ import { onlyOurs } from "./ownChanges";
 import { NEWS_TICKER, isEnabled } from "./settings";
 
 /** The strip the ticker lives in; everything else is found inside it. */
-const BAR_SELECTOR = ".header-bottom-text.news-ticker-new";
+export const BAR_SELECTOR = ".header-bottom-text.news-ticker-new";
 /** One headline, as Torn renders it. */
 const SLIDE_SELECTOR = ".news-ticker-slide";
 /** The overflowing box inside a slide - what actually scrolls. */
