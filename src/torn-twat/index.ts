@@ -540,7 +540,7 @@ async function verdict(t: Term, run: Run): Promise<void> {
   t.line("WAR LOSS CULPRIT VERIFIED", "flash bright");
 }
 
-/** Cut to black: the seal rises a line at a time, then the name flashes over it. */
+/** Cut to black: the seal slides up from the bottom, then the name flashes over it. */
 async function sealRise(screen: HTMLElement, out: HTMLElement, run: Run): Promise<void> {
   screen.classList.add("black");
   const stage = document.createElement("div");
@@ -552,14 +552,17 @@ async function sealRise(screen: HTMLElement, out: HTMLElement, run: Run): Promis
   sea.className = "sea";
   stage.append(title, sea);
   out.replaceChildren(stage);
+  // The whole seal is drawn once and slid up, rather than added a line at a time: moving one
+  // finished layer costs the browser nothing, while each added line made it redraw the glow.
+  const seal = document.createElement("pre");
+  seal.className = "art seal";
+  seal.textContent = SEAL.join("\n");
+  seal.style.transform = "translateY(100%)";
+  sea.appendChild(seal);
   await run.sleep(0.4);
-  for (const row of SEAL) {
-    const pre = document.createElement("pre");
-    pre.className = "art row";
-    pre.textContent = row || " ";
-    sea.appendChild(pre);
-    await run.sleep(0.15);
-  }
+  await run.animate(SEAL.length * 0.15, (p) => {
+    seal.style.transform = `translateY(${((1 - p) * 100).toFixed(3)}%)`;
+  });
   await run.sleep(0.5);
   title.classList.remove("hidden");
   title.classList.add("flash");
@@ -649,8 +652,8 @@ pre { margin: 0; font: inherit; line-height: 1; white-space: pre; }
 }
 .stage .title { margin-bottom: var(--a); width: calc(var(--a) * var(--ratio) * 96); }
 .hidden { visibility: hidden; }
-.sea { height: calc(var(--a) * ${SEAL.length}); width: calc(var(--a) * var(--ratio) * 96); overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
-.sea .row { flex: none; }
+.sea { height: calc(var(--a) * ${SEAL.length}); width: calc(var(--a) * var(--ratio) * 96); overflow: hidden; }
+.sea .seal { will-change: transform; }
 .collapsed { display: block; width: 100%; padding: 10px; border-style: dashed; border-width: 2px; }
 .collapsed pre { font-size: min(calc(var(--fit) / 52), var(--text)); display: inline-block; text-align: left; }
 .probe { position: absolute; visibility: hidden; white-space: pre; font-size: 100px; line-height: 1; }
