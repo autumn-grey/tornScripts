@@ -423,20 +423,20 @@
     }
     t.line("VOLUME PROFILE LOADED. TWAT.SYS RESIDENT.");
   }
-  async function troubledBar(t, run, label, stall, error, fallback) {
+  async function troubledBar(t, run, label, stall, recover) {
     const div = await t.bar(label, 0.8, 0, stall);
     await run.sleep(0.2);
-    const err = t.line(error, "inverse");
-    await run.sleep(0.6);
-    const fb = await t.type(fallback, 0.6);
-    await run.sleep(0.25);
-    fb.textContent += " OK";
-    await run.sleep(0.25);
-    err.remove();
-    fb.remove();
+    const lines = await recover();
+    for (const el of lines) el.remove();
     await t.bar(label, 0.5, stall, 100, div);
     await run.sleep(0.25);
     div.remove();
+  }
+  async function attempt(t, run, text, seconds, result) {
+    const div = await t.type(text, seconds);
+    await run.sleep(0.2);
+    div.textContent += ` ${result}`;
+    return div;
   }
   async function analysis(t, run) {
     t.clear();
@@ -449,25 +449,27 @@
     };
     await plain("Calculating RW Hit Effectiveness", 1.6);
     await plain("Assessing Shortfalls", 1.3);
-    await troubledBar(
-      t,
-      run,
-      "Bypassing security hypernodes",
-      63,
-      "ERR 0x00C4: HYPERNODE HANDSHAKE REFUSED",
-      "FALLBACK: rerouting via auxiliary bus 7..."
-    );
+    await troubledBar(t, run, "Bypassing security hypernodes", 63, async () => {
+      const err = t.line("ERR 0x00C4: HYPERNODE HANDSHAKE REFUSED", "inverse");
+      await run.sleep(0.6);
+      const fb = await attempt(t, run, "FALLBACK: rerouting via auxiliary bus 7...", 0.6, "OK");
+      await run.sleep(0.3);
+      return [err, fb];
+    });
     await plain("Engaging powercore fixtures", 1.3);
     await plain("Filtering carbon monoxide", 1.3);
-    await troubledBar(
-      t,
-      run,
-      "Diagnosing target selections",
-      41,
-      "WARN 0x0BAD: TARGET SELECTION LOGIC NOT FOUND",
-      "FALLBACK: assuming targets picked at random..."
-    );
-    await plain("Summarising loss drawback", 1.4);
+    await troubledBar(t, run, "Diagnosing target selections", 41, async () => {
+      const err = t.line("*** STACK OVERFLOW IN BLAME.SYS AT 0x0BAD ***", "flash");
+      await run.sleep(0.4);
+      const retry = await attempt(t, run, "Retrying...", 0.3, "FAILED");
+      await run.sleep(0.15);
+      const dump = t.line("Core dumped to c:\\local>oops.dmp", "dim");
+      await run.sleep(0.2);
+      const fix = await attempt(t, run, "Lowering standards to 12%...", 0.45, "ACCEPTED");
+      await run.sleep(0.3);
+      return [err, retry, dump, fix];
+    });
+    await plain("Summarising loss drawback", 0.9);
     await t.type("Performing T.W.A.T. Protocol", 0.7);
     await run.sleep(0.3);
     await t.type("Data absorption completed. Stored in c:\\local>log4962.txt", 1);
@@ -491,18 +493,11 @@
     const list = members.length ? members : [{ id: CULPRIT_ID, name: CULPRIT_NAME, attacks: "", score: "" }];
     const step = Math.max(0.05, (end - 0.4 - run.cue) / list.length);
     for (const [i, m] of list.entries()) {
-      const guilty = m.id === CULPRIT_ID;
-      const word = guilty ? "!! ANOMALY DETECTED !!" : VERDICTS[i % VERDICTS.length] ?? "NOMINAL";
       id.textContent = `Player ID:   ${m.id}`;
       name.textContent = `Player Name: ${m.name}`;
-      verdict2.textContent = `Assessment:  ${word}`;
-      verdict2.className = guilty ? "ln inverse" : "ln";
+      verdict2.textContent = `Assessment:  ${VERDICTS[i % VERDICTS.length] ?? "NOMINAL"}`;
       const stats = [m.attacks && `${m.attacks} hits`, m.score].filter(Boolean).join("  ");
-      t.line(
-        `> ${m.id.padEnd(8)} ${m.name.slice(0, 18).padEnd(18)} ${stats.padEnd(16)} ${guilty ? "FLAGGED" : "OK"}`,
-        guilty ? "inverse" : void 0,
-        log
-      );
+      t.line(`> ${m.id.padEnd(8)} ${m.name.slice(0, 18).padEnd(18)} ${stats.padEnd(16)} OK`, void 0, log);
       log.scrollTop = log.scrollHeight;
       t.blocks(progress, "Protocol Completion", Math.round((i + 1) / list.length * 100));
       await run.sleep(step);
@@ -603,9 +598,11 @@ button:hover, button:focus-visible { background: var(--green); color: #000; text
 .dim { color: var(--dim); }
 .bright { color: #b6ffc8; }
 .inverse { background: var(--green); color: #000; text-shadow: none; display: inline-block; }
-.flash { animation: blink 0.9s steps(1) infinite; }
-@keyframes blink { 50% { visibility: hidden; } }
-.cursor { animation: blink 0.6s steps(1) infinite; }
+/* Hard on/off flashing at an even rate. Opacity on its own layer is redrawn by the graphics card,
+   so the big glowing titles do not stutter when the page is busy repainting them. */
+.flash, .cursor { animation: blink 1s linear infinite; will-change: opacity; }
+.cursor { animation-duration: 0.6s; }
+@keyframes blink { 0%, 49.99% { opacity: 1; } 50%, 100% { opacity: 0; } }
 .log { height: calc(var(--text) * 1.25 * 10); overflow: hidden; }
 pre { margin: 0; font: inherit; line-height: 1; white-space: pre; }
 .home { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 4px; }
