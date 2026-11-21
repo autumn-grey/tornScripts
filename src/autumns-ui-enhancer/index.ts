@@ -9,6 +9,8 @@ import { installListSort } from "./listSort";
 import { hideChatsEarly, installLocalChat } from "./localChat";
 import { installNewsTicker } from "./newsTicker";
 import { installPageJumpBlock } from "./pageJumpBlock";
+import { installPersonalStats } from "./personalStats";
+import { installPersonalStatsZoom } from "./personalStatsZoom";
 import { installPreferencesPanel } from "./panel";
 import { ITEMS_PATH, installItemSend } from "./itemSend";
 import { SHOP_PATHS, installShopSend } from "./shopSend";
@@ -39,6 +41,9 @@ if (!firstCopy) {
   // Two copies would each patch, hide and lay out the same things.
 } else if (onGame) {
   start("page jump block", installPageJumpBlock);
+  // Before Torn's own code reads the address it opens the page on.
+  start("personal stats", installPersonalStats);
+  start("personal stats zoom", installPersonalStatsZoom);
   // Before Torn paints, or a chat this tab hid is shown and then taken away.
   start("chat pre-hide", hideChatsEarly);
 } else {

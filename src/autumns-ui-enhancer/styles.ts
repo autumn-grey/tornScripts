@@ -212,6 +212,55 @@ const CSS = `
     padding-left: 6px !important;
     padding-right: 6px !important;
   }
+  #aue-stats-zoom {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 6px 0 10px;
+  }
+  #aue-stats-zoom input[type="range"] {
+    width: min(360px, 60%);
+    accent-color: #999;
+    cursor: pointer;
+  }
+  .aue-stats-zoom-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #222 !important;
+    color: #ccc !important;
+    cursor: pointer;
+  }
+  .aue-stats-zoom-button:hover {
+    color: #fff !important;
+  }
+  .aue-stats-match {
+    width: auto;
+    padding: 0 10px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap;
+  }
+  .aue-stats-match[aria-pressed="true"] {
+    border-color: #888;
+    background: linear-gradient(0deg, #555 0%, #333 100%) !important;
+    color: #fff !important;
+  }
+  .aue-stats-match[hidden] {
+    display: none;
+  }
+  /* Sideways drags and swipes slide the zoomed chart; up and down still scroll the page. */
+  .aue-stats-zoomed svg[aria-label="A chart."] {
+    touch-action: pan-y;
+    cursor: grab;
+  }
   #aue-back-to-top {
     position: fixed;
     right: 16px;

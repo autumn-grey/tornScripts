@@ -3,7 +3,7 @@
 const DEBUG_KEY = "AUE_DEBUG";
 
 /** Whether diagnostic logging is switched on. */
-function debugging(): boolean {
+export function debugging(): boolean {
   try {
     return localStorage.getItem(DEBUG_KEY) === "1";
   } catch {

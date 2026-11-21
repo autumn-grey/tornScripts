@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.23.18
+// @version      0.24.2
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -92,6 +92,11 @@
     label: "Display Case Button",
     defaultOn: true
   };
+  var PERSONAL_STATS_FIXES = {
+    key: "PERSONAL_STATS_FIXES",
+    label: "Personal Stats fixes",
+    defaultOn: true
+  };
   var CITY_SHOP_ALERT = {
     // The key keeps the feature's first name so nobody's choice is forgotten.
     key: "CITY_SHOP_ALERT",
@@ -119,7 +124,8 @@
     LIST_SORTING,
     NEWS_TICKER,
     PREFERRED_RECIPIENT,
-    DISPLAY_CASE_BUTTON
+    DISPLAY_CASE_BUTTON,
+    PERSONAL_STATS_FIXES
   ];
   var API_FEATURES = [CITY_SHOP_ALERT, CITY_SHOP_STOCK];
   function isEnabled(feature) {
@@ -632,11 +638,11 @@
     tip.hidden = false;
     const place = icon.getBoundingClientRect();
     const width = tip.offsetWidth;
-    const centre = place.left + place.width / 2;
-    const left = Math.min(Math.max(4, centre - width / 2), innerWidth - width - 4);
+    const centre2 = place.left + place.width / 2;
+    const left = Math.min(Math.max(4, centre2 - width / 2), innerWidth - width - 4);
     tip.style.left = `${left + scrollX}px`;
     tip.style.top = `${place.top + scrollY - tip.offsetHeight - 8}px`;
-    tip.style.setProperty("--aue-arrow-left", `${centre - left}px`);
+    tip.style.setProperty("--aue-arrow-left", `${centre2 - left}px`);
   }
   function hideTip() {
     const tip = document.getElementById(TIP_ID);
@@ -940,7 +946,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.23.18");
+    root.setAttribute(RUNNING_ATTR, "0.24.2");
     return true;
   }
   async function w3bOneTabOn() {
@@ -2360,10 +2366,10 @@
     const rowTag = live.firstElementChild?.tagName;
     const body = parsed.body;
     if (!rowTag || !body) return null;
-    const matching = [...body.children].filter(
+    const matching2 = [...body.children].filter(
       (child) => child.tagName === rowTag
     );
-    return matching.length > 0 ? body : null;
+    return matching2.length > 0 ? body : null;
   }
   function markupIn(text) {
     const head = text.trimStart()[0];
@@ -2590,8 +2596,8 @@
   }
   function hrefBase(widget) {
     const links = [...widget.querySelectorAll(PAGE_LINK_SELECTOR)];
-    const source = links.find((link) => START_IN_LINK.test(link.getAttribute("href") ?? "")) ?? links.find((link) => (link.getAttribute("href") ?? "").length > 1);
-    const href = source?.getAttribute("href");
+    const source2 = links.find((link) => START_IN_LINK.test(link.getAttribute("href") ?? "")) ?? links.find((link) => (link.getAttribute("href") ?? "").length > 1);
+    const href = source2?.getAttribute("href");
     if (!href) return null;
     return href.replace(/(^|[#?&])start=\d+&?/, "$1").replace(/[?&]$/, "");
   }
@@ -3938,6 +3944,368 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     patchScrollTop();
   }
 
+  // src/autumns-ui-enhancer/personalStats.ts
+  var PERSONAL_STATS_PATH = "/personalstats.php";
+  var REMEMBERED = ["from", "stats"];
+  function settingFor(name) {
+    return `PERSONAL_STATS_${name.toUpperCase()}`;
+  }
+  function remember2(address) {
+    let url;
+    try {
+      url = new URL(address, location.href);
+    } catch {
+      return;
+    }
+    if (url.pathname !== PERSONAL_STATS_PATH) return;
+    for (const name of REMEMBERED) {
+      const value = url.searchParams.get(name);
+      if (value) writeSetting(settingFor(name), value);
+    }
+  }
+  function restore() {
+    const current = new URLSearchParams(location.search);
+    let search = location.search;
+    for (const name of REMEMBERED) {
+      if (current.has(name)) continue;
+      const value = readSetting(settingFor(name), "");
+      if (!value) continue;
+      search += `${search ? "&" : "?"}${name}=${encodeURIComponent(value)}`;
+    }
+    if (search === location.search) return;
+    log("personal stats: opening on", search);
+    history.replaceState(history.state, "", `${location.pathname}${search}${location.hash}`);
+  }
+  function watchHistory(name) {
+    const original = history[name];
+    history[name] = function(...args) {
+      const result = original.apply(this, args);
+      if (typeof args[2] === "string" || args[2] instanceof URL) remember2(String(args[2]));
+      return result;
+    };
+  }
+  function installPersonalStats() {
+    if (location.pathname !== PERSONAL_STATS_PATH || !isEnabled(PERSONAL_STATS_FIXES)) return;
+    restore();
+    watchHistory("pushState");
+    watchHistory("replaceState");
+    addEventListener("popstate", () => remember2(location.href));
+  }
+
+  // src/autumns-ui-enhancer/personalStatsZoom.ts
+  var PERSONAL_STATS_PATH2 = "/personalstats.php";
+  var CHART_SELECTOR = '#personal-stats svg[aria-label="A chart."]';
+  var SECTION_SELECTOR = "#chartSection";
+  var CONTROLS_ID = "aue-stats-zoom";
+  var ZOOMED_CLASS = "aue-stats-zoomed";
+  var MATCHING_SETTING = "PERSONAL_STATS_MATCHING";
+  var DAY_MS = 864e5;
+  var MIN_SPAN_DAYS = 7;
+  var SLIDER_STEPS = 100;
+  var BUTTON_STEPS = 10;
+  var LOADER_WAIT_MS = 3e4;
+  var ICON_OUT = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 17l4-6 4 6z" fill="currentColor"/></svg>';
+  var ICON_IN = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M2 20l7-11 7 11z M11 20l6-9 6 9z" fill="currentColor"/></svg>';
+  var MATCHING_LABEL = "Matching start";
+  var source = null;
+  var originalDraw = null;
+  var matchedView = null;
+  var redrawing = false;
+  var zoom = 0;
+  var centre = 0.5;
+  var valueRange = null;
+  var matching = readSetting(MATCHING_SETTING, "") === "1";
+  function toTime(value) {
+    return value instanceof Date ? value.getTime() : Number(value);
+  }
+  function isEmpty(value) {
+    return value === null || value === void 0 || typeof value === "number" && Number.isNaN(value);
+  }
+  function seriesOf(data) {
+    const found = [];
+    const columns = data.getNumberOfColumns();
+    const rows = data.getNumberOfRows();
+    for (let column = 1; column < columns; column += 1) {
+      if (data.getColumnType(column) !== "number" || data.getColumnRole?.(column)) continue;
+      const next = column + 1;
+      const tooltip = next < columns && data.getColumnRole?.(next) === "tooltip" ? next : null;
+      let start2 = 0;
+      while (start2 < rows && isEmpty(data.getValue(start2, column))) start2 += 1;
+      if (start2 < rows) found.push({ value: column, tooltip, start: start2 });
+    }
+    return found;
+  }
+  function dayTooltip(tooltip, day) {
+    if (typeof tooltip !== "string") return tooltip;
+    return tooltip.replace(/(<p class=["']?date___[^>]*>)[^<]*(<\/p>)/, `$1Day ${day}$2`);
+  }
+  function tornView(from) {
+    const range = from.data.getColumnRange(0);
+    return {
+      data: from.data,
+      options: from.options,
+      dates: range.min instanceof Date,
+      first: toTime(range.min),
+      last: toTime(range.max),
+      minSpan: MIN_SPAN_DAYS * DAY_MS
+    };
+  }
+  function buildMatchedView(from) {
+    const Table = window.google?.visualization?.DataTable;
+    const series = seriesOf(from.data);
+    if (!Table || series.length < 2) return null;
+    const { data } = from;
+    const rows = data.getNumberOfRows();
+    const table = new Table();
+    table.addColumn({ type: "number", label: "Day" });
+    for (const line of series) {
+      table.addColumn({ type: "number", label: data.getColumnLabel(line.value) });
+      if (line.tooltip !== null) {
+        table.addColumn({ type: "string", role: "tooltip", p: data.getColumnProperties?.(line.tooltip) ?? { html: true } });
+      }
+    }
+    const days = Math.max(...series.map((line) => rows - line.start));
+    const built = [];
+    for (let day = 1; day <= days; day += 1) {
+      const row = [day];
+      for (const line of series) {
+        const at = line.start + day - 1;
+        row.push(at < rows ? data.getValue(at, line.value) : null);
+        if (line.tooltip !== null) row.push(at < rows ? dayTooltip(data.getValue(at, line.tooltip), day) : null);
+      }
+      built.push(row);
+    }
+    table.addRows(built);
+    const { ticks: _ticks, format: _format, gridlines, minorGridlines, ...hAxis } = from.options.hAxis ?? {};
+    const plainGrid = (grid) => {
+      if (!grid || typeof grid !== "object") return grid;
+      const { units: _units, ...rest } = grid;
+      return rest;
+    };
+    return {
+      data: table,
+      options: {
+        ...from.options,
+        hAxis: { ...hAxis, gridlines: plainGrid(gridlines), minorGridlines: plainGrid(minorGridlines), format: "0" }
+      },
+      dates: false,
+      first: 1,
+      last: days,
+      minSpan: MIN_SPAN_DAYS
+    };
+  }
+  function canMatch() {
+    return source !== null && seriesOf(source.data).length >= 2;
+  }
+  function currentView() {
+    if (!source) return null;
+    if (matching && canMatch()) {
+      matchedView ?? (matchedView = buildMatchedView(source));
+      if (matchedView) return matchedView;
+    }
+    return tornView(source);
+  }
+  function windowShare(view) {
+    const full = view.last - view.first;
+    if (full <= view.minSpan) return 1;
+    return (view.minSpan / full) ** (zoom / SLIDER_STEPS);
+  }
+  function readValueRange(chart) {
+    try {
+      const layout = chart.getChartLayoutInterface();
+      const box2 = layout.getChartAreaBoundingBox();
+      const min = layout.getVAxisValue(box2.top + box2.height);
+      const max = layout.getVAxisValue(box2.top);
+      return Number.isFinite(min) && Number.isFinite(max) && max > min ? { min, max } : null;
+    } catch {
+      return null;
+    }
+  }
+  function redraw() {
+    const view = currentView();
+    if (!source || !view || !originalDraw) return;
+    const share = windowShare(view);
+    let options = view.options;
+    if (share < 1) {
+      valueRange ?? (valueRange = readValueRange(source.chart));
+      const full = view.last - view.first;
+      const width = full * share;
+      const start2 = Math.min(Math.max(view.first + centre * full - width / 2, view.first), view.last - width);
+      centre = (start2 + width / 2 - view.first) / full;
+      const edge = (at) => view.dates ? new Date(at) : at;
+      const hAxis = options.hAxis ?? {};
+      const vAxis = options.vAxis ?? {};
+      options = {
+        ...options,
+        hAxis: { ...hAxis, viewWindow: { min: edge(start2), max: edge(start2 + width) } },
+        vAxis: valueRange ? { ...vAxis, viewWindow: valueRange } : vAxis
+      };
+    }
+    redrawing = true;
+    try {
+      originalDraw.call(source.chart, view.data, options);
+    } finally {
+      redrawing = false;
+    }
+  }
+  function resetZoom() {
+    zoom = 0;
+    centre = 0.5;
+    valueRange = null;
+  }
+  function patchLineChart(google) {
+    const proto = google.visualization?.LineChart?.prototype;
+    if (!proto) return false;
+    if (originalDraw) return true;
+    const original = proto.draw;
+    originalDraw = original;
+    proto.draw = function(data, options = {}) {
+      if (redrawing) return original.call(this, data, options);
+      source = { chart: this, data, options };
+      matchedView = null;
+      resetZoom();
+      if (debugging()) window.aueStatsData = data;
+      try {
+        syncControls();
+        if (matching && canMatch()) {
+          redraw();
+          return void 0;
+        }
+      } catch (error) {
+        log("stats zoom: could not read the chart's data", error);
+      }
+      return original.call(this, data, options);
+    };
+    log("stats zoom: watching the chart's draws");
+    return true;
+  }
+  function watchForGoogle() {
+    const until = Date.now() + LOADER_WAIT_MS;
+    let wrapped = false;
+    const look = () => {
+      const google = window.google;
+      if (google && patchLineChart(google)) return;
+      const charts = google?.charts;
+      if (charts?.setOnLoadCallback && !wrapped) {
+        wrapped = true;
+        const original = charts.setOnLoadCallback.bind(charts);
+        charts.setOnLoadCallback = (callback) => original(() => {
+          if (google) patchLineChart(google);
+          callback();
+        });
+      }
+      if (Date.now() < until) requestAnimationFrame(look);
+    };
+    look();
+  }
+  function setZoom(value) {
+    zoom = Math.min(Math.max(Math.round(value), 0), SLIDER_STEPS);
+    syncControls();
+    redraw();
+  }
+  function setMatching(on3) {
+    matching = on3;
+    writeSetting(MATCHING_SETTING, on3 ? "1" : "");
+    resetZoom();
+    syncControls();
+    redraw();
+  }
+  function zoomButton(icon, label, change) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "aue-stats-zoom-button";
+    button.innerHTML = icon;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", () => setZoom(zoom + change));
+    return button;
+  }
+  function buildControls() {
+    const bar = document.createElement("div");
+    bar.id = CONTROLS_ID;
+    const match = document.createElement("button");
+    match.type = "button";
+    match.className = "aue-stats-zoom-button aue-stats-match";
+    match.textContent = MATCHING_LABEL;
+    match.addEventListener("click", () => setMatching(!matching));
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = String(SLIDER_STEPS);
+    slider.value = String(zoom);
+    slider.setAttribute("aria-label", "Zoom the timeline");
+    slider.addEventListener("input", () => setZoom(Number(slider.value)));
+    bar.append(match, zoomButton(ICON_OUT, "Zoom out", -BUTTON_STEPS), slider, zoomButton(ICON_IN, "Zoom in", BUTTON_STEPS));
+    return bar;
+  }
+  function syncControls() {
+    const section = document.querySelector(SECTION_SELECTOR);
+    const view = currentView();
+    const wanted = view !== null && section !== null && (view.last - view.first > view.minSpan || canMatch());
+    let bar = document.getElementById(CONTROLS_ID);
+    if (!wanted) {
+      bar?.remove();
+      return;
+    }
+    if (!bar) {
+      bar = buildControls();
+      section?.appendChild(bar);
+    } else if (bar.parentElement !== section || bar.nextElementSibling) {
+      section?.appendChild(bar);
+    }
+    const slider = bar.querySelector("input");
+    if (slider && slider.value !== String(zoom)) slider.value = String(zoom);
+    const match = bar.querySelector(".aue-stats-match");
+    if (match) {
+      match.hidden = !canMatch();
+      match.setAttribute("aria-pressed", String(matching));
+    }
+    section?.classList.toggle(ZOOMED_CLASS, zoom > 0);
+  }
+  function installPanning() {
+    let drag = null;
+    let frame = 0;
+    document.addEventListener("pointerdown", (event) => {
+      const view = currentView();
+      if (zoom === 0 || !source || !view || !(event.target instanceof Element)) return;
+      const chart = event.target.closest(CHART_SELECTOR);
+      if (!chart) return;
+      let width = chart.getBoundingClientRect().width;
+      try {
+        width = source.chart.getChartLayoutInterface().getChartAreaBoundingBox().width || width;
+      } catch {
+      }
+      drag = { x: event.clientX, centre, width, share: windowShare(view) };
+      event.preventDefault();
+    });
+    addEventListener("pointermove", (event) => {
+      if (!drag) return;
+      centre = drag.centre - (event.clientX - drag.x) / drag.width * drag.share;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        redraw();
+      });
+    });
+    const stop = () => {
+      drag = null;
+    };
+    addEventListener("pointerup", stop);
+    addEventListener("pointercancel", stop);
+  }
+  function keepControls() {
+    new MutationObserver(() => {
+      if (source && !document.getElementById(CONTROLS_ID)) syncControls();
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+  function installPersonalStatsZoom() {
+    if (location.pathname !== PERSONAL_STATS_PATH2 || !isEnabled(PERSONAL_STATS_FIXES)) return;
+    watchForGoogle();
+    installPanning();
+    if (document.body) keepControls();
+    else document.addEventListener("DOMContentLoaded", keepControls, { once: true });
+  }
+
   // src/shared/apiKey.ts
   var KEY_SHAPE = /^[A-Za-z0-9]{16}$/;
   var BAD_KEY_SHAPE = "API keys are 16 letters and numbers";
@@ -4156,6 +4524,55 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   .aue-page-range {
     padding-left: 6px !important;
     padding-right: 6px !important;
+  }
+  #aue-stats-zoom {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 6px 0 10px;
+  }
+  #aue-stats-zoom input[type="range"] {
+    width: min(360px, 60%);
+    accent-color: #999;
+    cursor: pointer;
+  }
+  .aue-stats-zoom-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #222 !important;
+    color: #ccc !important;
+    cursor: pointer;
+  }
+  .aue-stats-zoom-button:hover {
+    color: #fff !important;
+  }
+  .aue-stats-match {
+    width: auto;
+    padding: 0 10px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap;
+  }
+  .aue-stats-match[aria-pressed="true"] {
+    border-color: #888;
+    background: linear-gradient(0deg, #555 0%, #333 100%) !important;
+    color: #fff !important;
+  }
+  .aue-stats-match[hidden] {
+    display: none;
+  }
+  /* Sideways drags and swipes slide the zoomed chart; up and down still scroll the page. */
+  .aue-stats-zoomed svg[aria-label="A chart."] {
+    touch-action: pan-y;
+    cursor: grab;
   }
   #aue-back-to-top {
     position: fixed;
@@ -4952,7 +5369,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.23.18");
+    document.documentElement.setAttribute("data-aue", "0.24.2");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -6188,6 +6605,8 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   if (!firstCopy) {
   } else if (onGame) {
     start("page jump block", installPageJumpBlock);
+    start("personal stats", installPersonalStats);
+    start("personal stats zoom", installPersonalStatsZoom);
     start("chat pre-hide", hideChatsEarly);
   } else {
     start("wiki theme", installWikiTheme);
