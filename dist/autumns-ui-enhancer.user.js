@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.23.7
+// @version      0.23.17
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -940,7 +940,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.23.7");
+    root.setAttribute(RUNNING_ATTR, "0.23.17");
     return true;
   }
   async function w3bOneTabOn() {
@@ -1742,36 +1742,42 @@
   // src/autumns-ui-enhancer/listDisplay.ts
   var PAGINATION_SELECTOR = ".pagination";
   var PAGE_LINK_SELECTOR = "a.page-number[page]";
+  var PAGE_GAP_SELECTOR = "span.points";
+  var ARROW_PREV_ANY = 'i.pagination-left, [class*="pagination-left"]';
+  var ARROW_NEXT_ANY = 'i.pagination-right, [class*="pagination-right"]';
+  var ARROW_DISABLED_CLASS = "disable";
   var SPACER_CLASS = "clear";
   var ROW_CONTAINER_SELECTOR = "ul, ol, tbody";
   var NOT_A_LIST = "#sidebarroot, #header-root, .header-wrapper-top, .header-wrapper-bottom, #chatRoot, .content-title, .breadcrumbs";
   var CONTENT_ROOT_SELECTOR = ".content-wrapper, #mainContainer";
   var SETTLE_MS2 = 150;
   var MAX_SETTLE_MS = 1e3;
-  var CONTROL_ID = "aue-show-more";
+  var MORE_BUTTON_CLASS = "aue-pager-more";
+  var MORE_BUTTON_GAP_PX = 10;
+  var TOP_BUTTON_ID = "aue-back-to-top";
+  var RANGE_CLASS = "aue-page-range";
   var EXTRA_ROW_ATTR = "data-aue-extra";
+  var PAGER_STATE_ATTR = "data-aue-pager";
+  var OWN_LINK_ATTR = "data-aue-page";
+  var JUMP_CLASS = "aue-page-jump";
+  var OLD_REQUEST_PREFIX = "AUE_LIST_REQUEST:";
   var SHOW_MORE_LABEL = "Show more";
   var LOADING_LABEL = "Loading";
   var FAILED_LABEL = "Nothing more to show";
-  var START_IN_BODY = /(^|&)start=\d+/;
-  var START_IN_URL = /([?&])start=\d+/;
+  var TOP_LABEL = "Back to top";
+  var TOP_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M5 15l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var START_IN_HASH = /[?&]start=(\d+)/;
   var START_IN_LINK = /(?:^|[?&#])start=(\d+)/;
-  var lastRequest = null;
-  var ownRequest = false;
-  var writing = false;
+  var RFCV_COOKIE2 = /(?:^|;\s*)rfc_v=([^;]+)/;
+  var observer = null;
+  function forgetOwnChanges() {
+    observer?.takeRecords();
+  }
   var generation = 0;
-  var requestKey = null;
-  var onRequestCaptured = null;
   var more = null;
   var pageSteps = /* @__PURE__ */ new WeakMap();
-  function listKey() {
-    return location.hash.replace(START_IN_HASH, "");
-  }
-  function requestLanded() {
-    requestKey = listKey();
-    onRequestCaptured?.();
-  }
+  var originalPagers = /* @__PURE__ */ new WeakMap();
+  var pagerTotals = /* @__PURE__ */ new WeakMap();
   function isPlausibleStep(step) {
     return Number.isInteger(step) && step >= 1 && step <= 100;
   }
@@ -1797,10 +1803,20 @@
     }
     return null;
   }
+  function isGap(element) {
+    if (element.matches(`${PAGE_GAP_SELECTOR}, .${JUMP_CLASS}`)) return true;
+    return element.matches(PAGE_LINK_SELECTOR) && /^\s*(\.\.\.|…)\s*$/.test(element.textContent ?? "");
+  }
+  function numberLinks(widget) {
+    return [...widget.querySelectorAll(PAGE_LINK_SELECTOR)].filter((link) => !isGap(link));
+  }
+  function gapsOf(widget) {
+    return [...widget.querySelectorAll(`${PAGE_LINK_SELECTOR}, ${PAGE_GAP_SELECTOR}, .${JUMP_CLASS}`)].filter(isGap);
+  }
   function pagerPages(widget) {
     let active = 1;
     let last = 1;
-    for (const link of widget.querySelectorAll(PAGE_LINK_SELECTOR)) {
+    for (const link of numberLinks(widget)) {
       const page = Number(link.getAttribute("page"));
       if (!Number.isInteger(page) || page < 1) continue;
       if (link.classList.contains("active")) active = page;
@@ -1832,86 +1848,81 @@
     log("step:", step, "rows per request, read from", how, "-", hrefs.join(" "));
     return step;
   }
-  function redact(text) {
-    return text.replace(/=[^&]*/g, "=*");
+  function routeParams() {
+    const pairs = (text) => text.split("&").filter((pair) => pair.includes("=") && !pair.startsWith("start="));
+    const fromHash = pairs(location.hash.replace(/^#[!/]*/, ""));
+    return fromHash.length > 0 ? fromHash : pairs(location.search.replace(/^\?/, ""));
   }
-  function hashParams() {
-    return location.hash.replace(/^#\/?/, "").split("&").filter((pair) => pair.includes("=") && !pair.startsWith("start="));
+  function routeValue(name) {
+    const pair = routeParams().find((entry) => entry.split("=")[0] === name);
+    return pair === void 0 ? null : pair.slice(name.length + 1);
   }
-  function rememberRequest(method, url, body) {
-    let address;
-    try {
-      address = new URL(url, location.href);
-    } catch {
-      return false;
+  var KNOWN_LISTS = [
+    { path: "/messages.php", when: { p: "inbox" }, bare: true, body: "p=inbox&step=inbox" },
+    { path: "/bounties.php", when: { p: "main" }, bare: true, body: "p=main&step=mainBounties" },
+    {
+      path: "/forums.php",
+      when: { p: "forums" },
+      needs: ["f", "b", "a"],
+      body: "p=forums&f={f}&b={b}&a={a}&title=true&step=forums"
+    },
+    {
+      path: "/forums.php",
+      when: { p: "threads" },
+      needs: ["f", "t", "b", "a"],
+      body: "p=threads&f={f}&t={t}&b={b}&a={a}&title=true&step=threads"
+    },
+    // The tab is #itemtab= in the address but itemtype= in the request.
+    { path: "/amarket.php", needs: ["itemtab"], body: "step=getAuctionItemsList&itemtype={itemtab}" },
+    { path: "/joblist.php", when: { p: "main" }, bare: true, body: "p=main&step=mainJoblist" },
+    { path: "/joblist.php", when: { p: "corp" }, needs: ["ID"], body: "p=corp&ID={ID}&step=corpJoblist" },
+    { path: "/personals.php", when: { p: "main" }, bare: true, body: "p=main&step=mainPersonals" },
+    {
+      path: "/personals.php",
+      when: { p: "search" },
+      needs: ["type"],
+      body: "p=search&type={type}&step=searchPersonals"
+    },
+    {
+      path: "/comics.php",
+      when: { p: "main" },
+      bare: true,
+      hashPrefix: "#!",
+      body: "p=main&step=mainComics&cross_page_request=false"
+    },
+    {
+      path: "/properties.php",
+      step: "rentalmarket",
+      needs: ["property"],
+      body: "step=rentalMarket&property={property}"
+    },
+    {
+      path: "/properties.php",
+      step: "sellingmarket",
+      needs: ["property"],
+      body: "step=sellingMarket&property={property}"
     }
-    if (address.origin !== location.origin) return false;
-    if (address.pathname !== location.pathname) return false;
-    if (body !== null) {
-      const pairs = body.split("&");
-      const route = hashParams();
-      const repeatsRoute = route.length > 0 && route.every((pair) => pairs.includes(pair));
-      if (START_IN_BODY.test(body) || repeatsRoute) {
-        lastRequest = { method: method || "POST", url, body, offsetIn: "body" };
-        requestKey = null;
-        log("capture: list request to", address.pathname, redact(body));
-        return true;
-      }
-    }
-    if (START_IN_URL.test(address.search)) {
-      if (lastRequest?.offsetIn === "body") return false;
-      lastRequest = { method: method || "GET", url, body, offsetIn: "url" };
-      requestKey = null;
-      log(
-        "capture: list request to",
-        address.pathname + redact(address.search),
-        body === null ? "(no body)" : redact(body)
-      );
-      return true;
-    }
-    return false;
+  ];
+  function listRequest() {
+    const list = currentList();
+    if (!list) return null;
+    let body = list.body;
+    for (const name of list.needs ?? []) body = body.replace(`{${name}}`, routeValue(name) ?? "");
+    return body;
   }
-  function installRequestCapture() {
-    const openOriginal = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(...args) {
-      this.__aueMethod = String(args[0]);
-      this.__aueUrl = String(args[1]);
-      openOriginal.apply(this, args);
-    };
-    const sendOriginal = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.send = function(body) {
-      if (!ownRequest) {
-        const captured = rememberRequest(
-          this.__aueMethod ?? "GET",
-          this.__aueUrl ?? location.pathname,
-          typeof body === "string" ? body : null
-        );
-        if (captured) {
-          this.addEventListener("loadend", requestLanded, { once: true });
-        }
-      }
-      sendOriginal.call(this, body);
-    };
-    const fetchOriginal = window.fetch;
-    window.fetch = function(...args) {
-      const input = args[0];
-      const init = args[1];
-      const body = init?.body;
-      let captured = false;
-      if (!ownRequest) {
-        const request = input instanceof Request ? input : null;
-        const url = typeof input === "string" ? input : input instanceof URL ? input.href : request?.url ?? "";
-        captured = rememberRequest(
-          init?.method ?? request?.method ?? "GET",
-          url,
-          typeof body === "string" ? body : null
-        );
-      }
-      const sent = fetchOriginal.apply(this, args);
-      if (captured) void sent.then(requestLanded).catch(() => {
-      });
-      return sent;
-    };
+  function currentList() {
+    const pageStep = new URLSearchParams(location.search).get("step");
+    for (const list of KNOWN_LISTS) {
+      if (list.path !== location.pathname) continue;
+      if (list.step !== void 0 && list.step !== pageStep) continue;
+      const bare = list.bare === true && routeParams().length === 0;
+      const matches = Object.entries(list.when ?? {}).every(([name, value]) => routeValue(name) === value);
+      if (!matches && !bare) continue;
+      const values = (list.needs ?? []).map((name) => [name, routeValue(name)]);
+      if (values.some(([, value]) => value === null)) continue;
+      return list;
+    }
+    return null;
   }
   var MAX_CLIMB = 4;
   function isRow(element) {
@@ -1921,23 +1932,27 @@
   function rowsOf(container) {
     return [...container.children].filter(isRow);
   }
+  function fitScore(container, step) {
+    const own = rowsOf(container).filter((row) => !row.hasAttribute(EXTRA_ROW_ATTR)).length;
+    if (step === null) return 1;
+    if (own === step) return 0;
+    return own < step ? 1 : 2;
+  }
   function findRowContainer(root, step) {
-    if (root.id === CONTROL_ID) return null;
     if (root.closest(NOT_A_LIST)) return null;
-    const candidates = [];
-    for (const element of root.querySelectorAll(
-      ROW_CONTAINER_SELECTOR
-    )) {
+    let best = null;
+    const candidates = root.matches(ROW_CONTAINER_SELECTOR) ? [root, ...root.querySelectorAll(ROW_CONTAINER_SELECTOR)] : [...root.querySelectorAll(ROW_CONTAINER_SELECTOR)];
+    for (const element of candidates) {
       if (element.closest(PAGINATION_SELECTOR)) continue;
       if (element.closest(NOT_A_LIST)) continue;
-      if (rowsOf(element).length >= 2) candidates.push(element);
+      const rows = rowsOf(element).length;
+      if (rows < 2) continue;
+      const score = fitScore(element, step);
+      if (!best || score < best.score || score === best.score && rows > best.rows) {
+        best = { container: element, score, rows };
+      }
     }
-    if (candidates.length === 0) return null;
-    const full = step === null ? [] : candidates.filter((c) => rowsOf(c).length >= step);
-    const pool = full.length > 0 ? full : candidates;
-    return pool.reduce(
-      (best, c) => rowsOf(c).length > rowsOf(best).length ? c : best
-    );
+    return best;
   }
   function isSpacer(element) {
     return element.childElementCount === 0 && (element.textContent ?? "").trim() === "";
@@ -1951,7 +1966,9 @@
     ]) {
       let sibling = node[direction];
       while (sibling) {
-        if (sibling.id !== CONTROL_ID && !isSpacer(sibling)) into.push(sibling);
+        if (!sibling.matches(PAGINATION_SELECTOR) && !isSpacer(sibling)) {
+          into.push(sibling);
+        }
         sibling = sibling[direction];
       }
     }
@@ -1965,43 +1982,46 @@
     return found;
   }
   function findList(widget, step) {
+    let best = null;
     let node = widget;
-    for (let level2 = 0; node && node !== document.body && level2 <= MAX_CLIMB; ) {
+    for (let level2 = 0; node && node !== document.body && level2 <= MAX_CLIMB; level2 += 1) {
       if (node.matches(CONTENT_ROOT_SELECTOR)) break;
       for (const sibling of siblingsOf(node)) {
-        const container = findRowContainer(sibling, step);
-        if (container) {
-          return {
-            widget,
-            pagerBlock: node,
-            block: sibling,
-            container,
-            step: step ?? pageStepFor(widget, container)
-          };
-        }
+        const found = findRowContainer(sibling, step);
+        if (!found || best && found.score >= best.score) continue;
+        best = {
+          widget,
+          pagerBlock: node,
+          block: sibling,
+          container: found.container,
+          step: step ?? pageStepFor(widget, found.container),
+          score: found.score
+        };
+        if (found.score === 0) return best;
       }
       node = node.parentElement;
-      level2 += 1;
     }
-    return null;
+    return best;
   }
   function isShown(element) {
     return element.getClientRects().length > 0;
   }
+  function pagerIsAbove(target) {
+    return Boolean(
+      target.pagerBlock.compareDocumentPosition(target.block) & Node.DOCUMENT_POSITION_FOLLOWING
+    );
+  }
   function findTarget() {
-    let below = null;
-    for (const widget of document.querySelectorAll(
-      PAGINATION_SELECTOR
-    )) {
+    let best = null;
+    for (const widget of document.querySelectorAll(PAGINATION_SELECTOR)) {
       if (!widget.querySelector(PAGE_LINK_SELECTOR)) continue;
       if (!isShown(widget)) continue;
-      const target = findList(widget, pageStepFor(widget));
-      if (!target) continue;
-      const listIsAfterPager = target.pagerBlock.compareDocumentPosition(target.block) & Node.DOCUMENT_POSITION_FOLLOWING;
-      if (listIsAfterPager) return target;
-      below ?? (below = target);
+      const found = findList(widget, pageStepFor(widget));
+      if (!found) continue;
+      const better = !best || found.score < best.score || found.score === best.score && found.container === best.container && pagerIsAbove(found) && !pagerIsAbove(best);
+      if (better) best = found;
     }
-    return below;
+    return best;
   }
   function shownStart(widget, step) {
     if (widget.querySelector(`${PAGE_LINK_SELECTOR}.active`)) {
@@ -2061,27 +2081,21 @@
     walk(data, 0);
     return best === "" ? text : best;
   }
-  async function fetchRows(start2, live) {
-    if (!lastRequest) return [];
-    const { offsetIn } = lastRequest;
-    const method = lastRequest.method.toUpperCase();
-    const at = (_match, lead) => `${lead}start=${start2}`;
-    const url = offsetIn === "url" ? lastRequest.url.replace(START_IN_URL, at) : lastRequest.url;
-    let body = lastRequest.body;
-    if (offsetIn === "body" && body !== null) {
-      body = START_IN_BODY.test(body) ? body.replace(START_IN_BODY, at) : `${body}&start=${start2}`;
-    }
-    const headers = {
-      "X-Requested-With": "XMLHttpRequest"
-    };
-    const sendsBody = method !== "GET" && method !== "HEAD" && body !== null;
-    if (sendsBody) headers["Content-Type"] = "application/x-www-form-urlencoded";
-    ownRequest = true;
+  async function fetchRows(request, start2, live) {
+    const rfcv = RFCV_COOKIE2.exec(document.cookie)?.[1];
+    const url = `${location.pathname.slice(1)}${rfcv ? `?rfcv=${rfcv}` : ""}`;
+    const body = `${request}&start=${start2}`;
     let html;
     try {
-      const init = { method, headers, credentials: "same-origin" };
-      if (sendsBody) init.body = body;
-      const response = await fetch(url, init);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "X-Requested-With": "XMLHttpRequest",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+        },
+        credentials: "same-origin",
+        body
+      });
       if (!response.ok) {
         log("fetch: start", start2, "->", response.status, response.statusText);
         return [];
@@ -2089,8 +2103,6 @@
       html = await response.text();
     } catch {
       return [];
-    } finally {
-      ownRequest = false;
     }
     const template = rowsOf(live)[0];
     const built = template ? rowsFromJson(html, template) : null;
@@ -2108,7 +2120,6 @@
     }
     const parsed = new DOMParser().parseFromString(markupIn(html), "text/html");
     const container = matchingContainer(parsed, live) ?? looseRows(parsed, live);
-    if (!container) lastRequest = null;
     const rows = container ? rowsOf(container) : [];
     log(
       "fetch: start",
@@ -2138,113 +2149,430 @@
   function removeAllExtraRows() {
     const extra = document.querySelectorAll(`[${EXTRA_ROW_ATTR}]`);
     if (extra.length === 0) return;
-    writing = true;
     for (const row of extra) row.remove();
-    writing = false;
+    forgetOwnChanges();
     log("more: took back", extra.length, "added rows");
   }
   function reset() {
     removeAllExtraRows();
     more = null;
     generation += 1;
+    showTopButton(false);
   }
-  function haveRequest() {
-    return lastRequest !== null && requestKey === listKey();
+  function showTopButton(show2) {
+    const existing = document.getElementById(TOP_BUTTON_ID);
+    if (!show2) {
+      if (!existing) return;
+      existing.remove();
+      forgetOwnChanges();
+      return;
+    }
+    if (existing) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = TOP_BUTTON_ID;
+    button.setAttribute("aria-label", TOP_LABEL);
+    button.title = TOP_LABEL;
+    button.innerHTML = TOP_ICON;
+    button.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+    document.body.appendChild(button);
+    forgetOwnChanges();
   }
-  async function loadMore(button) {
+  function setButtons(text, disabled) {
+    for (const button of document.querySelectorAll(`.${MORE_BUTTON_CLASS}`)) {
+      button.textContent = text;
+      button.disabled = disabled;
+    }
+  }
+  function partName(element) {
+    return [element.tagName, ...[...element.classList].sort()].join(".");
+  }
+  function closedParts(rows) {
+    const perRow = rows.map((row) => {
+      const hidden = /* @__PURE__ */ new Set();
+      const shown = /* @__PURE__ */ new Set();
+      for (const element of row.querySelectorAll("*")) {
+        if (element.classList.length === 0) continue;
+        const name = partName(element);
+        if (getComputedStyle(element).display === "none") hidden.add(name);
+        else shown.add(name);
+      }
+      for (const name of shown) hidden.delete(name);
+      return hidden;
+    });
+    const [first, ...rest] = perRow;
+    if (!first) return /* @__PURE__ */ new Set();
+    return new Set([...first].filter((name) => rest.every((hidden) => hidden.has(name))));
+  }
+  function closeLikeTorn(row, closed) {
+    if (closed.size === 0) return row;
+    for (const element of row.querySelectorAll("*")) {
+      if (closed.has(partName(element))) element.style.display = "none";
+    }
+    return row;
+  }
+  async function loadMore() {
     const state = more;
     if (!state || state.loading || state.done) return;
     const target = findTarget();
-    if (!target || target.container !== state.container || target.step === null) return;
-    const { container, step } = target;
+    const request = listRequest();
+    if (!target || target.container !== state.container || request === null) return;
+    const { container } = target;
+    const { step } = state;
     const mine = generation;
     state.loading = true;
-    button.disabled = true;
-    button.textContent = LOADING_LABEL;
-    const rows = await fetchRows(state.next, container);
+    setButtons(LOADING_LABEL, true);
+    const rows = await fetchRows(request, state.next, container);
     state.loading = false;
     if (mine !== generation || !container.isConnected) {
       log("more: abandoned, the list moved on");
       return;
     }
     const spacer = container.querySelector(`:scope > .${SPACER_CLASS}`);
-    writing = true;
+    const closed = closedParts(rowsOf(container).filter((row) => !row.hasAttribute(EXTRA_ROW_ATTR)));
     try {
       for (const row of rows) {
-        disarm(row).setAttribute(EXTRA_ROW_ATTR, "");
+        closeLikeTorn(disarm(row), closed).setAttribute(EXTRA_ROW_ATTR, "");
         if (spacer) container.insertBefore(row, spacer);
         else container.appendChild(row);
       }
     } finally {
-      writing = false;
+      forgetOwnChanges();
     }
     log("more: added", rows.length, "rows from start", state.next);
-    state.next += step;
-    const lastStart = (pagerPages(target.widget).last - 1) * step;
-    if (rows.length < step || state.next > lastStart) state.done = true;
     if (rows.length === 0) {
-      button.textContent = FAILED_LABEL;
+      state.done = true;
+      setButtons(FAILED_LABEL, true);
+      syncPagers(false);
       return;
     }
-    button.disabled = false;
-    button.textContent = SHOW_MORE_LABEL;
-    if (state.done) removeControl();
+    state.next += step;
+    if (rows.length < step) state.done = true;
+    if (state.total !== null && state.next > (state.total - 1) * step) state.done = true;
+    setButtons(SHOW_MORE_LABEL, false);
+    showTopButton(true);
+    syncPagers(!state.done);
   }
-  function buildControl() {
-    const bar = document.createElement("div");
-    bar.id = CONTROL_ID;
-    bar.className = "aue-show-more";
-    const button = tornButton(SHOW_MORE_LABEL, "aue-show-more-button");
-    button.addEventListener("click", () => void loadMore(button));
-    bar.appendChild(button);
-    return bar;
+  function readTotal(widget) {
+    const items = [...widget.querySelectorAll(`${PAGE_LINK_SELECTOR}, ${PAGE_GAP_SELECTOR}`)];
+    const lastLink = items.filter((item) => !isGap(item)).pop();
+    if (!lastLink) return null;
+    const after = items.slice(items.indexOf(lastLink) + 1);
+    if (after.some((item) => isGap(item) && isShown(item))) return null;
+    return Number(lastLink.getAttribute("page")) || null;
   }
-  function ensureControl(target) {
-    const existing = document.getElementById(CONTROL_ID) ?? buildControl();
-    if (target.block.nextElementSibling === existing) return;
-    writing = true;
-    target.block.insertAdjacentElement("afterend", existing);
-    writing = false;
+  function totalPages(widget) {
+    return pagerTotals.has(widget) ? pagerTotals.get(widget) ?? null : readTotal(widget);
   }
-  function removeControl() {
-    const control = document.getElementById(CONTROL_ID);
-    if (!control) return;
-    writing = true;
-    control.remove();
-    writing = false;
+  function hrefBase(widget) {
+    const links = [...widget.querySelectorAll(PAGE_LINK_SELECTOR)];
+    const source = links.find((link) => START_IN_LINK.test(link.getAttribute("href") ?? "")) ?? links.find((link) => (link.getAttribute("href") ?? "").length > 1);
+    const href = source?.getAttribute("href");
+    if (!href) return null;
+    return href.replace(/(^|[#?&])start=\d+&?/, "$1").replace(/[?&]$/, "");
+  }
+  function hrefWith(base, start2) {
+    const separator = /[#?&]$/.test(base) ? "" : base.includes("#") || base.includes("?") ? "&" : "#";
+    return `${base}${separator}start=${start2}`;
+  }
+  function hrefAt(widget, start2) {
+    const base = hrefBase(widget);
+    return base === null ? null : hrefWith(base, start2);
+  }
+  function pagedByClicks(widget) {
+    const href = widget.querySelector(`${PAGE_LINK_SELECTOR}[href]`)?.getAttribute("href") ?? "";
+    return href.includes("#") && href[0] !== "#";
+  }
+  function goToPage(widget, page, step) {
+    const href = hrefAt(widget, (page - 1) * step);
+    if (!href || pagedByClicks(widget)) {
+      log("page: no page link to follow, so cannot move to page", page);
+      return;
+    }
+    const target = new URL(href, location.href);
+    if (target.origin !== location.origin) return;
+    log("page: going to page", page);
+    if (href[0] === "#") location.hash = target.hash;
+    else {
+      const prefix = currentList()?.hashPrefix;
+      if (prefix !== void 0) location.hash = prefix + target.search.slice(1);
+      else location.assign(target.href);
+    }
+  }
+  function buildJump(widget, total, step) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = JUMP_CLASS;
+    input.min = "1";
+    if (total !== null) input.max = String(total);
+    input.placeholder = "...";
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const page = Math.round(Number(input.value));
+      if (!Number.isFinite(page) || page < 1) return;
+      goToPage(widget, total === null ? page : Math.min(page, total), step);
+    });
+    return input;
+  }
+  function pageLink(template, base, page, step, label, active) {
+    const link = template.cloneNode(true);
+    link.style.removeProperty("display");
+    link.setAttribute("page", String(page));
+    link.setAttribute(OWN_LINK_ATTR, "");
+    link.classList.remove("first", "last", "active");
+    if (active) {
+      link.classList.add("active");
+      link.removeAttribute("href");
+    } else if (base !== null) {
+      link.setAttribute("href", hrefWith(base, (page - 1) * step));
+    }
+    const number = link.querySelector(".page-nb") ?? link;
+    number.textContent = label;
+    if (label !== String(page)) link.classList.add(RANGE_CLASS);
+    return link;
+  }
+  function convertOneGap(widget, total, step) {
+    const gaps = gapsOf(widget).filter(isShown);
+    if (gaps.some((gap) => gap.classList.contains(JUMP_CLASS))) return;
+    const active = numberLinks(widget).find((link) => link.classList.contains("active"));
+    const after = active ? gaps.filter((gap) => active.compareDocumentPosition(gap) & Node.DOCUMENT_POSITION_FOLLOWING) : [];
+    const chosen = after[0] ?? gaps[gaps.length - 1];
+    chosen?.replaceWith(buildJump(widget, total, step));
+  }
+  function syncPager(widget, step) {
+    const ours = widget.querySelector(`[${OWN_LINK_ATTR}], .${JUMP_CLASS}`) !== null;
+    if (!ours) {
+      originalPagers.set(widget, widget.innerHTML);
+      pagerTotals.set(widget, readTotal(widget));
+      widget.removeAttribute(PAGER_STATE_ATTR);
+    }
+    const active = pagerPages(widget).active;
+    const first = more ? more.base / step + 1 : active;
+    const loaded = more ? more.next / step : active;
+    const total = more?.done ? loaded : more?.total ?? totalPages(widget);
+    const state = `${first}:${loaded}:${total ?? "?"}`;
+    if (widget.getAttribute(PAGER_STATE_ATTR) === state) return;
+    try {
+      const jumps = !pagedByClicks(widget);
+      if (loaded <= first) {
+        if (jumps) convertOneGap(widget, total, step);
+        widget.setAttribute(PAGER_STATE_ATTR, state);
+        return;
+      }
+      const numbers = numberLinks(widget);
+      const template = numbers.find((link) => !link.classList.contains("active")) ?? numbers[0];
+      if (!template) return;
+      const anchor = widget.querySelector(ARROW_NEXT_ANY)?.closest("a") ?? widget.querySelector(".pagination-r");
+      const base = hrefBase(widget);
+      const gapTemplate = gapsOf(widget).find((gap) => !gap.classList.contains(JUMP_CLASS))?.cloneNode(true) ?? null;
+      const plainGap = () => {
+        const gap = gapTemplate?.cloneNode(true);
+        if (!(gap instanceof HTMLElement)) return document.createTextNode(" ... ");
+        gap.style.removeProperty("display");
+        return gap;
+      };
+      const before = [first - 2, first - 1].filter((page) => page >= 1);
+      const after = [loaded + 1, loaded + 2].filter((page) => total === null || page <= total);
+      const showFirst = total !== null && (before[0] ?? first) > 1;
+      const showLast = total !== null && (after[after.length - 1] ?? loaded) < total;
+      const hiddenBefore = (before[0] ?? first) > (showFirst ? 2 : 1);
+      const hiddenAfter = total === null || (after[after.length - 1] ?? loaded) < total - (showLast ? 1 : 0);
+      const fragment = document.createDocumentFragment();
+      const add = (page, label, isActive) => fragment.appendChild(pageLink(template, base, page, step, label, isActive));
+      if (showFirst) add(1, "1", false);
+      if (hiddenBefore) {
+        fragment.appendChild(jumps && !hiddenAfter ? buildJump(widget, total, step) : plainGap());
+      }
+      for (const page of before) add(page, String(page), false);
+      add(first, `${first}-${loaded}`, true);
+      for (const page of after) add(page, String(page), false);
+      if (hiddenAfter) fragment.appendChild(jumps ? buildJump(widget, total, step) : plainGap());
+      if (showLast && total !== null) {
+        add(total, String(total), false);
+        fragment.lastChild.classList.add("last");
+      }
+      for (const old of widget.querySelectorAll(
+        `${PAGE_LINK_SELECTOR}, ${PAGE_GAP_SELECTOR}, .${JUMP_CLASS}`
+      )) {
+        old.remove();
+      }
+      if (anchor && anchor.parentElement === widget) widget.insertBefore(fragment, anchor);
+      else widget.appendChild(fragment);
+      if (base === null) log("pager: no page link with an address, so the redrawn links have none");
+      widget.querySelector(ARROW_PREV_ANY)?.classList.toggle(ARROW_DISABLED_CLASS, first <= 1);
+      widget.querySelector(ARROW_NEXT_ANY)?.classList.toggle(ARROW_DISABLED_CLASS, total !== null && loaded >= total);
+      widget.setAttribute(PAGER_STATE_ATTR, state);
+    } finally {
+      forgetOwnChanges();
+    }
+  }
+  function ensurePagerButton(widget) {
+    if (widget.querySelector(`.${MORE_BUTTON_CLASS}`)) return;
+    const active = widget.querySelector(`${PAGE_LINK_SELECTOR}.active`);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = MORE_BUTTON_CLASS;
+    const shown = document.querySelector(`.${MORE_BUTTON_CLASS}`);
+    button.textContent = shown?.textContent ?? SHOW_MORE_LABEL;
+    button.disabled = shown?.disabled ?? false;
+    if (active) {
+      const style = getComputedStyle(active);
+      const transparent = /rgba\(0, 0, 0, 0\)|transparent/.test(style.backgroundColor);
+      button.style.setProperty("--aue-more-bg", style.backgroundColor);
+      button.style.setProperty("--aue-more-img", style.backgroundImage);
+      button.style.setProperty("--aue-more-edge", transparent ? "rgba(255, 255, 255, 0.3)" : style.backgroundColor);
+      button.style.setProperty("--aue-more-radius", style.borderRadius);
+      button.style.setProperty("--aue-more-color", style.color);
+      button.style.setProperty("--aue-more-height", `${active.getBoundingClientRect().height || 26}px`);
+      button.style.setProperty("--aue-more-font", style.fontFamily);
+      button.style.setProperty("--aue-more-size", style.fontSize);
+    }
+    button.addEventListener("click", () => void loadMore());
+    if (getComputedStyle(widget).position === "static") widget.style.position = "relative";
+    widget.appendChild(button);
+    if (widget.dataset.aueMorePadding === void 0) {
+      widget.dataset.aueMorePadding = widget.style.paddingRight;
+    }
+    const room = button.offsetWidth + 2 * MORE_BUTTON_GAP_PX;
+    if (parseFloat(getComputedStyle(widget).paddingRight) < room) widget.style.paddingRight = `${room}px`;
+    forgetOwnChanges();
+  }
+  function syncPagers(showButton) {
+    for (const widget of document.querySelectorAll(PAGINATION_SELECTOR)) {
+      if (!widget.querySelector(PAGE_LINK_SELECTOR) || !isShown(widget)) continue;
+      const step = pageStepFor(widget) ?? more?.step;
+      if (step === void 0) continue;
+      syncPager(widget, step);
+      const failed = widget.querySelector(`.${MORE_BUTTON_CLASS}:disabled`) !== null && !more?.loading;
+      if (showButton) ensurePagerButton(widget);
+      else if (!failed) removeButtons(widget);
+    }
+  }
+  function removeButtons(root = document) {
+    const buttons = root.querySelectorAll(`.${MORE_BUTTON_CLASS}`);
+    if (buttons.length === 0) return;
+    for (const button of buttons) {
+      const widget = button.parentElement;
+      button.remove();
+      if (widget?.dataset.aueMorePadding !== void 0) {
+        widget.style.paddingRight = widget.dataset.aueMorePadding;
+        delete widget.dataset.aueMorePadding;
+      }
+    }
+    forgetOwnChanges();
+  }
+  function restorePagers() {
+    for (const widget of document.querySelectorAll(`[${PAGER_STATE_ATTR}]`)) {
+      const original = originalPagers.get(widget);
+      if (original !== void 0) widget.innerHTML = original;
+      widget.removeAttribute(PAGER_STATE_ATTR);
+    }
+    forgetOwnChanges();
+  }
+  function arrowDirection(clicked2, widget) {
+    for (let node = clicked2; node && node !== widget; node = node.parentElement) {
+      const next = node.matches(ARROW_NEXT_ANY) || node.querySelector(ARROW_NEXT_ANY) !== null;
+      const prev = node.matches(ARROW_PREV_ANY) || node.querySelector(ARROW_PREV_ANY) !== null;
+      if (next && !prev) return "next";
+      if (prev && !next) return "prev";
+      if (next && prev) return null;
+    }
+    return null;
+  }
+  function installArrowClicks() {
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (!isEnabled(LIST_DISPLAY_EXTENSION)) return;
+        const state = more;
+        if (!state || state.next - state.base <= state.step) return;
+        const clicked2 = event.target;
+        if (!(clicked2 instanceof Element)) return;
+        const widget = clicked2.closest(PAGINATION_SELECTOR);
+        if (!widget || pagedByClicks(widget)) return;
+        const direction = arrowDirection(clicked2, widget);
+        if (direction === null) return;
+        const page = direction === "next" ? state.next / state.step + 1 : state.base / state.step;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (page < 1 || state.done && direction === "next") return;
+        goToPage(widget, page, state.step);
+      },
+      true
+    );
+  }
+  var lastHiddenReason = "";
+  function hiddenBecause(reason) {
+    if (reason === lastHiddenReason) return;
+    lastHiddenReason = reason;
+    log("more: no button -", reason);
+  }
+  function whyNoList() {
+    const pagers = [...document.querySelectorAll(PAGINATION_SELECTOR)];
+    if (pagers.length === 0) return "no element matches .pagination on this page";
+    const withLinks = pagers.filter((widget) => widget.querySelector(PAGE_LINK_SELECTOR));
+    if (withLinks.length === 0) {
+      const sample = pagers[0]?.innerHTML.replace(/\s+/g, " ").slice(0, 300) ?? "";
+      return `${pagers.length} pager(s), none with a.page-number[page] links. First pager: ${sample}`;
+    }
+    if (!withLinks.some(isShown)) return `${withLinks.length} pager(s) with links, all hidden`;
+    return "a pager is shown, but no list of rows was found beside it";
   }
   function apply2() {
     if (!isEnabled(LIST_DISPLAY_EXTENSION)) {
-      removeControl();
+      removeButtons();
+      restorePagers();
       if (more) reset();
       return;
     }
     const target = findTarget();
-    if (!target || target.step === null) {
-      removeControl();
+    if (!target) {
+      hiddenBecause(whyNoList());
+      removeButtons();
+      return;
+    }
+    if (target.step === null) {
+      hiddenBecause("the list was found, but its rows per page could not be read");
+      removeButtons();
       return;
     }
     const { step } = target;
     const base = shownStart(target.widget, step);
     if (!more || more.container !== target.container || more.base !== base) {
       if (more) reset();
-      const lastStart = (pagerPages(target.widget).last - 1) * step;
+      const total = totalPages(target.widget);
       more = {
         container: target.container,
+        step,
         base,
         next: base + step,
-        done: base + step > lastStart,
+        total,
+        done: total !== null && base + step > (total - 1) * step,
         loading: false
       };
+      log("more: list of", step, "a page, at start", base, "of", total ?? "an unknown number of", "pages");
     }
-    if (more.done || !haveRequest()) {
-      const control = document.getElementById(CONTROL_ID);
-      if (!control?.querySelector("button:disabled")) removeControl();
+    const state = more;
+    const request = listRequest();
+    syncPagers(!state.done && request !== null);
+    if (state.done || request === null) {
+      hiddenBecause(
+        state.done ? `on the last page (start ${state.base}, ${step} a page)` : `not a list Show more knows: ${location.pathname}${location.search}${location.hash}`
+      );
       return;
     }
-    ensureControl(target);
+    lastHiddenReason = "";
   }
   function installListDisplay() {
+    installArrowClicks();
+    try {
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith(OLD_REQUEST_PREFIX)) localStorage.removeItem(key);
+      }
+    } catch {
+    }
     let timer = 0;
     let deadline = 0;
     const schedule = () => {
@@ -2259,14 +2587,14 @@
         Math.max(0, Math.min(SETTLE_MS2, deadline - now))
       );
     };
-    onRequestCaptured = schedule;
-    new MutationObserver(() => {
-      if (writing) return;
-      schedule();
-    }).observe(document.body, { childList: true, subtree: true });
+    observer = new MutationObserver((records) => {
+      const elements = (nodes) => [...nodes].some((node) => node.nodeType === Node.ELEMENT_NODE);
+      if (records.some((record) => elements(record.addedNodes) || elements(record.removedNodes))) schedule();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
     addEventListener("hashchange", () => {
       reset();
-      removeControl();
+      removeButtons();
       schedule();
     });
     schedule();
@@ -2284,7 +2612,7 @@
   var DESCENDING_CLASS = "aue-sort-desc";
   var WIRED_ATTR = "data-aue-sort";
   var sorts = /* @__PURE__ */ new WeakMap();
-  var writing2 = false;
+  var writing = false;
   function clean(text) {
     return (text ?? "").replace(/\s+/g, " ").trim();
   }
@@ -2423,23 +2751,23 @@
       return a.localeCompare(b, void 0, { numeric: true }) * direction;
     });
     if (sorted.every((row, at) => row === rows[at])) return;
-    writing2 = true;
+    writing = true;
     table.reorder(sorted);
-    writing2 = false;
+    writing = false;
     log("sort: column", state.id, state.descending ? "descending" : "ascending");
   }
   function paint(table) {
     const state = sorts.get(table.container);
-    writing2 = true;
+    writing = true;
     for (const column of table.columns) {
       const active = state?.id === column.id;
       column.cell.classList.toggle(ACTIVE_CLASS, active);
       column.cell.classList.toggle(DESCENDING_CLASS, active && state.descending);
     }
-    writing2 = false;
+    writing = false;
   }
   function wire(table) {
-    writing2 = true;
+    writing = true;
     for (const column of table.columns) {
       if (!column.cell.querySelector(`.${MARK_CLASS}`)) {
         const mark = document.createElement("span");
@@ -2462,10 +2790,10 @@
         paint(table);
       });
     }
-    writing2 = false;
+    writing = false;
   }
   function unwire(table) {
-    writing2 = true;
+    writing = true;
     for (const column of table.columns) {
       column.cell.classList.remove(
         SORTABLE_CLASS,
@@ -2474,7 +2802,7 @@
       );
       column.cell.querySelector(`.${MARK_CLASS}`)?.remove();
     }
-    writing2 = false;
+    writing = false;
   }
   function pass() {
     const enabled = isEnabled(LIST_SORTING);
@@ -2492,7 +2820,7 @@
   function installListSort() {
     let timer = 0;
     const schedule = () => {
-      if (writing2) return;
+      if (writing) return;
       clearTimeout(timer);
       timer = window.setTimeout(pass, SETTLE_MS3);
     };
@@ -3206,7 +3534,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   var seen2 = [];
   var manualIndex = null;
   var manualAt = 0;
-  var writing3 = false;
+  var writing2 = false;
   function isHeadlineList(value) {
     return Array.isArray(value) && value.length > 0 && typeof value[0] === "object" && value[0] !== null && "headline" in value[0];
   }
@@ -3361,13 +3689,13 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   function ensureNav(bar) {
     bar.classList.add(BAR_CLASS);
     if (bar.querySelector(`#${NAV_ID}`)) return;
-    writing3 = true;
+    writing2 = true;
     const nav = document.createElement("div");
     nav.id = NAV_ID;
     nav.appendChild(buildArrow(-1));
     nav.appendChild(buildArrow(1));
     bar.appendChild(nav);
-    writing3 = false;
+    writing2 = false;
   }
   function stepBy(step) {
     const bar = document.querySelector(BAR_SELECTOR);
@@ -3382,10 +3710,10 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
   function toLive(bar) {
     manualIndex = null;
-    writing3 = true;
+    writing2 = true;
     bar.classList.remove(MANUAL_CLASS);
     bar.querySelector(`#${OVERLAY_ID}`)?.remove();
-    writing3 = false;
+    writing2 = false;
     watchScroller(bar.querySelector(SCROLLER_SELECTOR));
   }
   function countdownText2(endTime) {
@@ -3406,7 +3734,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       toLive(bar);
       return;
     }
-    writing3 = true;
+    writing2 = true;
     bar.classList.add(MANUAL_CLASS);
     let overlay = bar.querySelector(`#${OVERLAY_ID}`);
     if (!overlay) {
@@ -3426,7 +3754,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     overlay.replaceChildren(
       item.link ? wrapInLink(text, item.link) : text
     );
-    writing3 = false;
+    writing2 = false;
     watchScroller(overlay);
   }
   function wrapInLink(text, href) {
@@ -3441,10 +3769,10 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     if (!bar) return;
     if (!isEnabled(NEWS_TICKER)) {
       if (bar.querySelector(`#${NAV_ID}`)) {
-        writing3 = true;
+        writing2 = true;
         bar.querySelector(`#${NAV_ID}`)?.remove();
         bar.classList.remove(BAR_CLASS);
-        writing3 = false;
+        writing2 = false;
         toLive(bar);
       }
       watchScroller(null);
@@ -3471,7 +3799,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     addEventListener("pointerleave", () => pointerOver = false, true);
     let timer = 0;
     const schedule = () => {
-      if (writing3) return;
+      if (writing2) return;
       clearTimeout(timer);
       timer = window.setTimeout(apply4, 120);
     };
@@ -3782,10 +4110,95 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55) !important;
   }
 
-  .aue-show-more {
+  .aue-pager-more {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-sizing: border-box;
+    height: var(--aue-more-height, 26px);
+    padding: 0 12px;
+    border: 1px solid var(--aue-more-edge, rgba(255, 255, 255, 0.3));
+    border-radius: var(--aue-more-radius, 5px);
+    background: transparent !important;
+    color: var(--aue-more-color, #ddd) !important;
+    font-family: var(--aue-more-font, Arial, Helvetica, sans-serif);
+    font-size: var(--aue-more-size, 13px);
+    font-weight: bold;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .aue-pager-more:active:not(:disabled) {
+    background-color: var(--aue-more-bg, #333) !important;
+    background-image: var(--aue-more-img, none) !important;
+  }
+  /* The loaded run, "10-12": Torn's links are sized for one number, so this one widens. */
+  .aue-page-range,
+  .aue-page-range * {
+    width: auto !important;
+    min-width: max-content;
+    white-space: nowrap !important;
+  }
+  .aue-page-range {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+  #aue-back-to-top {
+    position: fixed;
+    right: 16px;
+    bottom: 80px;
+    z-index: 999990;
     display: flex;
+    align-items: center;
     justify-content: center;
-    margin: 8px 0;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border: 1px solid #444;
+    border-radius: 50%;
+    background: #222 !important;
+    color: #ccc !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+    cursor: pointer;
+  }
+  #aue-back-to-top:hover {
+    background: #2e2e2e !important;
+    color: #fff !important;
+  }
+  .aue-pager-more:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  /* After the number box on Torn's item send form: dark, thin grey edge, bold white. */
+  .aue-page-jump {
+    width: 56px;
+    height: 26px;
+    margin: 0 4px;
+    padding: 0 6px;
+    box-sizing: border-box;
+    border: 1px solid #444 !important;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    color: #fff !important;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    font-weight: bold;
+    text-align: center;
+    vertical-align: middle;
+    outline: none;
+    -moz-appearance: textfield;
+  }
+  .aue-page-jump::placeholder {
+    color: #999;
+  }
+  .aue-page-jump:focus {
+    border-color: #777 !important;
+  }
+  .aue-page-jump::-webkit-outer-spin-button,
+  .aue-page-jump::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
   }
 
   .aue-sort {
@@ -4526,7 +4939,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.23.7");
+    document.documentElement.setAttribute("data-aue", "0.23.17");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -5762,7 +6175,6 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   if (!firstCopy) {
   } else if (onGame) {
     start("page jump block", installPageJumpBlock);
-    start("request capture", installRequestCapture);
     start("chat pre-hide", hideChatsEarly);
   } else {
     start("wiki theme", installWikiTheme);

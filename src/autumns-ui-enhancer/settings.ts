@@ -88,7 +88,7 @@ export const CITY_SHOP_STOCK: Feature = {
 };
 
 // Do not move the key to GM_setValue: any @grant sandboxes this script, and
-// the fetch, XHR and scroll patches would stop reaching Torn's own code.
+// the history and scroll patches would stop reaching Torn's own code.
 
 /** Where the API key is kept. */
 export const API_KEY_SETTING = "API_KEY";

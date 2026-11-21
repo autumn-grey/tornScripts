@@ -67,7 +67,7 @@ Standard professional practice, which is also the style already in `src/`:
 - Nothing from an unfocused tab: no reading it to send elsewhere, no alerts or attention-grabbing from it.
 - Display changes (greying out, warnings, overlays, injected info) are always fine.
 
-**API keys:** never written to a file in this repo. `.gitignore` blocks the usual accidents, but the rule is that keys never touch disk here at all. In the browser, a script keeps its key in `GM_setValue` when it already has GM grants, or in `localStorage` when it runs with `@grant none` (Autumn's UI Enhancer: adding a grant would sandbox it and cut its fetch, XHR and scroll patches off from Torn's own code).
+**API keys:** never written to a file in this repo. `.gitignore` blocks the usual accidents, but the rule is that keys never touch disk here at all. In the browser, a script keeps its key in `GM_setValue` when it already has GM grants, or in `localStorage` when it runs with `@grant none` (Autumn's UI Enhancer: adding a grant would sandbox it and cut its history and scroll patches off from Torn's own code).
 
 ## Torn specifics
 

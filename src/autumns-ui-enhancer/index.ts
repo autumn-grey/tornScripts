@@ -4,7 +4,7 @@ import { installCityShopAlert } from "./cityShop";
 import { claimPage, installClashCheck } from "./clash";
 import { log } from "./debug";
 import { installDisplayCase } from "./displayCase";
-import { installListDisplay, installRequestCapture } from "./listDisplay";
+import { installListDisplay } from "./listDisplay";
 import { installListSort } from "./listSort";
 import { hideChatsEarly, installLocalChat } from "./localChat";
 import { installNewsTicker } from "./newsTicker";
@@ -39,7 +39,6 @@ if (!firstCopy) {
   // Two copies would each patch, hide and lay out the same things.
 } else if (onGame) {
   start("page jump block", installPageJumpBlock);
-  start("request capture", installRequestCapture);
   // Before Torn paints, or a chat this tab hid is shown and then taken away.
   start("chat pre-hide", hideChatsEarly);
 } else {

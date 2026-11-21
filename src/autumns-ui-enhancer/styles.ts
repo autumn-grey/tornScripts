@@ -178,10 +178,95 @@ const CSS = `
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55) !important;
   }
 
-  .aue-show-more {
+  .aue-pager-more {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-sizing: border-box;
+    height: var(--aue-more-height, 26px);
+    padding: 0 12px;
+    border: 1px solid var(--aue-more-edge, rgba(255, 255, 255, 0.3));
+    border-radius: var(--aue-more-radius, 5px);
+    background: transparent !important;
+    color: var(--aue-more-color, #ddd) !important;
+    font-family: var(--aue-more-font, Arial, Helvetica, sans-serif);
+    font-size: var(--aue-more-size, 13px);
+    font-weight: bold;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .aue-pager-more:active:not(:disabled) {
+    background-color: var(--aue-more-bg, #333) !important;
+    background-image: var(--aue-more-img, none) !important;
+  }
+  /* The loaded run, "10-12": Torn's links are sized for one number, so this one widens. */
+  .aue-page-range,
+  .aue-page-range * {
+    width: auto !important;
+    min-width: max-content;
+    white-space: nowrap !important;
+  }
+  .aue-page-range {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+  #aue-back-to-top {
+    position: fixed;
+    right: 16px;
+    bottom: 80px;
+    z-index: 999990;
     display: flex;
+    align-items: center;
     justify-content: center;
-    margin: 8px 0;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border: 1px solid #444;
+    border-radius: 50%;
+    background: #222 !important;
+    color: #ccc !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+    cursor: pointer;
+  }
+  #aue-back-to-top:hover {
+    background: #2e2e2e !important;
+    color: #fff !important;
+  }
+  .aue-pager-more:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  /* After the number box on Torn's item send form: dark, thin grey edge, bold white. */
+  .aue-page-jump {
+    width: 56px;
+    height: 26px;
+    margin: 0 4px;
+    padding: 0 6px;
+    box-sizing: border-box;
+    border: 1px solid #444 !important;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    color: #fff !important;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    font-weight: bold;
+    text-align: center;
+    vertical-align: middle;
+    outline: none;
+    -moz-appearance: textfield;
+  }
+  .aue-page-jump::placeholder {
+    color: #999;
+  }
+  .aue-page-jump:focus {
+    border-color: #777 !important;
+  }
+  .aue-page-jump::-webkit-outer-spin-button,
+  .aue-page-jump::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
   }
 
   .aue-sort {
