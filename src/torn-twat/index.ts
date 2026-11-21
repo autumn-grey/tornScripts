@@ -109,7 +109,11 @@ function gmBytes(url: string): Promise<ArrayBuffer> {
       url,
       method: "GET",
       responseType: "arraybuffer",
-      onload: (r) => (r.status === 200 ? resolve(r.response as ArrayBuffer) : reject(new Error(`HTTP ${r.status}`))),
+      // Torn PDA's version only returns text, so anything but real bytes counts as a failure.
+      onload: (r) =>
+        r.status === 200 && r.response instanceof ArrayBuffer
+          ? resolve(r.response)
+          : reject(new Error(`HTTP ${r.status}, no binary body`)),
       onerror: reject,
       ontimeout: reject,
     }),
@@ -119,9 +123,11 @@ function gmBytes(url: string): Promise<ArrayBuffer> {
 const bytesCache = new Map<ResourceName, Promise<ArrayBuffer>>();
 
 /**
- * The bytes of an @resource file. Tampermonkey keeps @resource files with the script, so this
- * normally reads a local copy. Raw bytes rather than a URL are used throughout because Torn's
- * page may refuse blob: or data: URLs as media and font sources; decoded bytes are not checked.
+ * The bytes of an @resource file. Tampermonkey keeps @resource files with the script, so on desktop
+ * this reads a local copy and never reaches the downloads below. Torn PDA has no @resource support,
+ * so there the file comes straight from GitHub, which allows requests from any site.
+ * Raw bytes rather than a URL are used throughout because Torn's page may refuse blob: or data:
+ * URLs as media and font sources; decoded bytes are not checked.
  */
 function resourceBytes(name: ResourceName): Promise<ArrayBuffer> {
   let p = bytesCache.get(name);
@@ -133,7 +139,13 @@ function resourceBytes(name: ResourceName): Promise<ArrayBuffer> {
         if (url?.startsWith("data:")) return dataUriBytes(url);
         if (url) return await (await fetch(url)).arrayBuffer();
       } catch {
-        // Fall through to downloading it.
+        // No @resource support (Torn PDA): fall through to downloading it.
+      }
+      try {
+        const res = await fetch(RESOURCES[name]);
+        if (res.ok) return await res.arrayBuffer();
+      } catch {
+        // Blocked by the page; the userscript manager's own request is the last try.
       }
       return gmBytes(RESOURCES[name]);
     })();
