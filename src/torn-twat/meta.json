@@ -1,0 +1,15 @@
+{
+  "name": "TornTwat",
+  "version": "1.0.0",
+  "description": "T.W.A.T., the Torn War Analysis Tool, for The ZOO - Night Shift's lost ranked wars. Music: \"Blame It on the Boogie\" Sega Genesis remix (https://www.youtube.com/watch?v=-d3loT714ZM) and \"Kiss From a Rose\" by seals (https://www.youtube.com/watch?v=G76nKGWRLPU). Font: IBM 3270 by Ricardo Banffy and contributors, BSD 3-Clause (https://github.com/rbanffy/3270font).",
+  "match": ["https://www.torn.com/war.php?step=rankreport*"],
+  "grant": ["GM_getResourceURL", "GM_xmlhttpRequest", "GM_getValue", "GM_setValue"],
+  "resource": [
+    "boogie https://raw.githubusercontent.com/autumn-grey/tornScripts/main/assets/torn-twat/boogie.mp3",
+    "seals https://raw.githubusercontent.com/autumn-grey/tornScripts/main/assets/torn-twat/seals.mp3",
+    "font https://raw.githubusercontent.com/autumn-grey/tornScripts/main/assets/torn-twat/3270-Regular.woff"
+  ],
+  "connect": ["raw.githubusercontent.com"],
+  "run-at": "document-idle",
+  "noframes": true
+}
