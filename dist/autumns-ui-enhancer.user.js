@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.25.0
+// @version      1.0.0
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -102,6 +102,11 @@
     label: "Forum Search",
     defaultOn: true
   };
+  var HIDE_CHATS = {
+    key: "HIDE_CHATS",
+    label: "Hide Chats",
+    defaultOn: true
+  };
   var CITY_SHOP_ALERT = {
     // The key keeps the feature's first name so nobody's choice is forgotten.
     key: "CITY_SHOP_ALERT",
@@ -131,7 +136,8 @@
     PREFERRED_RECIPIENT,
     DISPLAY_CASE_BUTTON,
     PERSONAL_STATS_FIXES,
-    FORUM_SEARCH
+    FORUM_SEARCH,
+    HIDE_CHATS
   ];
   var API_FEATURES = [CITY_SHOP_ALERT, CITY_SHOP_STOCK];
   function isEnabled(feature) {
@@ -442,7 +448,7 @@
       for (const item of shop.items) {
         if (!checked.has(item.id) || was.get(item.id) !== 0) continue;
         if (typeof item.stock !== "number" || item.stock <= 0) continue;
-        if (restocked.some((seen3) => seen3.id === item.id)) continue;
+        if (restocked.some((seen4) => seen4.id === item.id)) continue;
         log("city shop: back in stock", item.name, item.stock);
         restocked.push({ id: item.id, name: item.name, url: shop.url });
       }
@@ -952,7 +958,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.25.0");
+    root.setAttribute(RUNNING_ATTR, "1.0.0");
     return true;
   }
   async function w3bOneTabOn() {
@@ -1935,8 +1941,8 @@
   }
   function splitSearch(q) {
     const phrases = [];
-    let rest = q.replace(/"([^"]*)"/g, (_, inside) => {
-      if (inside.trim()) phrases.push(inside.trim());
+    let rest = q.replace(/"([^"]*)"/g, (_, inside2) => {
+      if (inside2.trim()) phrases.push(inside2.trim());
       return " ";
     });
     const without = [];
@@ -2091,7 +2097,7 @@
     if (location.pathname !== FORUMS_PATH || !isEnabled(FORUM_SEARCH)) return;
     let timer = 0;
     let lastCount = -1;
-    const pass3 = () => {
+    const pass4 = () => {
       placePanel();
       const list = document.querySelector(SELECTORS3.results);
       const count = list ? list.querySelectorAll(SELECTORS3.result).length : -1;
@@ -2102,9 +2108,502 @@
     };
     new MutationObserver(() => {
       clearTimeout(timer);
-      timer = window.setTimeout(pass3, 150);
+      timer = window.setTimeout(pass4, 150);
     }).observe(document.body, { childList: true, subtree: true });
-    pass3();
+    pass4();
+  }
+
+  // src/autumns-ui-enhancer/hideChats.ts
+  var SELECTORS4 = {
+    panel: "#people_panel",
+    /** The title in the panel's header, "Your private chats" while the chats tab is open. */
+    title: 'button span[class*="headingH1___"]',
+    /** The block holding the search box and the list. */
+    content: '[class*="content___"]',
+    /** The scrolling list Torn draws the rows into. */
+    list: "#private-channel-list",
+    /** One conversation; its id ends in the other player's id. */
+    card: 'button[id^="private_chat_card_"]',
+    /** The row holding the name and the time of the last message. */
+    header: '[class*="header___"]',
+    /** The name link. */
+    name: 'a[class*="title___"]',
+    /** The time of the last message, "4 days ago". */
+    time: '[class*="metadata___"]',
+    /** The last message, "Name : text". */
+    description: '[class*="description___"]'
+  };
+  var DM_PATH = /\/dm$/;
+  var ROW_HEIGHT = 68;
+  var CARD_PREFIX = "private_chat_card_";
+  var CHATS_TITLE = "Your private chats";
+  var ON_CLASS = "aue-hide-chats";
+  var HIDDEN_MODE_CLASS = "aue-hide-chats-hidden";
+  var OUT_CLASS = "aue-hide-chats-out";
+  var GLOW_CLASS = "aue-hide-chats-glow";
+  var OPEN_CLASS = "aue-hide-chats-open";
+  var MENU_ID = "aue-hide-chats-menu";
+  var HIDDEN_LIST_ID = "aue-hide-chats-list";
+  var HIDE_BUTTON_CLASS = "aue-hide-chats-x";
+  var HIDDEN_SETTING = "HIDE_CHATS_PEOPLE";
+  var SAVED_SETTING = "HIDE_CHATS_SAVED";
+  var mode = "shown";
+  var newInShown = false;
+  var lastPreview = /* @__PURE__ */ new Map();
+  var seen2 = /* @__PURE__ */ new Map();
+  var hiddenIndex = /* @__PURE__ */ new Map();
+  var written = /* @__PURE__ */ new WeakMap();
+  function setStyle(element, property, value) {
+    let mine = written.get(element);
+    if (!mine) written.set(element, mine = /* @__PURE__ */ new Map());
+    if (mine.get(property) === value) return;
+    mine.set(property, value);
+    element.style.setProperty(property, value);
+  }
+  function hiddenIds() {
+    try {
+      const parsed = JSON.parse(readSetting(HIDDEN_SETTING, "[]"));
+      return new Set(Array.isArray(parsed) ? parsed.map(String) : []);
+    } catch {
+      return /* @__PURE__ */ new Set();
+    }
+  }
+  function savedChats() {
+    try {
+      const parsed = JSON.parse(readSetting(SAVED_SETTING, "{}"));
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  function writeSaved(saved) {
+    writeSetting(SAVED_SETTING, JSON.stringify(saved));
+  }
+  function decode(text) {
+    const box2 = document.createElement("textarea");
+    box2.innerHTML = text;
+    return box2.value;
+  }
+  function flat(text) {
+    return text.replace(/\s+/g, " ").trim();
+  }
+  function fromItem(item) {
+    const other = item.otherUser;
+    const last = item.lastMessage;
+    if (!other?.userId) return null;
+    return {
+      name: other.name ?? "",
+      avatar: other.avatar ?? "",
+      preview: last ? flat(`${last.sender?.name ?? ""} : ${decode(last.content ?? "")}`) : "",
+      when: typeof last?.createdAt === "number" ? last.createdAt : null,
+      whenText: "",
+      unread: false
+    };
+  }
+  function fromThem(chat) {
+    return chat.preview.startsWith(`${chat.name} :`);
+  }
+  function updateFromReply(saved, id, fresh) {
+    const old = saved[id];
+    if (!old) {
+      saved[id] = fresh;
+      return true;
+    }
+    const newer = old.when !== null && fresh.when !== null ? fresh.when > old.when : flat(old.preview) !== flat(fresh.preview);
+    if (!newer && old.name === fresh.name && old.avatar === fresh.avatar) return false;
+    saved[id] = { ...old, ...fresh, domPreview: old.domPreview, unread: old.unread || newer && fromThem(fresh) };
+    return true;
+  }
+  function updateFromRow(saved, id, card) {
+    const row = fromCard(card);
+    const dom = row.preview;
+    const old = saved[id];
+    if (!old) {
+      saved[id] = { ...row, domPreview: dom };
+      return true;
+    }
+    if (old.domPreview === dom) return false;
+    if (old.domPreview === void 0) {
+      saved[id] = { ...old, domPreview: dom };
+      return true;
+    }
+    saved[id] = { ...old, ...row, when: Date.now(), domPreview: dom, unread: old.unread || fromThem(row) };
+    return true;
+  }
+  function filterReply(data) {
+    if (!Array.isArray(data.items)) return 0;
+    const hidden = hiddenIds();
+    const saved = savedChats();
+    let changed = false;
+    const kept = [];
+    for (const item of data.items) {
+      const id = String(item.otherUser?.userId ?? "");
+      const fresh = fromItem(item);
+      if (fresh) seen2.set(id, fresh);
+      if (!hidden.has(id)) {
+        kept.push(item);
+        continue;
+      }
+      if (fresh && updateFromReply(saved, id, fresh)) changed = true;
+    }
+    if (changed) writeSaved(saved);
+    const removed = data.items.length - kept.length;
+    data.items = kept;
+    return removed;
+  }
+  var serverRead = 0;
+  var givenToTorn = 0;
+  function serverOffset(asked) {
+    if (asked === 0) {
+      serverRead = 0;
+      givenToTorn = 0;
+      return 0;
+    }
+    return asked === givenToTorn && givenToTorn !== serverRead ? serverRead : asked;
+  }
+  function withOffset(input, offset) {
+    const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+    if (url.searchParams.get("offset") === String(offset)) return input;
+    url.searchParams.set("offset", String(offset));
+    return input instanceof Request ? new Request(url, input) : url.toString();
+  }
+  function installChatFilter() {
+    if (!isEnabled(HIDE_CHATS)) return;
+    const original = window.fetch;
+    window.fetch = async function(input, init) {
+      let url;
+      try {
+        url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      } catch {
+        return original.call(this, input, init);
+      }
+      if (!DM_PATH.test(url.pathname)) return original.call(this, input, init);
+      const asked = Number(url.searchParams.get("offset") ?? "0") || 0;
+      const offset = serverOffset(asked);
+      if (offset !== asked) log("hide chats: Torn asked from", asked, "- moved on to", offset);
+      const response = await original.call(this, withOffset(input, offset), init);
+      try {
+        const data = await response.clone().json();
+        if (!Array.isArray(data.items)) return response;
+        const read = data.items.length;
+        const removed = filterReply(data);
+        serverRead = offset + read;
+        givenToTorn += data.items.length;
+        if (typeof data.total === "number") data.total -= serverRead - givenToTorn;
+        if (removed > 0) log("hide chats: took", removed, "hidden chat(s) out of", read);
+        schedule();
+        const headers = new Headers(response.headers);
+        headers.delete("content-length");
+        headers.delete("content-encoding");
+        return new Response(JSON.stringify(data), { status: response.status, statusText: response.statusText, headers });
+      } catch {
+        return response;
+      }
+    };
+  }
+  function fromCard(card) {
+    const link = card.querySelector(SELECTORS4.name);
+    const name = link ? [...link.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent ?? "").join("").trim() : "";
+    return {
+      name,
+      avatar: card.querySelector("img")?.getAttribute("src") ?? "",
+      preview: flat(card.querySelector(SELECTORS4.description)?.textContent ?? ""),
+      when: null,
+      whenText: (card.querySelector(SELECTORS4.time)?.textContent ?? "").trim(),
+      unread: false
+    };
+  }
+  function hide(id, card) {
+    const ids = hiddenIds();
+    ids.add(id);
+    writeSetting(HIDDEN_SETTING, JSON.stringify([...ids]));
+    const saved = savedChats();
+    const details = seen2.get(id) ?? (card ? fromCard(card) : null);
+    if (details) saved[id] = { ...details, unread: false, domPreview: card ? fromCard(card).preview : void 0 };
+    writeSaved(saved);
+    log("hide chats: hid", id);
+  }
+  function unhide(id) {
+    const ids = hiddenIds();
+    ids.delete(id);
+    writeSetting(HIDDEN_SETTING, JSON.stringify([...ids]));
+    const saved = savedChats();
+    delete saved[id];
+    writeSaved(saved);
+    hiddenIndex.delete(id);
+    log("hide chats: brought back", id);
+  }
+  function rowButton(symbol, title, action) {
+    const button = document.createElement("span");
+    button.className = HIDE_BUTTON_CLASS;
+    button.setAttribute("role", "button");
+    button.tabIndex = 0;
+    button.textContent = symbol;
+    button.title = title;
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+      button.addEventListener(type, (event) => event.stopPropagation());
+    }
+    const run = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      action();
+      pass();
+    };
+    button.addEventListener("click", run);
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") run(event);
+    });
+    return button;
+  }
+  function ago(when) {
+    const minutes = Math.max(0, Math.round((Date.now() - when) / 6e4));
+    const say3 = (count, unit) => count === 1 ? `1 ${unit} ago` : `${count} ${unit}s ago`;
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return say3(minutes, "minute");
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return say3(hours, "hour");
+    return say3(Math.round(hours / 24), "day");
+  }
+  function hiddenRow(id, chat) {
+    const row = document.createElement("div");
+    row.className = "aue-hide-chats-row";
+    row.classList.toggle("aue-hide-chats-unread", chat.unread);
+    const picture = document.createElement("img");
+    picture.className = "aue-hide-chats-avatar";
+    picture.alt = "";
+    if (/^(https:\/\/|\/)/.test(chat.avatar)) picture.src = chat.avatar;
+    const body = document.createElement("div");
+    body.className = "aue-hide-chats-body";
+    const head = document.createElement("div");
+    head.className = "aue-hide-chats-head";
+    const name = document.createElement("a");
+    name.className = "aue-hide-chats-name";
+    name.href = `/profiles.php?XID=${encodeURIComponent(id)}`;
+    name.textContent = chat.name || `[${id}]`;
+    const time = document.createElement("span");
+    time.className = "aue-hide-chats-time";
+    time.textContent = chat.when !== null ? ago(chat.when) : chat.whenText;
+    head.append(
+      name,
+      time,
+      rowButton("↩", "Unhide", () => unhide(id))
+    );
+    const preview = document.createElement("div");
+    preview.className = "aue-hide-chats-preview";
+    preview.textContent = chat.preview;
+    body.append(head, preview);
+    row.append(picture, body);
+    return row;
+  }
+  function drawHiddenList(list) {
+    const content = list.parentElement;
+    if (!content) return;
+    let box2 = document.getElementById(HIDDEN_LIST_ID);
+    if (mode !== "hidden") {
+      box2?.remove();
+      return;
+    }
+    if (!box2) {
+      box2 = document.createElement("div");
+      box2.id = HIDDEN_LIST_ID;
+      content.append(box2);
+    }
+    if (getComputedStyle(content).position === "static") setStyle(content, "position", "relative");
+    setStyle(box2, "top", `${list.offsetTop}px`);
+    setStyle(box2, "height", `${list.offsetHeight}px`);
+    const hidden = hiddenIds();
+    const saved = savedChats();
+    const chats = [...hidden].map((id) => [id, saved[id] ?? { name: "", avatar: "", preview: "", when: null, whenText: "", unread: false }]).sort(([, a], [, b]) => Number(b.unread) - Number(a.unread) || (b.when ?? 0) - (a.when ?? 0));
+    const key = JSON.stringify(chats);
+    if (box2.dataset.drawn === key) return;
+    box2.dataset.drawn = key;
+    if (chats.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "aue-hide-chats-empty";
+      empty.textContent = "No hidden chats";
+      box2.replaceChildren(empty);
+    } else {
+      box2.replaceChildren(...chats.map(([id, chat]) => hiddenRow(id, chat)));
+    }
+  }
+  function markHiddenRead() {
+    const saved = savedChats();
+    let changed = false;
+    for (const chat of Object.values(saved)) {
+      if (chat.unread) {
+        chat.unread = false;
+        changed = true;
+      }
+    }
+    if (changed) writeSaved(saved);
+  }
+  var MODES = [
+    ["shown", CHATS_TITLE],
+    ["hidden", "Hidden chats"]
+  ];
+  function buildMenu() {
+    const menu2 = document.createElement("div");
+    menu2.id = MENU_ID;
+    const label = document.createElement("span");
+    label.className = "aue-hide-chats-label";
+    const drop = document.createElement("div");
+    drop.className = "aue-hide-chats-drop";
+    for (const [value, text] of MODES) {
+      const item = document.createElement("div");
+      item.className = "aue-hide-chats-item";
+      item.dataset.mode = value;
+      item.textContent = text;
+      drop.append(item);
+    }
+    menu2.append(label, drop);
+    return menu2;
+  }
+  function inside(element, x, y) {
+    const box2 = element.getBoundingClientRect();
+    return box2.width > 0 && x >= box2.left && x <= box2.right && y >= box2.top && y <= box2.bottom;
+  }
+  function setMode(picked) {
+    if (picked === mode) return;
+    if (mode === "hidden") markHiddenRead();
+    mode = picked;
+    newInShown = false;
+    pass();
+  }
+  function onMenuPress(event) {
+    const menu2 = document.getElementById(MENU_ID);
+    if (!menu2) return;
+    const point = event instanceof TouchEvent ? event.changedTouches[0] : event;
+    if (!point) return;
+    const { clientX: x, clientY: y } = point;
+    const open = menu2.classList.contains(OPEN_CLASS);
+    const items = [...menu2.querySelectorAll(".aue-hide-chats-item")];
+    const onLabel = inside(menu2, x, y);
+    const onItem = open ? items.find((item) => inside(item, x, y)) : void 0;
+    if (!onLabel && !onItem) {
+      if (open && event.type === "click") menu2.classList.remove(OPEN_CLASS);
+      return;
+    }
+    event.stopPropagation();
+    if (event.cancelable && event.type !== "touchstart") event.preventDefault();
+    if (event.type !== "click") return;
+    if (onItem) {
+      menu2.classList.remove(OPEN_CLASS);
+      setMode(onItem.dataset.mode === "hidden" ? "hidden" : "shown");
+    } else {
+      menu2.classList.toggle(OPEN_CLASS, !open);
+    }
+  }
+  function placeMenu(panel) {
+    const title = panel.querySelector(SELECTORS4.title);
+    let menu2 = document.getElementById(MENU_ID);
+    const onChats = title !== null && (title.textContent ?? "").trim() === CHATS_TITLE;
+    if (!onChats || !title) {
+      menu2?.remove();
+      if (title) setStyle(title, "visibility", "");
+      return null;
+    }
+    if (!menu2) {
+      menu2 = buildMenu();
+      panel.append(menu2);
+    }
+    const label = menu2.querySelector(".aue-hide-chats-label");
+    const text = MODES.find(([value]) => value === mode)?.[1] ?? CHATS_TITLE;
+    if (label && label.textContent !== text) label.textContent = text;
+    setStyle(title, "visibility", "hidden");
+    if (getComputedStyle(panel).position === "static") setStyle(panel, "position", "relative");
+    const box2 = panel.getBoundingClientRect();
+    const at = title.getBoundingClientRect();
+    setStyle(menu2, "left", `${at.left - box2.left}px`);
+    setStyle(menu2, "top", `${at.top - box2.top}px`);
+    setStyle(menu2, "height", `${at.height}px`);
+    setStyle(menu2, "font", getComputedStyle(title).font);
+    return menu2;
+  }
+  function rowIndex(card) {
+    const y = /translateY\((-?[\d.]+)px\)/.exec(card.style.transform)?.[1];
+    return y === void 0 ? null : Math.round(Number(y) / ROW_HEIGHT);
+  }
+  function tidyTornList(list, hidden, saved) {
+    let savedChanged = false;
+    const cards = [...list.querySelectorAll(SELECTORS4.card)];
+    for (const card of cards) {
+      const id = card.id.slice(CARD_PREFIX.length);
+      const index = rowIndex(card);
+      const isHidden = hidden.has(id);
+      card.classList.toggle(OUT_CLASS, isHidden);
+      if (isHidden && index !== null) hiddenIndex.set(id, index);
+      const preview = flat(card.querySelector(SELECTORS4.description)?.textContent ?? "");
+      const before = lastPreview.get(id);
+      lastPreview.set(id, preview);
+      if (isHidden) {
+        if (updateFromRow(saved, id, card)) savedChanged = true;
+      } else if (before !== void 0 && before !== preview && mode === "hidden") {
+        const name = fromCard(card).name;
+        if (preview.startsWith(`${name} :`)) newInShown = true;
+      }
+      if (!card.querySelector(`.${HIDE_BUTTON_CLASS}`)) {
+        card.querySelector(SELECTORS4.header)?.append(rowButton("✕", "Hide", () => hide(id, card)));
+      }
+    }
+    for (const id of hiddenIndex.keys()) if (!hidden.has(id)) hiddenIndex.delete(id);
+    for (const card of cards) {
+      const index = rowIndex(card);
+      if (index === null) continue;
+      let above = 0;
+      for (const at of hiddenIndex.values()) if (at < index) above++;
+      setStyle(card, "translate", above > 0 ? `0 ${-above * ROW_HEIGHT}px` : "");
+    }
+    return savedChanged;
+  }
+  var scheduled = false;
+  function pass() {
+    scheduled = false;
+    const panel = document.querySelector(SELECTORS4.panel);
+    if (!panel) return;
+    const list = panel.querySelector(SELECTORS4.list);
+    const menu2 = placeMenu(panel);
+    const on3 = list !== null && menu2 !== null;
+    panel.classList.toggle(ON_CLASS, on3);
+    panel.classList.toggle(HIDDEN_MODE_CLASS, on3 && mode === "hidden");
+    if (!list || !menu2) {
+      document.getElementById(HIDDEN_LIST_ID)?.remove();
+      return;
+    }
+    const hidden = hiddenIds();
+    const saved = savedChats();
+    if (tidyTornList(list, hidden, saved)) writeSaved(saved);
+    drawHiddenList(list);
+    const unreadHidden = [...hidden].some((id) => saved[id]?.unread);
+    const glow = mode === "shown" ? unreadHidden : newInShown;
+    menu2.classList.toggle(GLOW_CLASS, glow);
+  }
+  function schedule() {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(pass);
+  }
+  function installHideChats() {
+    if (!isEnabled(HIDE_CHATS)) return;
+    new MutationObserver((records) => {
+      const matters = records.some(
+        (record) => record.type !== "attributes" || record.target instanceof Element && record.target.closest(SELECTORS4.panel) !== null
+      );
+      if (matters) schedule();
+    }).observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ["id", "style"]
+    });
+    for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend", "click"]) {
+      addEventListener(type, onMenuPress, { capture: true, passive: false });
+    }
+    addEventListener("resize", schedule);
+    addEventListener("pagehide", () => {
+      if (mode === "hidden") markHiddenRead();
+    });
+    schedule();
   }
 
   // src/autumns-ui-enhancer/jsonRows.ts
@@ -2318,7 +2817,7 @@
   var SCROLL_SPEED = 34;
   var HOLD_MS = 1500;
   var MANUAL_IDLE_MS = 45e3;
-  var seen2 = [];
+  var seen3 = [];
   var manualIndex = null;
   var manualAt = 0;
   var writing = false;
@@ -2378,7 +2877,7 @@
     return null;
   }
   function headlines(bar) {
-    return readHeadlines(bar) ?? seen2;
+    return readHeadlines(bar) ?? seen3;
   }
   function liveHeadline(bar) {
     const slides = Array.from(bar.querySelectorAll(SLIDE_SELECTOR)).reverse();
@@ -2395,9 +2894,9 @@
     const html = headline?.innerHTML ?? "";
     if (!html) return;
     const id = headline?.textContent?.trim() ?? html;
-    if (seen2.some((item) => item.id === id)) return;
+    if (seen3.some((item) => item.id === id)) return;
     const link = bar.querySelector(`${SLIDE_SELECTOR} a`);
-    seen2.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
+    seen3.push({ id, html, link: link?.getAttribute("href") ?? null, endTime: 0 });
   }
   function liveIndex(bar, list) {
     const showing = compareText(liveHeadline(bar)?.innerHTML ?? "");
@@ -2585,13 +3084,13 @@
     );
     addEventListener("pointerleave", () => pointerOver = false, true);
     let timer = 0;
-    const schedule = () => {
+    const schedule2 = () => {
       if (writing) return;
       clearTimeout(timer);
       timer = window.setTimeout(apply2, 120);
     };
     new MutationObserver((records) => {
-      if (!onlyOurs(records)) schedule();
+      if (!onlyOurs(records)) schedule2();
     }).observe(document.body, {
       childList: true,
       subtree: true
@@ -3474,7 +3973,7 @@
     }
     let timer = 0;
     let deadline = 0;
-    const schedule = () => {
+    const schedule2 = () => {
       const now = Date.now();
       if (deadline === 0) deadline = now + MAX_SETTLE_MS;
       clearTimeout(timer);
@@ -3488,15 +3987,15 @@
     };
     observer = new MutationObserver((records) => {
       const elements = (nodes) => [...nodes].some((node) => node.nodeType === Node.ELEMENT_NODE);
-      if (records.some((record) => elements(record.addedNodes) || elements(record.removedNodes))) schedule();
+      if (records.some((record) => elements(record.addedNodes) || elements(record.removedNodes))) schedule2();
     });
     observer.observe(document.body, { childList: true, subtree: true });
     addEventListener("hashchange", () => {
       reset();
       removeButtons();
-      schedule();
+      schedule2();
     });
-    schedule();
+    schedule2();
   }
 
   // src/autumns-ui-enhancer/listSort.ts
@@ -3520,14 +4019,14 @@
     return match ? Number(match[0]) : null;
   }
   function isNumericColumn(rows, column) {
-    let seen3 = 0;
+    let seen4 = 0;
     for (const row of rows) {
       const text = column.read(row);
       if (text === "") continue;
       if (numberIn(text) === null) return false;
-      seen3 += 1;
+      seen4 += 1;
     }
-    return seen3 > 0;
+    return seen4 > 0;
   }
   function keyOf2(cell) {
     for (const name of cell.classList) {
@@ -3703,7 +4202,7 @@
     }
     writing2 = false;
   }
-  function pass() {
+  function pass2() {
     const enabled = isEnabled(LIST_SORTING);
     for (const table of sortables()) {
       if (!enabled) {
@@ -3718,19 +4217,19 @@
   }
   function installListSort() {
     let timer = 0;
-    const schedule = () => {
+    const schedule2 = () => {
       if (writing2) return;
       clearTimeout(timer);
-      timer = window.setTimeout(pass, SETTLE_MS3);
+      timer = window.setTimeout(pass2, SETTLE_MS3);
     };
     new MutationObserver((records) => {
-      if (!onlyOurs(records)) schedule();
+      if (!onlyOurs(records)) schedule2();
     }).observe(document.body, {
       childList: true,
       subtree: true
     });
-    addEventListener("hashchange", schedule);
-    schedule();
+    addEventListener("hashchange", schedule2);
+    schedule2();
   }
 
   // src/autumns-ui-enhancer/localChat.ts
@@ -4163,7 +4662,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       wrapper.classList.toggle(HIDDEN_CLASS, on3);
     }
   }
-  function hide(id) {
+  function hide2(id) {
     const hidden = readSet(HIDDEN_KEY);
     hidden.add(id);
     writeSet(HIDDEN_KEY, hidden);
@@ -4198,11 +4697,11 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     const known = readSet(KNOWN_KEY);
     const openedHere = focusedOnArrival;
     let changed = false;
-    let seen3 = 0;
+    let seen4 = 0;
     for (const box2 of chatBoxes()) {
       const wrapper = wrapperOf(box2);
       if (!wrapper) continue;
-      seen3 += 1;
+      seen4 += 1;
       if (pickedFromMenu(box2)) {
         if (hidden.delete(box2.id)) {
           changed = true;
@@ -4227,7 +4726,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       writeSet(HIDDEN_KEY, hidden);
     }
     paintBarIcons(hidden);
-    if (seen3 > 0) liftEarlyHide();
+    if (seen4 > 0) liftEarlyHide();
     measureRow();
     relayout2();
   }
@@ -4260,7 +4759,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
         return;
       }
       swallow(event);
-      hide(box2.id);
+      hide2(box2.id);
       return;
     }
     const tab = target.closest(TASKBAR_SELECTOR);
@@ -4285,7 +4784,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
         return;
       }
       swallow(event);
-      hide(id);
+      hide2(id);
     }
   }
   var watchedItems = /* @__PURE__ */ new WeakSet();
@@ -4335,8 +4834,8 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       item.classList.add(HIDDEN_CLASS);
       noteUndone(INDEPENDENT_CHAT_TABS.label, "a chat this tab has hidden", chatRoot());
     }
-    const written = writtenOffsets.get(item);
-    if (written !== void 0 && item.style.translate !== written) {
+    const written2 = writtenOffsets.get(item);
+    if (written2 !== void 0 && item.style.translate !== written2) {
       const feature = barSide() === "left" ? CHAT_SIDE_BUTTON : INDEPENDENT_CHAT_TABS;
       noteUndone(feature.label, "where the chat windows sit", chatRoot());
     }
@@ -4388,6 +4887,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
     const target = event.target;
     if (!(target instanceof Element) || !target.closest(PEOPLE_PANEL_SELECTOR)) return;
+    if (target.closest(`.${HIDE_BUTTON_CLASS}`)) return;
     const entry = target.closest("li, a, button, [role='button']") ?? target;
     const texts = [];
     for (const element of [entry, ...entry.querySelectorAll("*")]) {
@@ -5093,6 +5593,142 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   .aue-page-range {
     padding-left: 6px !important;
     padding-right: 6px !important;
+  }
+  /* Hide Chats: a hidden person's row that got past the filter, and the Hidden chats list over Torn's. */
+  #people_panel.aue-hide-chats .aue-hide-chats-out {
+    visibility: hidden !important;
+  }
+  #aue-hide-chats-list {
+    position: absolute;
+    z-index: 5;
+    left: 0;
+    right: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: #333 !important;
+    color: #ddd !important;
+  }
+  #aue-hide-chats-list * {
+    color: inherit !important;
+  }
+  #aue-hide-chats-list .aue-hide-chats-empty {
+    padding: 20px;
+    text-align: center;
+    opacity: 0.7;
+  }
+  #aue-hide-chats-list .aue-hide-chats-row {
+    display: flex;
+    gap: 10px;
+    padding: 8px 10px;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  #aue-hide-chats-list .aue-hide-chats-avatar {
+    flex: none;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 2px solid #666;
+    object-fit: cover;
+  }
+  #aue-hide-chats-list .aue-hide-chats-body {
+    flex: 1;
+    min-width: 0;
+  }
+  #aue-hide-chats-list .aue-hide-chats-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #aue-hide-chats-list .aue-hide-chats-name {
+    flex: 1;
+    overflow: hidden;
+    color: #fff !important;
+    font-size: 16px;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #aue-hide-chats-list .aue-hide-chats-unread .aue-hide-chats-name {
+    font-weight: bold;
+  }
+  #aue-hide-chats-list .aue-hide-chats-unread .aue-hide-chats-name::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: #4cff4c;
+    vertical-align: middle;
+  }
+  #aue-hide-chats-list .aue-hide-chats-time {
+    flex: none;
+    font-size: 12px;
+  }
+  #aue-hide-chats-list .aue-hide-chats-preview {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: 2px;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }
+  .aue-hide-chats-x {
+    flex: none;
+    margin-left: 8px;
+    padding: 0 2px;
+    color: #999 !important;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .aue-hide-chats-x:hover {
+    color: #fff !important;
+  }
+  #aue-hide-chats-menu {
+    position: absolute;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    color: #fff !important;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-label::after {
+    content: "";
+    display: inline-block;
+    margin: 0 0 3px 8px;
+    border: 5px solid transparent;
+    border-top-color: currentColor;
+    vertical-align: middle;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-drop {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 100%;
+    padding: 4px 0;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #222 !important;
+    font-size: 14px;
+    font-weight: normal;
+  }
+  #aue-hide-chats-menu.aue-hide-chats-open .aue-hide-chats-drop {
+    display: block;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-item {
+    padding: 6px 12px;
+    color: #fff !important;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-item:hover {
+    background: #3a3a3a !important;
+  }
+  #aue-hide-chats-menu.aue-hide-chats-glow .aue-hide-chats-label {
+    color: #b6ffb0 !important;
+    text-shadow: 0 0 6px #4cff4c, 0 0 12px #1fbf1f;
   }
   #aue-forum-search {
     display: flex;
@@ -6121,7 +6757,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.25.0");
+    document.documentElement.setAttribute("data-aue", "1.0.0");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -6611,7 +7247,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   var ITEMS_PATH = "/item.php";
   var SETTLE_MS5 = 120;
   var filled = /* @__PURE__ */ new WeakSet();
-  function pass2() {
+  function pass3() {
     if (!isEnabled(PREFERRED_RECIPIENT)) return;
     const forms = findSendForms(document.body);
     if (forms.length) log("send: send forms on the items page:", forms.length);
@@ -6622,12 +7258,12 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     }
   }
   function installItemSend() {
-    pass2();
+    pass3();
     let timer = 0;
     new MutationObserver((records) => {
       if (onlyOurs(records)) return;
       clearTimeout(timer);
-      timer = window.setTimeout(pass2, SETTLE_MS5);
+      timer = window.setTimeout(pass3, SETTLE_MS5);
     }).observe(document.body, { childList: true, subtree: true });
   }
 
@@ -7359,6 +7995,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     start("page jump block", installPageJumpBlock);
     start("personal stats", installPersonalStats);
     start("personal stats zoom", installPersonalStatsZoom);
+    start("hide chats filter", installChatFilter);
     start("chat pre-hide", hideChatsEarly);
   } else {
     start("wiki theme", installWikiTheme);
@@ -7372,6 +8009,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       return;
     }
     start("per-tab chat", installLocalChat);
+    start("hide chats", installHideChats);
     start("news ticker", installNewsTicker);
     start("city shop alert", installCityShopAlert);
     if (location.pathname === PREFERENCES_PATH) {

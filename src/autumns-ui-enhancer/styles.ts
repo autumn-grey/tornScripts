@@ -212,6 +212,142 @@ const CSS = `
     padding-left: 6px !important;
     padding-right: 6px !important;
   }
+  /* Hide Chats: a hidden person's row that got past the filter, and the Hidden chats list over Torn's. */
+  #people_panel.aue-hide-chats .aue-hide-chats-out {
+    visibility: hidden !important;
+  }
+  #aue-hide-chats-list {
+    position: absolute;
+    z-index: 5;
+    left: 0;
+    right: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: #333 !important;
+    color: #ddd !important;
+  }
+  #aue-hide-chats-list * {
+    color: inherit !important;
+  }
+  #aue-hide-chats-list .aue-hide-chats-empty {
+    padding: 20px;
+    text-align: center;
+    opacity: 0.7;
+  }
+  #aue-hide-chats-list .aue-hide-chats-row {
+    display: flex;
+    gap: 10px;
+    padding: 8px 10px;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  #aue-hide-chats-list .aue-hide-chats-avatar {
+    flex: none;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 2px solid #666;
+    object-fit: cover;
+  }
+  #aue-hide-chats-list .aue-hide-chats-body {
+    flex: 1;
+    min-width: 0;
+  }
+  #aue-hide-chats-list .aue-hide-chats-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #aue-hide-chats-list .aue-hide-chats-name {
+    flex: 1;
+    overflow: hidden;
+    color: #fff !important;
+    font-size: 16px;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #aue-hide-chats-list .aue-hide-chats-unread .aue-hide-chats-name {
+    font-weight: bold;
+  }
+  #aue-hide-chats-list .aue-hide-chats-unread .aue-hide-chats-name::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: #4cff4c;
+    vertical-align: middle;
+  }
+  #aue-hide-chats-list .aue-hide-chats-time {
+    flex: none;
+    font-size: 12px;
+  }
+  #aue-hide-chats-list .aue-hide-chats-preview {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: 2px;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }
+  .aue-hide-chats-x {
+    flex: none;
+    margin-left: 8px;
+    padding: 0 2px;
+    color: #999 !important;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .aue-hide-chats-x:hover {
+    color: #fff !important;
+  }
+  #aue-hide-chats-menu {
+    position: absolute;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    color: #fff !important;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-label::after {
+    content: "";
+    display: inline-block;
+    margin: 0 0 3px 8px;
+    border: 5px solid transparent;
+    border-top-color: currentColor;
+    vertical-align: middle;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-drop {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 100%;
+    padding: 4px 0;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #222 !important;
+    font-size: 14px;
+    font-weight: normal;
+  }
+  #aue-hide-chats-menu.aue-hide-chats-open .aue-hide-chats-drop {
+    display: block;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-item {
+    padding: 6px 12px;
+    color: #fff !important;
+  }
+  #aue-hide-chats-menu .aue-hide-chats-item:hover {
+    background: #3a3a3a !important;
+  }
+  #aue-hide-chats-menu.aue-hide-chats-glow .aue-hide-chats-label {
+    color: #b6ffb0 !important;
+    text-shadow: 0 0 6px #4cff4c, 0 0 12px #1fbf1f;
+  }
   #aue-forum-search {
     display: flex;
     flex-direction: column;

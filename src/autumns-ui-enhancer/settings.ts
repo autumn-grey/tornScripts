@@ -86,6 +86,12 @@ export const FORUM_SEARCH: Feature = {
   defaultOn: true,
 };
 
+export const HIDE_CHATS: Feature = {
+  key: "HIDE_CHATS",
+  label: "Hide Chats",
+  defaultOn: true,
+};
+
 export const CITY_SHOP_ALERT: Feature = {
   // The key keeps the feature's first name so nobody's choice is forgotten.
   key: "CITY_SHOP_ALERT",
@@ -139,6 +145,7 @@ export const FEATURES: Feature[] = [
   DISPLAY_CASE_BUTTON,
   PERSONAL_STATS_FIXES,
   FORUM_SEARCH,
+  HIDE_CHATS,
 ];
 
 /** The switches that use the API key, shown under it. */

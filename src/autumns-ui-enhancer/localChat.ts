@@ -17,6 +17,7 @@
 
 import { noteUndone } from "./clash";
 import { log } from "./debug";
+import { HIDE_BUTTON_CLASS } from "./hideChats";
 import { onlyOurs } from "./ownChanges";
 import { CHAT_SIDE_BUTTON, INDEPENDENT_CHAT_TABS, isEnabled } from "./settings";
 
@@ -1235,6 +1236,8 @@ function onMenuClick(event: MouseEvent): void {
   if (!isEnabled(INDEPENDENT_CHAT_TABS)) return;
   const target = event.target;
   if (!(target instanceof Element) || !target.closest(PEOPLE_PANEL_SELECTOR)) return;
+  // The hide button sits inside an entry but opens nothing.
+  if (target.closest(`.${HIDE_BUTTON_CLASS}`)) return;
 
   const entry = target.closest("li, a, button, [role='button']") ?? target;
   // Each element's own text, without its children's: the name can sit beside

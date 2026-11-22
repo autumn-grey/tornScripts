@@ -5,6 +5,7 @@ import { claimPage, installClashCheck } from "./clash";
 import { log } from "./debug";
 import { installDisplayCase } from "./displayCase";
 import { installForumSearch } from "./forumSearch";
+import { installChatFilter, installHideChats } from "./hideChats";
 import { installListDisplay } from "./listDisplay";
 import { installListSort } from "./listSort";
 import { hideChatsEarly, installLocalChat } from "./localChat";
@@ -45,6 +46,8 @@ if (!firstCopy) {
   // Before Torn's own code reads the address it opens the page on.
   start("personal stats", installPersonalStats);
   start("personal stats zoom", installPersonalStatsZoom);
+  // Before Torn's chat code loads its list, so the first batch is filtered too.
+  start("hide chats filter", installChatFilter);
   // Before Torn paints, or a chat this tab hid is shown and then taken away.
   start("chat pre-hide", hideChatsEarly);
 } else {
@@ -63,6 +66,7 @@ function onReady(): void {
   }
 
   start("per-tab chat", installLocalChat);
+  start("hide chats", installHideChats);
   start("news ticker", installNewsTicker);
   start("city shop alert", installCityShopAlert);
   if (location.pathname === PREFERENCES_PATH) {
