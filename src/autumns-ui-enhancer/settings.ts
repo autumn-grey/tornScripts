@@ -80,6 +80,12 @@ export const PERSONAL_STATS_FIXES: Feature = {
   defaultOn: true,
 };
 
+export const FORUM_SEARCH: Feature = {
+  key: "FORUM_SEARCH",
+  label: "Forum Search",
+  defaultOn: true,
+};
+
 export const CITY_SHOP_ALERT: Feature = {
   // The key keeps the feature's first name so nobody's choice is forgotten.
   key: "CITY_SHOP_ALERT",
@@ -132,6 +138,7 @@ export const FEATURES: Feature[] = [
   PREFERRED_RECIPIENT,
   DISPLAY_CASE_BUTTON,
   PERSONAL_STATS_FIXES,
+  FORUM_SEARCH,
 ];
 
 /** The switches that use the API key, shown under it. */

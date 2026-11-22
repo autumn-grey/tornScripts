@@ -4,6 +4,7 @@ import { installCityShopAlert } from "./cityShop";
 import { claimPage, installClashCheck } from "./clash";
 import { log } from "./debug";
 import { installDisplayCase } from "./displayCase";
+import { installForumSearch } from "./forumSearch";
 import { installListDisplay } from "./listDisplay";
 import { installListSort } from "./listSort";
 import { hideChatsEarly, installLocalChat } from "./localChat";
@@ -73,6 +74,7 @@ function onReady(): void {
     start("display case", installDisplayCase);
   }
   if (SHOP_PATHS.includes(location.pathname)) start("shop send", installShopSend);
+  start("forum search", installForumSearch);
   start("list display", installListDisplay);
   start("list sort", installListSort);
 }

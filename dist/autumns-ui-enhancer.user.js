@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      0.24.2
+// @version      0.25.0
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -97,6 +97,11 @@
     label: "Personal Stats fixes",
     defaultOn: true
   };
+  var FORUM_SEARCH = {
+    key: "FORUM_SEARCH",
+    label: "Forum Search",
+    defaultOn: true
+  };
   var CITY_SHOP_ALERT = {
     // The key keeps the feature's first name so nobody's choice is forgotten.
     key: "CITY_SHOP_ALERT",
@@ -125,7 +130,8 @@
     NEWS_TICKER,
     PREFERRED_RECIPIENT,
     DISPLAY_CASE_BUTTON,
-    PERSONAL_STATS_FIXES
+    PERSONAL_STATS_FIXES,
+    FORUM_SEARCH
   ];
   var API_FEATURES = [CITY_SHOP_ALERT, CITY_SHOP_STOCK];
   function isEnabled(feature) {
@@ -383,14 +389,14 @@
     const response = await fetch(`${LOG_URL}?${params}`, { credentials: "omit" });
     const body = await response.json();
     throwIfApiError(body);
-    const entries = Array.isArray(body.log) ? body.log : [];
-    log("city shop: log entries", entries);
-    return entries;
+    const entries2 = Array.isArray(body.log) ? body.log : [];
+    log("city shop: log entries", entries2);
+    return entries2;
   }
   function quantityOf(entry) {
     const data = entry.data ?? {};
-    for (const field2 of ["quantity", "qty", "amount"]) {
-      const value = data[field2];
+    for (const field3 of ["quantity", "qty", "amount"]) {
+      const value = data[field3];
       if (typeof value === "number") return value;
     }
     const items = data.items;
@@ -468,8 +474,8 @@
     lastFetch = Date.now();
     try {
       const day = tctMidnight();
-      const entries = await fetchShopBuys(key, day, DAILY_LIMIT);
-      const total = entries.reduce((sum, entry) => sum + quantityOf(entry), 0);
+      const entries2 = await fetchShopBuys(key, day, DAILY_LIMIT);
+      const total = entries2.reduce((sum, entry) => sum + quantityOf(entry), 0);
       writeSetting(STATE_SETTING, JSON.stringify({ day, bought: total, fetchedAt: Date.now() }));
       bought = total;
       log("city shop:", bought, "bought today");
@@ -946,7 +952,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "0.24.2");
+    root.setAttribute(RUNNING_ATTR, "0.25.0");
     return true;
   }
   async function w3bOneTabOn() {
@@ -1547,6 +1553,558 @@
       clearTimeout(timer);
       timer = window.setTimeout(scan, SETTLE_MS);
     }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  // src/autumns-ui-enhancer/forumSearch.ts
+  var FORUMS_PATH = "/forums.php";
+  var SELECTORS3 = {
+    /** The search box of Torn's own form, on the forums home. */
+    tornSearchInput: 'input[placeholder*="search term" i]',
+    /** Torn's forum menu, read for the forum names and numbers. */
+    tornForumSelect: "select#forum-category",
+    /** The results list, tagged with the words searched and whether the match was exact. */
+    results: ".forums-thread[data-words]",
+    /** The block the results page's pager, breadcrumbs and results sit in. */
+    resultsWrap: ".search-wrap",
+    /** One result. */
+    result: "ul.thread-list > li",
+    title: ".title-black",
+    /** Holds data-thread, data-post and data-author. */
+    postWrap: ".post-wrap",
+    /** "View this post in the X forum", linking to the post with f= for the forum. */
+    postLink: "a.search-link",
+    created: ".time-wrap .created",
+    body: ".post",
+    authorName: ".poster-name",
+    karma: "li.karma"
+  };
+  var PANEL_ID = "aue-forum-search";
+  var RANKED_ID = "aue-forum-ranked";
+  var FILTERED_CLASS = "aue-search-filtered";
+  var ENDED_CLASS = "aue-search-ended";
+  var RANKED_CLASS = "aue-search-ranked";
+  var EXCLUDED_SETTING = "FORUM_SEARCH_EXCLUDED";
+  var PICKED_SETTING = "FORUM_SEARCH_PICKED";
+  var SINCE_SETTING = "FORUM_SEARCH_SINCE";
+  var BEFORE_SETTING = "FORUM_SEARCH_BEFORE";
+  var ORDER_SETTING = "FORUM_SEARCH_ORDER";
+  var FORUMS_SETTING = "FORUM_SEARCH_FORUMS";
+  var TYPES = [
+    ["0", "All Posts"],
+    ["3", "Thread Titles"],
+    ["1", "Original Posts"],
+    ["2", "Thread Replies"],
+    ["4", "Thread with Polls"]
+  ];
+  var BUILT_IN_FORUMS = [
+    ["1", "Announcements"],
+    ["8", "Donator Forum"],
+    ["9991", "My Faction"],
+    ["9992", "My Company"],
+    ["2", "General Discussion"],
+    ["3", "Questions & Answers"],
+    ["61", "Tutorials & Guides"],
+    ["10", "Trading Post"],
+    ["13", "Fun & Games"],
+    ["62", "Community Events"],
+    ["16", "Achievements"],
+    ["9", "Faction Discussion"],
+    ["24", "Faction Recruitment"],
+    ["20", "Company Discussion"],
+    ["46", "Company Recruitment"],
+    ["59", "Attacking"],
+    ["11", "Stock Market"],
+    ["22", "Properties"],
+    ["15", "Gambling"],
+    ["69", "Poker"],
+    ["21", "Racing"],
+    ["47", "Missions"],
+    ["23", "Graphics"],
+    ["67", "Tools & Userscripts"],
+    ["14", "Discord"],
+    ["63", "API Development"],
+    ["19", "Bugs & Issues"],
+    ["4", "Suggestions"],
+    ["17", "Graveyard"],
+    ["38", "Politics & Law"],
+    ["6", "General Non-related"],
+    ["40", "Gaming"],
+    ["41", "Music"],
+    ["7", "Roleplay"],
+    ["35", "TV & Movies"],
+    ["37", "Sports"],
+    ["49", "Art & Literature"],
+    ["36", "Technology"],
+    ["54", "Food & Cooking"],
+    ["52", "Hobbies & Interests"],
+    ["39", "Health & Fitness"],
+    ["53", "Paranormal"],
+    ["56", "Travel & Culture"],
+    ["55", "Animals & Nature"],
+    ["50", "Science"],
+    ["51", "Motoring"]
+  ];
+  function readIds(setting) {
+    try {
+      const parsed = JSON.parse(readSetting(setting, "[]"));
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  function forumList() {
+    const select = document.querySelector(SELECTORS3.tornForumSelect);
+    if (select) {
+      const read = [...select.options].filter((option) => option.value !== "0").map((option) => [option.value, (option.textContent ?? "").trim()]);
+      if (read.length > 0) {
+        writeSetting(FORUMS_SETTING, JSON.stringify(read));
+        return read;
+      }
+    }
+    try {
+      const kept = JSON.parse(readSetting(FORUMS_SETTING, ""));
+      if (Array.isArray(kept) && kept.length > 0) return kept;
+    } catch {
+    }
+    return BUILT_IN_FORUMS;
+  }
+  function currentSearch() {
+    const params = new URLSearchParams(location.search || location.hash.replace(/^#[!/]*/, "?"));
+    const fromHash = new URLSearchParams(location.hash.replace(/^#[!/]*/, ""));
+    const read = (name) => fromHash.get(name) ?? params.get(name) ?? "";
+    return { q: read("q"), f: read("f") || "0", y: read("y") || "0" };
+  }
+  function onResultsPage() {
+    return document.querySelector(SELECTORS3.results) !== null;
+  }
+  function dayStart(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const time = Date.parse(`${value}T00:00:00Z`);
+    return Number.isFinite(time) ? time : null;
+  }
+  function readPosted(text) {
+    const match = /(\d{2}):(\d{2}):(\d{2})\s*-\s*(\d{2})\/(\d{2})\/(\d{2})/.exec(text);
+    if (!match) return null;
+    const [, h, m, s, d, mo, y] = match.map(Number);
+    return Date.UTC(2e3 + (y ?? 0), (mo ?? 1) - 1, d, h, m, s);
+  }
+  function readResult(item) {
+    const wrap = item.querySelector(SELECTORS3.postWrap);
+    const link = item.querySelector(SELECTORS3.postLink);
+    if (!wrap || !link) return null;
+    const href = link.getAttribute("href") ?? "";
+    const forumName = /in the (.+?) forum/i.exec(link.textContent ?? "")?.[1]?.trim() ?? "";
+    const karmaText = item.querySelector(SELECTORS3.karma)?.textContent ?? "";
+    return {
+      item,
+      thread: wrap.dataset.thread ?? "",
+      post: wrap.dataset.post ?? "",
+      title: (item.querySelector(SELECTORS3.title)?.textContent ?? "").trim(),
+      forumId: /[?&]f=(\d+)/.exec(href)?.[1] ?? "",
+      forumName,
+      link: href,
+      posted: readPosted(item.querySelector(SELECTORS3.created)?.textContent ?? ""),
+      author: (item.querySelector(SELECTORS3.authorName)?.textContent ?? "").trim(),
+      karma: Number(karmaText.replace(/[^\d]/g, "")) || 0,
+      text: (item.querySelector(SELECTORS3.body)?.textContent ?? "").replace(/\s+/g, " ").trim()
+    };
+  }
+  function searchTerms(list) {
+    const words = (list.getAttribute("data-words") ?? "").split(",").map((word) => word.trim()).filter(Boolean);
+    if (list.getAttribute("data-exact-match") === "1" && words.length > 1) return [words.join(" ")];
+    return words;
+  }
+  function termPattern(terms) {
+    if (terms.length === 0) return null;
+    const escaped = terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"));
+    return new RegExp(`\\b(?:${escaped.join("|")})\\b`, "gi");
+  }
+  function onlyForums() {
+    return currentSearch().f === "0" ? new Set(readIds(PICKED_SETTING)) : /* @__PURE__ */ new Set();
+  }
+  function passes(result, only, excluded, since, before) {
+    if (only.size > 0 && !only.has(result.forumId)) return false;
+    if (excluded.has(result.forumId)) return false;
+    if (result.posted !== null) {
+      if (since !== null && result.posted < since) return false;
+      if (before !== null && result.posted >= before + 864e5) return false;
+    }
+    return true;
+  }
+  function scoreThread(group, pattern, now) {
+    const titleHit = pattern !== null && new RegExp(pattern.source, "i").test(group.title) ? 3 : 0;
+    const matches = Math.log2(1 + group.posts.length) * 2;
+    const longest = Math.max(...group.posts.map((post) => post.text.length));
+    const length = Math.min(2, longest / 1500);
+    const karma = Math.log10(1 + Math.max(...group.posts.map((post) => post.karma))) / 2;
+    const newest = Math.max(...group.posts.map((post) => post.posted ?? 0));
+    const ageDays = newest > 0 ? (now - newest) / 864e5 : 3650;
+    const recency = 1.5 * Math.exp(-ageDays / 365);
+    return titleHit + matches + length + karma + recency;
+  }
+  function highlighted(text, pattern) {
+    const fragment = document.createDocumentFragment();
+    if (!pattern) {
+      fragment.append(text);
+      return fragment;
+    }
+    let at = 0;
+    for (const match of text.matchAll(new RegExp(pattern.source, "gi"))) {
+      const index = match.index ?? 0;
+      fragment.append(text.slice(at, index));
+      const mark = document.createElement("mark");
+      mark.textContent = match[0];
+      fragment.append(mark);
+      at = index + match[0].length;
+    }
+    fragment.append(text.slice(at));
+    return fragment;
+  }
+  function snippet(text, pattern) {
+    const index = pattern ? text.search(new RegExp(pattern.source, "i")) : -1;
+    const from = Math.max(0, index - 120);
+    const cut = text.slice(from, from + 300);
+    return `${from > 0 ? "..." : ""}${cut}${from + 300 < text.length ? "..." : ""}`;
+  }
+  function shortDate(time) {
+    if (time === null) return "";
+    return new Date(time).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  }
+  function threadCard(group, pattern) {
+    const card = document.createElement("div");
+    card.className = "aue-search-thread";
+    const head = document.createElement("div");
+    head.className = "aue-search-head";
+    const title = document.createElement("a");
+    title.className = "aue-search-title";
+    title.href = group.posts[0]?.link ?? "#";
+    title.append(highlighted(group.title, pattern));
+    const meta = document.createElement("span");
+    meta.className = "aue-search-meta";
+    const count = group.posts.length;
+    meta.textContent = `${group.forumName} · ${count} matching post${count === 1 ? "" : "s"}`;
+    head.append(title, meta);
+    card.append(head);
+    for (const post of group.posts) {
+      const row = document.createElement("a");
+      row.className = "aue-search-post";
+      row.href = post.link;
+      const by = document.createElement("span");
+      by.className = "aue-search-by";
+      by.textContent = `${post.author}, ${shortDate(post.posted)}`;
+      const text = document.createElement("span");
+      text.className = "aue-search-text";
+      text.append(highlighted(snippet(post.text, pattern), pattern));
+      row.append(by, text);
+      card.append(row);
+    }
+    return card;
+  }
+  function applyToResults() {
+    const list = document.querySelector(SELECTORS3.results);
+    if (!list) return;
+    const only = onlyForums();
+    const excluded = new Set(readIds(EXCLUDED_SETTING));
+    const since = dayStart(readSetting(SINCE_SETTING, ""));
+    const before = dayStart(readSetting(BEFORE_SETTING, ""));
+    const order = readSetting(ORDER_SETTING, "best");
+    const extra = readExtra();
+    const extraOk = extraFilter(extra);
+    const pattern = termPattern([...searchTerms(list), ...extra ? [...extra.phrases, ...extra.words] : []]);
+    const results = [...list.querySelectorAll(SELECTORS3.result)].map(readResult).filter((result) => result !== null);
+    const kept = [];
+    for (const result of results) {
+      const ok = passes(result, only, excluded, since, before) && extraOk(result);
+      result.item.classList.toggle(FILTERED_CLASS, !ok);
+      if (ok) kept.push(result);
+    }
+    const oldest = Math.min(...results.map((result) => result.posted ?? Infinity));
+    document.body.classList.toggle(ENDED_CLASS, since !== null && oldest < since);
+    document.body.classList.toggle(RANKED_CLASS, order === "best");
+    let ranked = document.getElementById(RANKED_ID);
+    if (order !== "best") {
+      ranked?.remove();
+    } else {
+      const groups = /* @__PURE__ */ new Map();
+      for (const result of kept) {
+        const group = groups.get(result.thread) ?? {
+          thread: result.thread,
+          title: result.title,
+          forumName: result.forumName,
+          posts: [],
+          score: 0
+        };
+        group.posts.push(result);
+        groups.set(result.thread, group);
+      }
+      const now = Date.now();
+      const sorted = [...groups.values()];
+      for (const group of sorted) group.score = scoreThread(group, pattern, now);
+      sorted.sort((a, b) => b.score - a.score);
+      if (!ranked) {
+        ranked = document.createElement("div");
+        ranked.id = RANKED_ID;
+        list.before(ranked);
+      }
+      const summary = document.createElement("div");
+      summary.className = "aue-search-summary";
+      const left = results.length - kept.length;
+      summary.textContent = `${sorted.length} thread${sorted.length === 1 ? "" : "s"} from ${results.length} results loaded` + (left > 0 ? `, ${left} left out by your filters` : "");
+      ranked.replaceChildren(summary, ...sorted.map((group) => threadCard(group, pattern)));
+    }
+    log("forum search:", results.length, "results,", kept.length, "kept, order", order);
+  }
+  function field2(label, control, tag = "label") {
+    const wrap = document.createElement(tag);
+    wrap.className = "aue-search-field";
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    wrap.append(caption, control);
+    return wrap;
+  }
+  function menu(options, picked) {
+    const select = document.createElement("select");
+    for (const [value, text] of options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      select.append(option);
+    }
+    select.value = picked;
+    return select;
+  }
+  function forumMenu(forums, setting, picked, none) {
+    const names = new Map(forums);
+    const wrap = document.createElement("div");
+    wrap.className = "aue-search-drop";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "aue-search-dropbtn";
+    const list = document.createElement("div");
+    list.className = "aue-search-droplist";
+    const showPicked = () => {
+      const first = [...picked][0] ?? "";
+      button.textContent = picked.size === 0 ? none : picked.size === 1 ? names.get(first) ?? "1 forum" : `${picked.size} forums`;
+    };
+    const changed = () => {
+      writeSetting(setting, JSON.stringify([...picked]));
+      showPicked();
+      applyToResults();
+    };
+    const reset2 = document.createElement("button");
+    reset2.type = "button";
+    reset2.className = "torn-btn aue-search-reset";
+    reset2.textContent = "Reset";
+    const grid = document.createElement("div");
+    grid.className = "aue-search-forums";
+    const boxes = [];
+    for (const [id, name] of forums) {
+      const option = document.createElement("label");
+      const box2 = document.createElement("input");
+      box2.type = "checkbox";
+      box2.checked = picked.has(id);
+      box2.addEventListener("change", () => {
+        if (box2.checked) picked.add(id);
+        else picked.delete(id);
+        changed();
+      });
+      boxes.push(box2);
+      option.append(box2, name);
+      grid.append(option);
+    }
+    reset2.addEventListener("click", () => {
+      picked.clear();
+      for (const box2 of boxes) box2.checked = false;
+      changed();
+    });
+    list.append(reset2, grid);
+    button.addEventListener("click", () => {
+      const opening = !wrap.classList.contains("aue-open");
+      for (const open of document.querySelectorAll(".aue-search-drop.aue-open")) open.classList.remove("aue-open");
+      wrap.classList.toggle("aue-open", opening);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!wrap.contains(event.target)) wrap.classList.remove("aue-open");
+    });
+    wrap.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") wrap.classList.remove("aue-open");
+    });
+    showPicked();
+    wrap.append(button, list);
+    return wrap;
+  }
+  function splitSearch(q) {
+    const phrases = [];
+    let rest = q.replace(/"([^"]*)"/g, (_, inside) => {
+      if (inside.trim()) phrases.push(inside.trim());
+      return " ";
+    });
+    const without = [];
+    rest = rest.replace(/(^|\s)-(\S+)/g, (_, space, word) => {
+      without.push(word);
+      return space;
+    });
+    return { words: rest.replace(/\s+/g, " ").trim(), phrase: phrases.join(", "), without: without.join(", ") };
+  }
+  function entries(box2) {
+    return box2.split(",").map((entry) => entry.replace(/"/g, "").replace(/^-+/, "").trim()).filter(Boolean);
+  }
+  function withoutWords(box2) {
+    return entries(box2).flatMap((entry) => entry.split(/\s+/).map((word) => word.replace(/^-+/, "")).filter(Boolean));
+  }
+  var EXTRA_SETTING = "FORUM_SEARCH_EXTRA";
+  function readExtra() {
+    try {
+      const extra = JSON.parse(readSetting(EXTRA_SETTING, "null"));
+      return extra && extra.q === currentSearch().q ? extra : null;
+    } catch {
+      return null;
+    }
+  }
+  function extraFilter(extra) {
+    if (!extra) return () => true;
+    const whole = (term) => termPattern([term]) ?? /$^/;
+    const needed = [...extra.phrases, ...extra.words].map((term) => new RegExp(whole(term).source, "i"));
+    const banned = extra.without.map((term) => new RegExp(whole(term).source, "i"));
+    return (result) => {
+      const text = `${result.title} ${result.text}`;
+      return needed.every((term) => term.test(text)) && !banned.some((term) => term.test(text));
+    };
+  }
+  function textBox(value, placeholder = "") {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value;
+    input.placeholder = placeholder;
+    return input;
+  }
+  function datePicker(setting) {
+    const input = document.createElement("input");
+    input.type = "date";
+    input.value = readSetting(setting, "");
+    input.addEventListener("change", () => {
+      writeSetting(setting, input.value);
+      applyToResults();
+    });
+    return input;
+  }
+  function buildPanel2() {
+    const search = currentSearch();
+    const forums = forumList();
+    const panel = document.createElement("form");
+    panel.id = PANEL_ID;
+    const extra = readExtra();
+    const split = extra ? {
+      words: extra.words.join(" "),
+      phrase: [search.q.replace(/"/g, ""), ...extra.phrases].join(", "),
+      without: extra.without.join(", ")
+    } : splitSearch(search.q);
+    const words = textBox(split.words, "Enter search term");
+    const phrase = textBox(split.phrase);
+    const without = textBox(split.without);
+    const picked = new Set(search.f !== "0" ? [search.f] : readIds(PICKED_SETTING));
+    const forumPicker = forumMenu(forums, PICKED_SETTING, picked, "All Forums");
+    const exclude = forumMenu(forums, EXCLUDED_SETTING, new Set(readIds(EXCLUDED_SETTING)), "None");
+    const type = menu(TYPES, search.y);
+    const order = menu(
+      [
+        ["best", "Best match"],
+        ["newest", "Newest first"]
+      ],
+      readSetting(ORDER_SETTING, "best")
+    );
+    order.addEventListener("change", () => {
+      writeSetting(ORDER_SETTING, order.value);
+      applyToResults();
+    });
+    const go = document.createElement("button");
+    go.type = "submit";
+    go.className = "torn-btn";
+    go.textContent = "Search";
+    const top = document.createElement("div");
+    top.className = "aue-search-row";
+    const wordsField = field2("Words", words);
+    wordsField.classList.add("aue-search-grow");
+    const pair = document.createElement("div");
+    pair.className = "aue-search-pair";
+    pair.append(field2("Exact phrase", phrase), field2("Without words", without));
+    const note = document.createElement("span");
+    note.className = "aue-search-note";
+    note.textContent = "Separate different phrases and words by commas";
+    const group = document.createElement("div");
+    group.className = "aue-search-group";
+    group.append(pair, note);
+    top.classList.add("aue-search-top");
+    top.append(wordsField, group, field2(" ", go, "div"));
+    const options = document.createElement("div");
+    options.className = "aue-search-row";
+    options.append(
+      field2("Forum", forumPicker, "div"),
+      field2("Exclude", exclude, "div"),
+      field2("Type", type),
+      field2("Since", datePicker(SINCE_SETTING)),
+      field2("Before", datePicker(BEFORE_SETTING)),
+      field2("Order", order)
+    );
+    panel.append(top, options);
+    panel.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const phrases = entries(phrase.value);
+      const left = withoutWords(without.value);
+      let q;
+      if (phrases.length > 0) {
+        q = `"${phrases[0]}"`;
+        const rest = {
+          q,
+          phrases: phrases.slice(1),
+          words: words.value.split(/\s+/).filter(Boolean),
+          without: left
+        };
+        writeSetting(EXTRA_SETTING, JSON.stringify(rest));
+      } else {
+        q = [words.value.trim(), ...left.map((word) => `-${word}`)].filter(Boolean).join(" ");
+        writeSetting(EXTRA_SETTING, "null");
+      }
+      if (!q) return;
+      writeSetting(PICKED_SETTING, JSON.stringify([...picked]));
+      const f = picked.size === 1 ? [...picked][0] ?? "0" : "0";
+      const params = new URLSearchParams({ p: "search", q, f, y: type.value });
+      location.assign(`${FORUMS_PATH}?${params}`);
+    });
+    return panel;
+  }
+  function placePanel() {
+    if (document.getElementById(PANEL_ID)) return;
+    const tornInput = document.querySelector(SELECTORS3.tornSearchInput);
+    const tornForm = tornInput?.closest("form");
+    if (tornForm) {
+      tornForm.style.display = "none";
+      tornForm.after(buildPanel2());
+      return;
+    }
+    if (onResultsPage()) {
+      const wrap = document.querySelector(SELECTORS3.resultsWrap) ?? document.querySelector(SELECTORS3.results);
+      wrap?.prepend(buildPanel2());
+    }
+  }
+  function installForumSearch() {
+    if (location.pathname !== FORUMS_PATH || !isEnabled(FORUM_SEARCH)) return;
+    let timer = 0;
+    let lastCount = -1;
+    const pass3 = () => {
+      placePanel();
+      const list = document.querySelector(SELECTORS3.results);
+      const count = list ? list.querySelectorAll(SELECTORS3.result).length : -1;
+      if (count !== lastCount) {
+        lastCount = count;
+        if (list) applyToResults();
+      }
+    };
+    new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = window.setTimeout(pass3, 150);
+    }).observe(document.body, { childList: true, subtree: true });
+    pass3();
   }
 
   // src/autumns-ui-enhancer/jsonRows.ts
@@ -2201,6 +2759,14 @@
       needs: ["type"],
       body: "p=search&type={type}&step=searchPersonals"
     },
+    // The search term goes as Torn sends it: "best+car" in the address, "best%2Bcar" in the request.
+    {
+      path: "/forums.php",
+      when: { p: "search" },
+      needs: ["q", "f", "y"],
+      encode: ["q"],
+      body: "p=search&q={q}&f={f}&y={y}&title=true&step=search"
+    },
     {
       path: "/comics.php",
       when: { p: "main" },
@@ -2225,7 +2791,10 @@
     const list = currentList();
     if (!list) return null;
     let body = list.body;
-    for (const name of list.needs ?? []) body = body.replace(`{${name}}`, routeValue(name) ?? "");
+    for (const name of list.needs ?? []) {
+      const value = routeValue(name) ?? "";
+      body = body.replace(`{${name}}`, list.encode?.includes(name) ? encodeURIComponent(value) : value);
+    }
     return body;
   }
   function currentList() {
@@ -4315,10 +4884,10 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
 
   // src/autumns-ui-enhancer/styles.ts
   var STYLE_ID = "aue-styles";
-  var PANEL_ID = "aue-prefs-panel";
+  var PANEL_ID2 = "aue-prefs-panel";
   var CSS2 = `
 
-  #${PANEL_ID} {
+  #${PANEL_ID2} {
     container-type: inline-size;
     margin: 10px 0 0;
     border-radius: 5px;
@@ -4524,6 +5093,189 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   .aue-page-range {
     padding-left: 6px !important;
     padding-right: 6px !important;
+  }
+  #aue-forum-search {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0 0 10px;
+    padding: 10px;
+    border-radius: 6px;
+    background: #2b2b2b;
+    color: #ddd !important;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+  }
+  #aue-forum-search * {
+    color: inherit !important;
+  }
+  #aue-forum-search .aue-search-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  #aue-forum-search .aue-search-top {
+    align-items: flex-start;
+  }
+  #aue-forum-search .aue-search-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  #aue-forum-search .aue-search-pair {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  #aue-forum-search .aue-search-note {
+    font-size: 11px;
+    opacity: 0.75;
+  }
+  #aue-forum-search input[type="text"],
+  #aue-forum-search input[type="date"],
+  #aue-forum-search select {
+    box-sizing: border-box;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    color: #fff !important;
+    font: inherit;
+    color-scheme: dark;
+  }
+  #aue-forum-search .aue-search-grow {
+    flex: 1 1 200px;
+  }
+  #aue-forum-search .aue-search-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-weight: bold;
+  }
+  #aue-forum-search .aue-search-drop {
+    position: relative;
+  }
+  #aue-forum-search .aue-search-dropbtn {
+    box-sizing: border-box;
+    height: 30px;
+    min-width: 120px;
+    padding: 0 26px 0 8px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    color: #fff !important;
+    font: inherit;
+    font-weight: normal;
+    text-align: left;
+    cursor: pointer;
+  }
+  #aue-forum-search .aue-search-dropbtn::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    top: 13px;
+    border: 4px solid transparent;
+    border-top-color: #fff;
+  }
+  #aue-forum-search .aue-search-droplist {
+    display: none;
+    position: absolute;
+    z-index: 1000;
+    top: calc(100% + 4px);
+    left: 0;
+    width: 400px;
+    max-width: calc(100vw - 32px);
+    max-height: 340px;
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    font-weight: normal;
+  }
+  #aue-forum-search .aue-search-drop.aue-open .aue-search-droplist {
+    display: block;
+  }
+  #aue-forum-search .aue-search-forums {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 4px 12px;
+    margin-top: 8px;
+  }
+  #aue-forum-search .aue-search-forums label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  #aue-forum-ranked {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 10px 0;
+    color: #ddd !important;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  #aue-forum-ranked * {
+    color: inherit !important;
+  }
+  #aue-forum-ranked .aue-search-summary {
+    font-size: 12px;
+    opacity: 0.8;
+  }
+  #aue-forum-ranked .aue-search-thread {
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #2b2b2b;
+  }
+  #aue-forum-ranked .aue-search-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    margin-bottom: 4px;
+  }
+  #aue-forum-ranked .aue-search-title {
+    color: #fff !important;
+    font-size: 14px;
+    font-weight: bold;
+    text-decoration: none;
+  }
+  #aue-forum-ranked .aue-search-title:hover {
+    text-decoration: underline;
+  }
+  #aue-forum-ranked .aue-search-meta {
+    font-size: 11px;
+    opacity: 0.7;
+  }
+  #aue-forum-ranked .aue-search-post {
+    display: block;
+    padding: 4px 0;
+    border-top: 1px solid #3a3a3a;
+    font-size: 12px;
+    line-height: 1.4;
+    text-decoration: none;
+  }
+  #aue-forum-ranked .aue-search-post:hover {
+    background: #333;
+  }
+  #aue-forum-ranked .aue-search-by {
+    display: block;
+    font-size: 11px;
+    opacity: 0.7;
+  }
+  #aue-forum-ranked mark {
+    background: #f5d742;
+    color: #222 !important;
+  }
+  .aue-search-ranked .forums-thread[data-words] .thread-list,
+  .aue-search-filtered {
+    display: none !important;
+  }
+  .aue-search-ended .aue-pager-more {
+    display: none !important;
   }
   #aue-stats-zoom {
     display: flex;
@@ -5107,7 +5859,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   .aue-section-toggle[aria-expanded="false"]::after {
     transform: rotate(-90deg);
   }
-  #${PANEL_ID}.aue-collapsed .aue-title {
+  #${PANEL_ID2}.aue-collapsed .aue-title {
     border-radius: 5px;
   }
   .aue-body-api {
@@ -5369,7 +6121,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "0.24.2");
+    document.documentElement.setAttribute("data-aue", "0.25.0");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -5442,19 +6194,19 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     lookup.target = "_blank";
     lookup.rel = "noopener";
     heading.appendChild(lookup);
-    const field2 = document.createElement("span");
-    field2.className = "aue-field";
-    row.appendChild(field2);
+    const field3 = document.createElement("span");
+    field3.className = "aue-field";
+    row.appendChild(field3);
     const input = document.createElement("input");
     input.className = "aue-input";
     input.type = "text";
     input.placeholder = "name or ID";
     input.value = readSetting(RECIPIENT_LABEL, readSetting(RECIPIENT_SETTING, ""));
-    field2.appendChild(input);
+    field3.appendChild(input);
     const list = document.createElement("div");
     list.className = "aue-suggest";
     list.hidden = true;
-    field2.appendChild(list);
+    field3.appendChild(list);
     const refresh2 = () => {
       const id = readSetting(RECIPIENT_SETTING, "");
       lookup.href = `https://www.torn.com/profiles.php?XID=${id}`;
@@ -5529,16 +6281,16 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     generate.rel = "noopener";
     generate.textContent = "Generate key";
     heading.appendChild(generate);
-    const field2 = document.createElement("span");
-    field2.className = "aue-field aue-key-field";
-    row.appendChild(field2);
+    const field3 = document.createElement("span");
+    field3.className = "aue-field aue-key-field";
+    row.appendChild(field3);
     const note = document.createElement("span");
     note.className = "aue-note aue-key-note";
     note.textContent = "The custom key fetches City shop purchase logs and shop stock only.";
     row.appendChild(note);
     const box2 = document.createElement("span");
     box2.className = "aue-key-box";
-    field2.appendChild(box2);
+    field3.appendChild(box2);
     const input = document.createElement("input");
     input.className = "aue-input aue-key-input";
     input.type = "password";
@@ -5561,10 +6313,10 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     check.type = "button";
     check.className = "torn-btn aue-key-check";
     check.textContent = "Check";
-    field2.appendChild(check);
+    field3.appendChild(check);
     const result = document.createElement("span");
     result.className = "aue-key-result";
-    field2.appendChild(result);
+    field3.appendChild(result);
     input.addEventListener("input", () => {
       result.textContent = "";
       result.className = "aue-key-result";
@@ -5722,9 +6474,9 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     row.appendChild(list);
     return row;
   }
-  function buildPanel2() {
+  function buildPanel3() {
     const panel = document.createElement("div");
-    panel.id = PANEL_ID;
+    panel.id = PANEL_ID2;
     const content = document.createElement("div");
     content.className = "aue-content";
     panel.appendChild(
@@ -5751,10 +6503,10 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     content.appendChild(api);
     return panel;
   }
-  function placePanel() {
+  function placePanel2() {
     const anchor = findPrefsPanel();
     if (!anchor) return;
-    const existing = document.getElementById(PANEL_ID);
+    const existing = document.getElementById(PANEL_ID2);
     if (existing) {
       if (existing.previousElementSibling !== anchor) {
         anchor.insertAdjacentElement("afterend", existing);
@@ -5762,12 +6514,12 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       return;
     }
     injectStyles();
-    anchor.insertAdjacentElement("afterend", buildPanel2());
+    anchor.insertAdjacentElement("afterend", buildPanel3());
   }
   function installPreferencesPanel() {
-    placePanel();
+    placePanel2();
     new MutationObserver((records) => {
-      if (!onlyOurs(records)) placePanel();
+      if (!onlyOurs(records)) placePanel2();
     }).observe(document.body, {
       childList: true,
       subtree: true
@@ -5996,7 +6748,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     trigger.appendChild(svg);
     return trigger;
   }
-  function buildPanel3(panelId, itemId, name, amount) {
+  function buildPanel4(panelId, itemId, name, amount) {
     const panel = document.createElement("div");
     panel.className = "aue-send";
     panel.id = panelId;
@@ -6361,7 +7113,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     const name = nameBought(message);
     const itemId = itemIdFor(message) ?? stockItemId(name);
     if (!itemId) return null;
-    const panel = buildPanel3(panelId, itemId, name, amountBought(message));
+    const panel = buildPanel4(panelId, itemId, name, amountBought(message));
     purchaseBox(message).insertAdjacentElement("afterend", panel);
     return panel;
   }
@@ -6631,6 +7383,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
       start("display case", installDisplayCase);
     }
     if (SHOP_PATHS.includes(location.pathname)) start("shop send", installShopSend);
+    start("forum search", installForumSearch);
     start("list display", installListDisplay);
     start("list sort", installListSort);
   }

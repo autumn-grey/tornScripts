@@ -212,6 +212,189 @@ const CSS = `
     padding-left: 6px !important;
     padding-right: 6px !important;
   }
+  #aue-forum-search {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0 0 10px;
+    padding: 10px;
+    border-radius: 6px;
+    background: #2b2b2b;
+    color: #ddd !important;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+  }
+  #aue-forum-search * {
+    color: inherit !important;
+  }
+  #aue-forum-search .aue-search-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  #aue-forum-search .aue-search-top {
+    align-items: flex-start;
+  }
+  #aue-forum-search .aue-search-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  #aue-forum-search .aue-search-pair {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  #aue-forum-search .aue-search-note {
+    font-size: 11px;
+    opacity: 0.75;
+  }
+  #aue-forum-search input[type="text"],
+  #aue-forum-search input[type="date"],
+  #aue-forum-search select {
+    box-sizing: border-box;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    color: #fff !important;
+    font: inherit;
+    color-scheme: dark;
+  }
+  #aue-forum-search .aue-search-grow {
+    flex: 1 1 200px;
+  }
+  #aue-forum-search .aue-search-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-weight: bold;
+  }
+  #aue-forum-search .aue-search-drop {
+    position: relative;
+  }
+  #aue-forum-search .aue-search-dropbtn {
+    box-sizing: border-box;
+    height: 30px;
+    min-width: 120px;
+    padding: 0 26px 0 8px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    color: #fff !important;
+    font: inherit;
+    font-weight: normal;
+    text-align: left;
+    cursor: pointer;
+  }
+  #aue-forum-search .aue-search-dropbtn::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    top: 13px;
+    border: 4px solid transparent;
+    border-top-color: #fff;
+  }
+  #aue-forum-search .aue-search-droplist {
+    display: none;
+    position: absolute;
+    z-index: 1000;
+    top: calc(100% + 4px);
+    left: 0;
+    width: 400px;
+    max-width: calc(100vw - 32px);
+    max-height: 340px;
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #0b0b0b !important;
+    font-weight: normal;
+  }
+  #aue-forum-search .aue-search-drop.aue-open .aue-search-droplist {
+    display: block;
+  }
+  #aue-forum-search .aue-search-forums {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 4px 12px;
+    margin-top: 8px;
+  }
+  #aue-forum-search .aue-search-forums label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  #aue-forum-ranked {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 10px 0;
+    color: #ddd !important;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  #aue-forum-ranked * {
+    color: inherit !important;
+  }
+  #aue-forum-ranked .aue-search-summary {
+    font-size: 12px;
+    opacity: 0.8;
+  }
+  #aue-forum-ranked .aue-search-thread {
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #2b2b2b;
+  }
+  #aue-forum-ranked .aue-search-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    margin-bottom: 4px;
+  }
+  #aue-forum-ranked .aue-search-title {
+    color: #fff !important;
+    font-size: 14px;
+    font-weight: bold;
+    text-decoration: none;
+  }
+  #aue-forum-ranked .aue-search-title:hover {
+    text-decoration: underline;
+  }
+  #aue-forum-ranked .aue-search-meta {
+    font-size: 11px;
+    opacity: 0.7;
+  }
+  #aue-forum-ranked .aue-search-post {
+    display: block;
+    padding: 4px 0;
+    border-top: 1px solid #3a3a3a;
+    font-size: 12px;
+    line-height: 1.4;
+    text-decoration: none;
+  }
+  #aue-forum-ranked .aue-search-post:hover {
+    background: #333;
+  }
+  #aue-forum-ranked .aue-search-by {
+    display: block;
+    font-size: 11px;
+    opacity: 0.7;
+  }
+  #aue-forum-ranked mark {
+    background: #f5d742;
+    color: #222 !important;
+  }
+  .aue-search-ranked .forums-thread[data-words] .thread-list,
+  .aue-search-filtered {
+    display: none !important;
+  }
+  .aue-search-ended .aue-pager-more {
+    display: none !important;
+  }
   #aue-stats-zoom {
     display: flex;
     align-items: center;

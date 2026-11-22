@@ -264,6 +264,8 @@ interface KnownList {
   step?: string;
   when?: Record<string, string>;
   needs?: string[];
+  /** Parameters encoded once more on their way into the body, as Torn's own page sends them. */
+  encode?: string[];
   bare?: boolean;
   hashPrefix?: string;
   body: string;
@@ -295,6 +297,14 @@ const KNOWN_LISTS: KnownList[] = [
     needs: ["type"],
     body: "p=search&type={type}&step=searchPersonals",
   },
+  // The search term goes as Torn sends it: "best+car" in the address, "best%2Bcar" in the request.
+  {
+    path: "/forums.php",
+    when: { p: "search" },
+    needs: ["q", "f", "y"],
+    encode: ["q"],
+    body: "p=search&q={q}&f={f}&y={y}&title=true&step=search",
+  },
   {
     path: "/comics.php",
     when: { p: "main" },
@@ -321,7 +331,10 @@ function listRequest(): string | null {
   const list = currentList();
   if (!list) return null;
   let body = list.body;
-  for (const name of list.needs ?? []) body = body.replace(`{${name}}`, routeValue(name) ?? "");
+  for (const name of list.needs ?? []) {
+    const value = routeValue(name) ?? "";
+    body = body.replace(`{${name}}`, list.encode?.includes(name) ? encodeURIComponent(value) : value);
+  }
   return body;
 }
 
