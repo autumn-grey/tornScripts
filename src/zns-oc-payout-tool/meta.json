@@ -1,6 +1,6 @@
 {
   "name": "ZNS OC Payout tool",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "Torn Faction admin tool for tweaking Organised Crime payouts",
   "match": [
     "https://www.torn.com/factions.php*"

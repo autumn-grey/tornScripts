@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZNS OC Payout tool
 // @namespace    https://github.com/autumn-grey
-// @version      0.1.29
+// @version      0.1.30
 // @description  Torn Faction admin tool for tweaking Organised Crime payouts
 // @author       AutumnGrey
 // @license      MIT
@@ -1046,6 +1046,76 @@
     (document.head ?? document.documentElement).appendChild(style);
   }
 
+  // src/zns-oc-payout-tool/test.ts
+  var TEST_CRIME_ID = -1;
+  var MEMBERS = [
+    { id: 4386333, name: "LilKnownBlaffle", role: "Test" },
+    { id: 2659506, name: "Faith", role: "Test" },
+    { id: 1941593, name: "Pint-Shot-Riot", role: "Test" }
+  ];
+  function buildTestRow(previous) {
+    const now = Math.floor(Date.now() / 1e3);
+    const players = MEMBERS.map((member) => ({
+      ...member,
+      prs: 0,
+      roleParts: { checkpointPassRate: 0, minimum: 0, weight: 0 },
+      prc: 0,
+      pts: 0,
+      ptc: 0,
+      stallJoin: 0,
+      joinedAt: now,
+      executedAt: now,
+      previousRoleEnd: null,
+      psc: 0,
+      base: 1,
+      payout: 1
+    }));
+    return {
+      crime: {
+        id: TEST_CRIME_ID,
+        previous_crime_id: null,
+        name: "Test OC",
+        difficulty: 1,
+        status: "Successful",
+        planning_at: now,
+        ready_at: now,
+        executed_at: now,
+        slots: MEMBERS.map((member) => ({
+          position: member.role,
+          checkpoint_pass_rate: 0,
+          user: { id: member.id, joined_at: now }
+        })),
+        rewards: { money: MEMBERS.length, items: [], payout: null }
+      },
+      state: "payable",
+      chain: [],
+      percents: { faction: 0, time: 0, role: 0, stall: 0 },
+      total: MEMBERS.length,
+      payout: {
+        total: MEMBERS.length,
+        factionCut: 0,
+        remaining: MEMBERS.length,
+        base: MEMBERS.length,
+        totalRoleScore: 0,
+        roleReserve: 0,
+        totalTimeScore: 0,
+        timeReserve: 0,
+        stallReserve: 0,
+        totalStall: 0,
+        players
+      },
+      paid: previous?.paid ?? /* @__PURE__ */ new Set(),
+      payments: previous?.payments ?? {},
+      paidByTorn: false,
+      feeder: false
+    };
+  }
+  function recordTestPayment(row, memberId, amount) {
+    const by = readKeyOwner();
+    row.paid.add(memberId);
+    row.payments[String(memberId)] = { amount, at: Math.floor(Date.now() / 1e3), ...by ? { by } : {} };
+  }
+
   // src/zns-oc-payout-tool/panel.ts
   var FULL_LOG_URL = "";
   var TAB_ROOTS = {
@@ -1054,6 +1124,7 @@
   };
   var percents = readPercents();
   var rows = [];
+  var testRow = null;
   var selection = null;
   var highlighted = null;
   var openCrimes = /* @__PURE__ */ new Set();
@@ -1302,14 +1373,15 @@ ${payment.by.name} [${payment.by.id}]` : "";
     if (!percentsProblem(percents)) rows = buildRows(completePercents(percents));
     const scrolledTo = list.querySelector(".ocp-scroll")?.scrollTop ?? 0;
     list.replaceChildren();
-    if (!rows.length) return;
+    const shown = testRow ? [testRow, ...rows] : rows;
+    if (!shown.length) return;
     const scroll = make("div", "ocp-scroll");
     const table = make("table", "ocp-table");
     const head = make("tr");
     const headings = ["", "OC Name", "Level", "Date Completed", "Total Pay", "Faction Cut", "Remaining", "Paid"];
     for (const text of headings) head.appendChild(make("th", "", text));
     table.appendChild(head);
-    for (const row of rows) table.append(...buildCrime(row));
+    for (const row of shown) table.append(...buildCrime(row));
     scroll.appendChild(table);
     list.appendChild(scroll);
     scroll.scrollTop = scrolledTo;
@@ -1329,7 +1401,8 @@ ${payment.by.name} [${payment.by.id}]` : "";
       crimeId: row.crime.id,
       percents: row.percents,
       memberId: player.id,
-      label: `${memberName(player.id)} [${player.id}]`,
+      // The payout's own name, so the test crime's members are named before any crimes are fetched.
+      label: `${player.name} [${player.id}]`,
       amount: player.payout
     };
     log("chosen", row.crime.id, player.id, player.payout);
@@ -1343,7 +1416,8 @@ ${payment.by.name} [${payment.by.id}]` : "";
   function onSent(prefill) {
     const chosen = selection;
     if (!chosen || chosen.memberId !== prefill.memberId) return;
-    recordPayment(chosen.crimeId, chosen.percents, chosen.memberId, chosen.amount);
+    if (chosen.crimeId === TEST_CRIME_ID && testRow) recordTestPayment(testRow, chosen.memberId, chosen.amount);
+    else recordPayment(chosen.crimeId, chosen.percents, chosen.memberId, chosen.amount);
     log("paid", chosen);
     selection = null;
     render();
@@ -1473,7 +1547,20 @@ ${payment.by.name} [${payment.by.id}]` : "";
     const fullLog = button("Full Log");
     fullLog.disabled = !FULL_LOG_URL;
     fullLog.addEventListener("click", () => window.open(FULL_LOG_URL, "_blank", "noopener"));
-    footer.append(more, fullLog);
+    const test = button("Test");
+    test.addEventListener("click", () => {
+      if (testRow) {
+        testRow = null;
+        openCrimes.delete(TEST_CRIME_ID);
+        if (highlighted?.crimeId === TEST_CRIME_ID) highlighted = null;
+        if (selection?.crimeId === TEST_CRIME_ID) selection = null;
+      } else {
+        testRow = buildTestRow(null);
+        openCrimes.add(TEST_CRIME_ID);
+      }
+      render();
+    });
+    footer.append(more, fullLog, test);
     body.appendChild(footer);
     panel.append(title, body);
     return panel;
@@ -1531,7 +1618,7 @@ ${payment.by.name} [${payment.by.id}]` : "";
     });
   }
   function onReady() {
-    log("running", "0.1.29", location.href);
+    log("running", "0.1.30", location.href);
     installPanel();
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("hashchange", schedule);

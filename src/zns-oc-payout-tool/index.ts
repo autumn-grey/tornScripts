@@ -6,6 +6,7 @@
 //   weights.ts   role weights supplied by the faction
 //   bank.ts      filling in Torn's give money form and seeing it sent
 //   panel.ts     the panel and its tables
+//   test.ts      the $1 test crime behind the Test button
 //   settings.ts  what is kept in localStorage
 //   styles.ts    every style the script injects
 //   debug.ts     logging, off unless OCP_DEBUG is "1"

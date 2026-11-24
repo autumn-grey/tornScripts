@@ -19,6 +19,7 @@ import {
   writePercents,
 } from "./settings";
 import { COLLAPSED_CLASS, PANEL_ID, injectStyles } from "./styles";
+import { TEST_CRIME_ID, buildTestRow, recordTestPayment } from "./test";
 
 /** The sheet holding every payment made with the tool; the button stays off until it exists. */
 const FULL_LOG_URL = "";
@@ -43,6 +44,8 @@ interface Selection extends Prefill {
 
 let percents = readPercents();
 let rows: CrimeRow[] = [];
+/** The $1 test crime, shown above the real ones while the Test button has it on. */
+let testRow: CrimeRow | null = null;
 /** The member to pay, put into the give money form; only ever an unpaid member with a known payout. */
 let selection: Selection | null = null;
 /** The player row last clicked, highlighted whether or not it can be paid. */
@@ -370,7 +373,8 @@ function render(): void {
   // to the top and carry the row just clicked out of view.
   const scrolledTo = list.querySelector(".ocp-scroll")?.scrollTop ?? 0;
   list.replaceChildren();
-  if (!rows.length) return;
+  const shown = testRow ? [testRow, ...rows] : rows;
+  if (!shown.length) return;
 
   const scroll = make("div", "ocp-scroll");
   const table = make("table", "ocp-table");
@@ -378,7 +382,7 @@ function render(): void {
   const headings = ["", "OC Name", "Level", "Date Completed", "Total Pay", "Faction Cut", "Remaining", "Paid"];
   for (const text of headings) head.appendChild(make("th", "", text));
   table.appendChild(head);
-  for (const row of rows) table.append(...buildCrime(row));
+  for (const row of shown) table.append(...buildCrime(row));
   scroll.appendChild(table);
   list.appendChild(scroll);
   scroll.scrollTop = scrolledTo;
@@ -405,7 +409,8 @@ function choosePlayer(row: CrimeRow, player: PlayerPayout, payable: boolean): vo
     crimeId: row.crime.id,
     percents: row.percents,
     memberId: player.id,
-    label: `${memberName(player.id)} [${player.id}]`,
+    // The payout's own name, so the test crime's members are named before any crimes are fetched.
+    label: `${player.name} [${player.id}]`,
     amount: player.payout,
   };
 
@@ -424,7 +429,8 @@ function choosePlayer(row: CrimeRow, player: PlayerPayout, payable: boolean): vo
 function onSent(prefill: Prefill): void {
   const chosen = selection;
   if (!chosen || chosen.memberId !== prefill.memberId) return;
-  recordPayment(chosen.crimeId, chosen.percents, chosen.memberId, chosen.amount);
+  if (chosen.crimeId === TEST_CRIME_ID && testRow) recordTestPayment(testRow, chosen.memberId, chosen.amount);
+  else recordPayment(chosen.crimeId, chosen.percents, chosen.memberId, chosen.amount);
   log("paid", chosen);
   selection = null;
   render();
@@ -577,7 +583,20 @@ function buildPanel(): HTMLElement {
   const fullLog = button("Full Log");
   fullLog.disabled = !FULL_LOG_URL;
   fullLog.addEventListener("click", () => window.open(FULL_LOG_URL, "_blank", "noopener"));
-  footer.append(more, fullLog);
+  const test = button("Test");
+  test.addEventListener("click", () => {
+    if (testRow) {
+      testRow = null;
+      openCrimes.delete(TEST_CRIME_ID);
+      if (highlighted?.crimeId === TEST_CRIME_ID) highlighted = null;
+      if (selection?.crimeId === TEST_CRIME_ID) selection = null;
+    } else {
+      testRow = buildTestRow(null);
+      openCrimes.add(TEST_CRIME_ID);
+    }
+    render();
+  });
+  footer.append(more, fullLog, test);
   body.appendChild(footer);
 
   panel.append(title, body);
