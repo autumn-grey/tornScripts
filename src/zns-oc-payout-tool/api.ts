@@ -44,7 +44,7 @@ export interface ApiCrime {
   rewards: {
     money: number;
     items: { id: number; quantity: number }[];
-    payout: { paid_at: number } | null;
+    payout: { paid_at: number; paid_by: number } | null;
   } | null;
 }
 
@@ -98,6 +98,13 @@ export async function fetchMemberNames(key: string): Promise<Map<number, string>
     if (typeof entry.id === "number" && typeof entry.name === "string") names.set(entry.id, entry.name);
   }
   return names;
+}
+
+/** The player a key belongs to, recorded as the payer of payments made with it. */
+export async function fetchKeyOwner(key: string): Promise<{ id: number; name: string }> {
+  const body = await request("/user/basic", key);
+  const profile = body.profile as { id?: number; name?: string } | undefined;
+  return { id: profile?.id ?? 0, name: profile?.name ?? "" };
 }
 
 /** One player's name, for a member who has since left the faction. */

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZNS OC Payout tool
 // @namespace    https://github.com/autumn-grey
-// @version      0.1.15
+// @version      0.1.28
 // @description  Torn Faction admin tool for tweaking Organised Crime payouts
 // @author       AutumnGrey
 // @license      MIT
@@ -86,6 +86,11 @@
       if (typeof entry.id === "number" && typeof entry.name === "string") names2.set(entry.id, entry.name);
     }
     return names2;
+  }
+  async function fetchKeyOwner(key2) {
+    const body = await request("/user/basic", key2);
+    const profile = body.profile;
+    return { id: profile?.id ?? 0, name: profile?.name ?? "" };
   }
   async function fetchUserName(key2, id) {
     const body = await request(`/user/${id}/basic`, key2);
@@ -218,11 +223,11 @@
   }
   function stallJoins(planningAt, joinedAt) {
     const order = joinedAt.map((at, index) => ({ at, index })).sort((a, b) => a.at - b.at);
-    const result = new Array(joinedAt.length).fill(0);
+    const result = joinedAt.map(() => ({ gap: 0, previousEnd: null }));
     let previousEnd = planningAt;
     order.forEach(({ at, index }, position) => {
       const gap = position === 0 ? 0 : Math.max(0, at - previousEnd);
-      result[index] = gap;
+      result[index] = { gap, previousEnd: position === 0 ? null : previousEnd };
       const start = position === 0 ? at : previousEnd + gap;
       previousEnd = start + PLANNING_SECONDS_PER_ROLE;
     });
@@ -244,10 +249,11 @@
     const prs = crime.members.map((member) => member.prs);
     const roleKnown = prs.every((score) => score !== null);
     const pts = crime.members.map((member) => Math.max(0, crime.executedAt - member.joinedAt));
-    const stall = stallJoins(
+    const stallDetails = stallJoins(
       crime.planningAt,
       crime.members.map((member) => member.joinedAt)
     );
+    const stall = stallDetails.map((detail) => detail.gap);
     const totalStall = stall.reduce((sum, value) => sum + value, 0);
     const stallPercent = totalStall > 0 ? percents2.stall : 0;
     const exactPots = [percents2.role, percents2.time, stallPercent].map((percent) => total * percent / 100);
@@ -270,10 +276,14 @@
         name: member.name,
         role: member.role,
         prs: prs[index] ?? null,
+        roleParts: member.roleParts,
         prc: role,
         pts: pts[index] ?? 0,
         ptc: time,
         stallJoin: stall[index] ?? 0,
+        joinedAt: member.joinedAt,
+        executedAt: crime.executedAt,
+        previousRoleEnd: stallDetails[index]?.previousEnd ?? null,
         psc: stallCut,
         base,
         payout: role === null ? null : base + role + time + stallCut
@@ -294,10 +304,16 @@
       players
     };
   }
-  function splitChain(total, memberCounts) {
-    const everyone = memberCounts.reduce((sum, count) => sum + count, 0);
-    if (everyone <= 0) return memberCounts.map(() => 0);
-    return roundShares(total, memberCounts.map((count) => total * count / everyone));
+  function splitChain(total, links) {
+    const lowest = Math.min(...links.map((link) => link.level));
+    const counts = links.map((link) => link.members + (link.level - lowest));
+    const everyone = counts.reduce((sum, count) => sum + count, 0);
+    if (everyone <= 0) return counts.map(() => 0);
+    const shares = roundShares(total, counts.map((count) => total * count / everyone));
+    const spare = total - shares.reduce((sum, share) => sum + share, 0);
+    const lowestIndex = links.findIndex((link) => link.level === lowest);
+    shares[lowestIndex] = (shares[lowestIndex] ?? 0) + spare;
+    return shares;
   }
 
   // src/zns-oc-payout-tool/settings.ts
@@ -307,6 +323,7 @@
   var PAID_KEY = "PAID";
   var PANEL_OPEN_KEY = "PANEL_OPEN";
   var PREREQ_KEY = "PREREQUISITES";
+  var KEY_OWNER_KEY = "KEY_OWNER";
   var PREREQ_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
   function read(key2, fallback) {
     try {
@@ -347,6 +364,13 @@
   function writePercents(percents2) {
     write(PERCENTS_KEY, JSON.stringify(percents2));
   }
+  function readKeyOwner() {
+    const stored = readJson(KEY_OWNER_KEY);
+    return stored && typeof stored.id === "number" && stored.id > 0 && typeof stored.name === "string" ? { id: stored.id, name: stored.name } : null;
+  }
+  function writeKeyOwner(owner) {
+    write(KEY_OWNER_KEY, JSON.stringify(owner));
+  }
   function readPaid() {
     const stored = readJson(PAID_KEY);
     return stored && typeof stored === "object" ? stored : {};
@@ -354,7 +378,8 @@
   function recordPayment(crimeId, percents2, memberId, amount) {
     const paid = readPaid();
     const crime = paid[String(crimeId)] ?? { percents: percents2, members: {} };
-    crime.members[String(memberId)] = { amount, at: Math.floor(Date.now() / 1e3) };
+    const by = readKeyOwner();
+    crime.members[String(memberId)] = { amount, at: Math.floor(Date.now() / 1e3), ...by ? { by } : {} };
     paid[String(crimeId)] = crime;
     write(PAID_KEY, JSON.stringify(paid));
   }
@@ -708,6 +733,11 @@
         name: memberName(slot.user.id),
         role,
         prs: roleScore(checkpointPassRate(slot), info?.minimum ?? null, info?.weight ?? null),
+        roleParts: {
+          checkpointPassRate: checkpointPassRate(slot),
+          minimum: info?.minimum ?? null,
+          weight: info?.weight ?? null
+        },
         joinedAt: slot.user.joined_at
       };
     });
@@ -722,7 +752,7 @@
   }
   function buildRows(percents2) {
     const paidRecords = readPaid();
-    return listed.map((id) => {
+    return displayOrder().map((id) => {
       const crime = loaded.get(id);
       const chain = chainOf(crime);
       const last = chain[chain.length - 1];
@@ -737,10 +767,14 @@
       let payout = null;
       if (state === "chain-failed") total = 0;
       if (state === "payable") {
-        const shares = splitChain(rewardValue(last), chain.map((link) => members(link).length));
+        const shares = splitChain(
+          rewardValue(last),
+          chain.map((link) => ({ members: members(link).length, level: link.difficulty }))
+        );
         total = shares[chain.indexOf(crime)] ?? 0;
       }
-      if (state === "payable" && total !== null && used) {
+      if (state === "waiting") total = 0;
+      if ((state === "payable" || state === "waiting") && total !== null && used) {
         payout = computePayout(
           {
             total,
@@ -752,23 +786,66 @@
         );
         log("payout", crime.id, crime.name, payout);
       }
-      return { crime, state, chain, percents: used, total, payout, paid, paidByTorn };
+      const feeder = chain.length > 1 && last.id !== crime.id || state === "waiting";
+      const payments = record?.members ?? {};
+      return { crime, state, chain, percents: used, total, payout, paid, payments, paidByTorn, feeder };
     });
+  }
+  function displayOrder() {
+    const order = [];
+    const seen = /* @__PURE__ */ new Set();
+    const listedIds = new Set(listed);
+    for (const id of listed) {
+      if (seen.has(id)) continue;
+      const chain = chainOf(loaded.get(id));
+      const last = chain[chain.length - 1];
+      if (last.id !== id && listedIds.has(last.id)) continue;
+      order.push(id);
+      seen.add(id);
+      if (last.id !== id) continue;
+      for (const link of chain.slice(0, -1).reverse()) {
+        if (link.status !== "Successful" || seen.has(link.id)) continue;
+        order.push(link.id);
+        seen.add(link.id);
+      }
+    }
+    return order;
   }
 
   // src/zns-oc-payout-tool/styles.ts
   var STYLE_ID = "ocp-styles";
   var PANEL_ID = "ocp-panel";
   var COLLAPSED_CLASS = "ocp-collapsed";
+  var COLOURS = {
+    background: "#121314",
+    bar: "#202122",
+    /* Dizzy's screenshot shade (#191919, 10% bright) made 10% lighter. */
+    feeder: "#333333",
+    hover: "#1e1f20",
+    /* An open crime's row, the colour of the editor's panel tab bar. */
+    open: "#202122",
+    /* Everything inside an open crime, the colour of the editor's terminal. */
+    inside: "#191a1b",
+    /* The editor's current-line colour, tinted towards the row's text colour. */
+    selectedRed: "#3a2e2e",
+    selectedGreen: "#263928",
+    border: "#2a2b2c",
+    text: "#bbbebf",
+    muted: "#858889",
+    red: "#ff7b72",
+    green: "#35e935"
+  };
+  var ROW_HEIGHT = 27;
+  var MAX_LINES = 30;
   var CSS = `
   #${PANEL_ID} {
-    margin: 0 0 10px;
+    margin: 10px 0;
     border-radius: 5px;
     overflow: hidden;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    border: 1px solid ${COLOURS.border};
     font-family: Arial, Helvetica, sans-serif;
     font-size: 12px;
-    color: #fff !important;
+    color: ${COLOURS.text} !important;
   }
   /* Torn colours divs and table cells dark and outranks a colour set on the
      panel, so every cell inherits with !important. Coloured classes below
@@ -784,9 +861,9 @@
     height: 30px;
     line-height: 30px;
     padding: 0 10px;
-    background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
+    background: ${COLOURS.bar};
+    color: ${COLOURS.text} !important;
     font-weight: bold;
-    text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
   }
   #${PANEL_ID} .ocp-caret {
     font-size: 10px;
@@ -795,7 +872,7 @@
   #${PANEL_ID}.${COLLAPSED_CLASS} .ocp-caret { transform: rotate(-90deg); }
   #${PANEL_ID}.${COLLAPSED_CLASS} .ocp-body { display: none; }
   #${PANEL_ID} .ocp-body {
-    background: linear-gradient(180deg, #4a4a4a 0%, #333 100%);
+    background: ${COLOURS.background};
     padding: 10px 12px;
   }
 
@@ -815,15 +892,18 @@
     flex: 0 1 220px;
     min-width: 0;
   }
-  #${PANEL_ID} input.ocp-input {
+  #${PANEL_ID} input.ocp-input,
+  #${PANEL_ID} input.ocp-percent {
     box-sizing: border-box;
+    border: 1px solid ${COLOURS.border};
+    border-radius: 4px;
+    background: #000;
+    color: #fff !important;
+    font-size: 12px;
+  }
+  #${PANEL_ID} input.ocp-input {
     width: 100%;
     padding: 4px 28px 4px 7px;
-    border: 1px solid rgba(0, 0, 0, 0.5);
-    border-radius: 4px;
-    background: #f2f2f2;
-    color: #000 !important;
-    font-size: 12px;
     line-height: 18px;
   }
   /* Hides the key's characters while keeping it a text box, so password
@@ -832,14 +912,8 @@
     -webkit-text-security: disc;
   }
   #${PANEL_ID} input.ocp-percent {
-    box-sizing: border-box;
     width: 52px;
     padding: 3px 5px;
-    border: 1px solid rgba(0, 0, 0, 0.5);
-    border-radius: 4px;
-    background: #f2f2f2;
-    color: #000 !important;
-    font-size: 12px;
     text-align: right;
   }
   #${PANEL_ID} .ocp-percent-label {
@@ -858,7 +932,7 @@
     padding: 0;
     border: 0;
     background: none;
-    color: #555 !important;
+    color: ${COLOURS.text} !important;
     cursor: pointer;
   }
   #${PANEL_ID} .ocp-eye svg { width: 15px; height: 15px; margin: auto; }
@@ -873,30 +947,46 @@
     white-space: nowrap;
   }
   #${PANEL_ID} .ocp-button:not(.torn-btn) {
-    border: 1px solid #1c2228;
+    border: 1px solid ${COLOURS.border};
     border-radius: 3px;
-    background: linear-gradient(180deg, #5b646d 0%, #333b43 100%);
+    background: ${COLOURS.bar};
     font-family: "Fjalla One", "Arial Narrow", Arial, sans-serif;
     text-transform: uppercase;
   }
   #${PANEL_ID} .ocp-button[disabled] { opacity: 0.5; cursor: default; }
   #${PANEL_ID} .ocp-status { font-size: 11px; font-weight: bold; }
-  #${PANEL_ID} .ocp-ok    { color: #5ed17c !important; }
-  #${PANEL_ID} .ocp-error { color: #ff6b6b !important; }
+  #${PANEL_ID} .ocp-ok    { color: ${COLOURS.green} !important; }
+  #${PANEL_ID} .ocp-error { color: ${COLOURS.red} !important; }
 
   /* --------------------------------------------------------- crime list */
 
+  /* Every line of the table is ROW_HEIGHT tall, so the box holds at most
+     MAX_LINES of them, headings and crime details included, and scrolls. */
   #${PANEL_ID} .ocp-scroll {
-    overflow-x: auto;
+    overflow: auto;
+    max-height: ${MAX_LINES * ROW_HEIGHT}px;
+  }
+  #${PANEL_ID} .ocp-table th,
+  #${PANEL_ID} .ocp-table td {
+    box-sizing: border-box;
+    height: ${ROW_HEIGHT}px;
+    line-height: 16px;
+  }
+  /* The OC table's own headings stay in view while it scrolls. */
+  #${PANEL_ID} .ocp-scroll > table > tbody > tr:first-child > th,
+  #${PANEL_ID} .ocp-scroll > table > tr:first-child > th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
   }
   #${PANEL_ID} table.ocp-table {
     width: 100%;
     border-collapse: collapse;
-    border: 1px solid #1a1a1a;
+    border: 1px solid ${COLOURS.border};
   }
   #${PANEL_ID} .ocp-table th {
     padding: 5px 6px;
-    background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
+    background: ${COLOURS.bar};
     font-size: 11px;
     font-weight: bold;
     text-align: center;
@@ -904,46 +994,47 @@
   }
   #${PANEL_ID} .ocp-table td {
     padding: 5px 6px;
-    border-top: 1px solid rgba(0, 0, 0, 0.35);
+    border-top: 1px solid ${COLOURS.border};
     white-space: nowrap;
     text-align: center;
   }
   #${PANEL_ID} .ocp-payout { font-weight: bold; }
-  #${PANEL_ID} tr.ocp-crime { cursor: pointer; background: #444; }
-  #${PANEL_ID} tr.ocp-crime:hover { background: #4f4f4f; }
-  #${PANEL_ID} tr.ocp-crime td { color: #ff7b7b !important; }
-  #${PANEL_ID} tr.ocp-crime.ocp-done td { color: #6fdc8c !important; }
-  #${PANEL_ID} tr.ocp-crime.ocp-waiting td { color: #c8c8c8 !important; }
+  #${PANEL_ID} .ocp-tip { cursor: help; }
+  #${PANEL_ID} tr.ocp-crime { cursor: pointer; background: ${COLOURS.background}; }
+  /* A crime that unlocked the one above it, stacked under it. */
+  #${PANEL_ID} tr.ocp-crime.ocp-feeder { background: ${COLOURS.feeder}; }
+  #${PANEL_ID} tr.ocp-crime:hover { background: ${COLOURS.hover}; }
+  #${PANEL_ID} tr.ocp-crime.ocp-open { background: ${COLOURS.open}; }
+  #${PANEL_ID} tr.ocp-crime td { color: ${COLOURS.red} !important; }
+  #${PANEL_ID} tr.ocp-crime.ocp-done td { color: ${COLOURS.green} !important; }
   #${PANEL_ID} .ocp-caret-cell { width: 10px; font-size: 9px; }
-  #${PANEL_ID} .ocp-chain {
-    display: inline-block;
-    margin-left: 6px;
-    padding: 0 4px;
-    border: 1px solid currentColor;
-    border-radius: 3px;
-    font-size: 10px;
-  }
   #${PANEL_ID} tr.ocp-detail > td {
-    padding: 6px 8px 10px 22px;
-    background: #2e2e2e;
+    padding: 0;
+    background: ${COLOURS.inside};
     white-space: normal;
   }
   #${PANEL_ID} .ocp-summary {
-    margin: 0 0 6px;
+    padding: 6px;
     font-size: 11px;
     line-height: 16px;
   }
   #${PANEL_ID} .ocp-summary span + span::before {
     content: " | ";
-    color: #888 !important;
+    color: ${COLOURS.muted} !important;
   }
+  #${PANEL_ID} table.ocp-players { border-width: 1px 0 0; }
   #${PANEL_ID} table.ocp-players th { font-size: 10px; white-space: normal; }
-  #${PANEL_ID} tr.ocp-player td { color: #ff7b7b !important; background: #3a3a3a; }
+  #${PANEL_ID} tr.ocp-player td { color: ${COLOURS.red} !important; background: ${COLOURS.inside}; }
   #${PANEL_ID} tr.ocp-player.ocp-clickable { cursor: pointer; }
-  #${PANEL_ID} tr.ocp-player.ocp-clickable:hover td { background: #454545; }
-  #${PANEL_ID} tr.ocp-player.ocp-selected td { background: #5a4a1e; }
-  #${PANEL_ID} tr.ocp-player.ocp-paid td { color: #6fdc8c !important; background: #2a2a2a; }
-  #${PANEL_ID} .ocp-player-id { opacity: 0.7; }
+  #${PANEL_ID} tr.ocp-player.ocp-clickable:hover td { background: ${COLOURS.hover}; }
+  #${PANEL_ID} tr.ocp-player.ocp-paid td { color: ${COLOURS.green} !important; }
+  /* Listed with :hover so the chosen row keeps its colour while the mouse is
+     still on it; red text gets the red tint, green (paid) the green one. */
+  #${PANEL_ID} tr.ocp-player.ocp-selected td,
+  #${PANEL_ID} tr.ocp-player.ocp-selected:hover td { background: ${COLOURS.selectedRed}; }
+  #${PANEL_ID} tr.ocp-player.ocp-paid.ocp-selected td,
+  #${PANEL_ID} tr.ocp-player.ocp-paid.ocp-selected:hover td { background: ${COLOURS.selectedGreen}; }
+  #${PANEL_ID} .ocp-player-id { color: ${COLOURS.muted} !important; }
   #${PANEL_ID} .ocp-footer {
     display: flex;
     gap: 8px;
@@ -965,6 +1056,7 @@
   var percents = readPercents();
   var rows = [];
   var selection = null;
+  var highlighted = null;
   var openCrimes = /* @__PURE__ */ new Set();
   var busy = false;
   function money(amount) {
@@ -1065,55 +1157,84 @@
     if (row.paidByTorn || row.state === "chain-failed") return `${total}/${total}`;
     return `${row.paid.size}/${total}`;
   }
-  function chainTag(row) {
-    if (row.chain.length < 2) return null;
-    const position = row.chain.indexOf(row.crime) + 1;
-    const tag = make("span", "ocp-chain", `Chain ${position}/${row.chain.length}`);
-    tag.title = row.chain.map((link) => link.name || `#${link.id}`).join(" → ");
-    return tag;
+  function cash(row, amount) {
+    return row.state === "waiting" ? "—" : money(amount);
   }
   function buildSummary(row) {
     const summary = make("div", "ocp-summary");
-    if (row.state !== "payable") {
-      summary.textContent = row.state === "waiting" ? "Waiting on the crime this one unlocked" : "The crime this one unlocked failed";
+    if (row.state === "chain-failed") {
+      summary.textContent = "The crime this one unlocked failed";
       return summary;
     }
     const payout = row.payout;
     const parts = [
-      `Base: ${money(payout?.base ?? null)}`,
-      `Total Role Score: ${payout?.totalRoleScore?.toFixed(1) ?? "?"}`,
-      `Role Reserve: ${money(payout?.roleReserve ?? null)}`,
-      `Time Reserve: ${money(payout?.timeReserve ?? null)}`,
-      `Total Time: ${payout ? duration(payout.totalTimeScore) : "?"}`,
-      `Stall Bonus: ${money(payout?.stallReserve ?? null)}`,
-      `Stall Time: ${payout ? duration(payout.totalStall) : "?"}`
+      `Base: ${cash(row, payout?.base ?? null)}`,
+      `Role Reserve: ${cash(row, payout?.roleReserve ?? null)}`,
+      `Time Reserve: ${cash(row, payout?.timeReserve ?? null)}`,
+      `Stall Bonus: ${cash(row, payout?.stallReserve ?? null)}`
     ];
-    for (const part of parts) summary.appendChild(make("span", "", part));
+    for (const part2 of parts) summary.appendChild(make("span", "", part2));
     return summary;
+  }
+  function part(value) {
+    return value === null ? "?" : String(Math.round(value * 10) / 10);
+  }
+  function roleScoreSum(player) {
+    const { checkpointPassRate: checkpointPassRate2, minimum, weight } = player.roleParts;
+    return `CPR ${part(checkpointPassRate2)} - OM ${part(minimum)} + W ${part(weight)}`;
+  }
+  function stallScoreSum(player) {
+    return `TPS ${duration(player.stallJoin)}`;
+  }
+  function cellWithTip(text, tip) {
+    const cell = make("td", "ocp-tip", text);
+    cell.title = tip;
+    return cell;
+  }
+  var HEADING_TIPS = {
+    "Role Score": "Checkpoint pass rate - optimal minimum + role weight, minimum 0",
+    "Time Score": "Time from joining to initiation",
+    "Stall Score": "Time planning stalled when joining - time delaying initiation + (for each other player who delayed initiation their time delayed - time delaying initiation, minimum 0)"
+  };
+  function paidDetails(row, player) {
+    const payout = row.crime.rewards?.payout;
+    if (row.paidByTorn && payout) {
+      return `${tornDate(payout.paid_at)}
+${memberName(payout.paid_by)} [${payout.paid_by}]`;
+    }
+    const payment = row.payments[String(player.id)];
+    if (!payment) return null;
+    const who = payment.by ? `
+${payment.by.name} [${payment.by.id}]` : "";
+    return `${tornDate(payment.at)}${who}`;
   }
   function buildPlayerRow(row, player) {
     const paid = row.paid.has(player.id) || row.paidByTorn;
     const line = make("tr", "ocp-player");
     if (paid) line.classList.add("ocp-paid");
-    if (selection?.crimeId === row.crime.id && selection.memberId === player.id) line.classList.add("ocp-selected");
+    if (highlighted?.crimeId === row.crime.id && highlighted.memberId === player.id) line.classList.add("ocp-selected");
     const name = make("td");
     name.append(make("span", "", `${player.name} `), make("span", "ocp-player-id", `[${player.id}]`));
     line.appendChild(name);
-    const cells = [
-      player.prs?.toFixed(1) ?? "?",
-      money(player.prc),
-      duration(player.pts),
-      money(player.ptc),
-      duration(player.stallJoin),
-      money(player.psc)
-    ];
-    for (const text of cells) line.appendChild(make("td", "", text));
-    line.appendChild(make("td", "ocp-payout", money(player.payout)));
-    line.appendChild(make("td", "", paid ? "Paid" : "Unpaid"));
-    if (!paid && player.payout !== null) {
-      line.classList.add("ocp-clickable");
-      line.addEventListener("click", () => choosePlayer(row, player));
+    line.append(
+      cellWithTip(player.prs?.toFixed(1) ?? "?", roleScoreSum(player)),
+      make("td", "", cash(row, player.prc)),
+      make("td", "", duration(player.pts)),
+      make("td", "", cash(row, player.ptc)),
+      cellWithTip(duration(player.stallJoin), stallScoreSum(player)),
+      make("td", "", cash(row, player.psc))
+    );
+    line.appendChild(make("td", "ocp-payout", cash(row, player.payout)));
+    const paidCell = make("td", "", paid ? "Paid" : "Unpaid");
+    const paidTip = paidDetails(row, player);
+    if (paidTip) {
+      paidCell.title = paidTip;
+      paidCell.classList.add("ocp-tip");
     }
+    line.appendChild(paidCell);
+    const payable = !paid && player.payout !== null && row.state !== "waiting";
+    line.classList.add("ocp-clickable");
+    line.addEventListener("click", () => choosePlayer(row, player, payable));
     return line;
   }
   function buildDetail(row) {
@@ -1135,7 +1256,15 @@
         "Payout",
         "Paid"
       ];
-      for (const text of headings) head.appendChild(make("th", "", text));
+      for (const text of headings) {
+        const cell2 = make("th", "", text);
+        const tip = HEADING_TIPS[text];
+        if (tip) {
+          cell2.title = tip;
+          cell2.classList.add("ocp-tip");
+        }
+        head.appendChild(cell2);
+      }
       table.appendChild(head);
       const players = [...row.payout.players].sort((a, b) => b.pts - a.pts);
       for (const player of players) table.appendChild(buildPlayerRow(row, player));
@@ -1147,17 +1276,16 @@
   function buildCrime(row) {
     const open = openCrimes.has(row.crime.id);
     const line = make("tr", "ocp-crime");
+    if (open) line.classList.add("ocp-open");
+    if (row.feeder) line.classList.add("ocp-feeder");
     if (crimeDone(row)) line.classList.add("ocp-done");
-    else if (row.state === "waiting") line.classList.add("ocp-waiting");
     line.appendChild(make("td", "ocp-caret-cell", open ? "▾" : "▸"));
-    const name = make("td", "", row.crime.name);
-    const tag = chainTag(row);
-    if (tag) name.appendChild(tag);
-    line.appendChild(name);
+    const arrow = row.feeder && row.state !== "waiting" ? "⮤ " : "";
+    line.appendChild(make("td", "", arrow + row.crime.name));
     line.appendChild(make("td", "", String(row.crime.difficulty)));
     line.appendChild(make("td", "", tornDate(row.crime.executed_at)));
     const payout = row.payout;
-    const split = (amount) => row.state === "payable" ? money(amount ?? null) : "-";
+    const split = (amount) => row.state === "payable" ? money(amount ?? null) : "—";
     line.appendChild(make("td", "", row.state === "waiting" ? "Waiting" : money(row.total)));
     line.appendChild(make("td", "", split(payout?.factionCut)));
     line.appendChild(make("td", "", split(payout?.remaining)));
@@ -1173,6 +1301,7 @@
     const list = document.getElementById("ocp-list");
     if (!list) return;
     if (!percentsProblem(percents)) rows = buildRows(completePercents(percents));
+    const scrolledTo = list.querySelector(".ocp-scroll")?.scrollTop ?? 0;
     list.replaceChildren();
     if (!rows.length) return;
     const scroll = make("div", "ocp-scroll");
@@ -1184,12 +1313,19 @@
     for (const row of rows) table.append(...buildCrime(row));
     scroll.appendChild(table);
     list.appendChild(scroll);
+    scroll.scrollTop = scrolledTo;
     const more = document.getElementById("ocp-more");
     if (more) more.disabled = busy || !moreToLoad();
   }
-  function choosePlayer(row, player) {
+  function choosePlayer(row, player, payable) {
     const status = document.getElementById("ocp-list-status");
-    if (!row.percents || player.payout === null) return;
+    highlighted = { crimeId: row.crime.id, memberId: player.id };
+    selection = null;
+    if (status) setStatus(status, "none", "");
+    if (!payable || !row.percents || player.payout === null) {
+      render();
+      return;
+    }
     const chosen = {
       crimeId: row.crime.id,
       percents: row.percents,
@@ -1197,12 +1333,12 @@
       label: `${memberName(player.id)} [${player.id}]`,
       amount: player.payout
     };
-    if (!fillBankForm(chosen)) {
-      if (status) setStatus(status, "error", "Give money form not found");
-      return;
-    }
-    if (status) setStatus(status, "none", "");
+    log("chosen", row.crime.id, player.id, player.payout);
     selection = chosen;
+    if (status) {
+      if (fillBankForm(chosen)) setStatus(status, "none", "");
+      else setStatus(status, "error", "Give money form not found");
+    }
     render();
   }
   function onSent(prefill) {
@@ -1223,7 +1359,9 @@
       if (fresh) {
         resetCrimes();
         selection = null;
+        highlighted = null;
       }
+      if (!readKeyOwner()) writeKeyOwner(await fetchKeyOwner(key2));
       await loadMore(key2);
       setStatus(status, "none", "");
     } catch (error) {
@@ -1249,6 +1387,7 @@
       try {
         await checkKey(key2);
         writeApiKey(key2);
+        writeKeyOwner(await fetchKeyOwner(key2));
         fetchButton.disabled = false;
         setStatus(status, "ok", "Saved");
       } catch (error) {
@@ -1257,7 +1396,9 @@
         check.disabled = false;
       }
     });
-    row.append(make("span", "", "API key"), field, check, status);
+    const listStatus = make("span", "ocp-status");
+    listStatus.id = "ocp-list-status";
+    row.append(make("span", "", "API key"), field, check, status, fetchButton, listStatus);
     return row;
   }
   function buildPercentRow() {
@@ -1321,11 +1462,6 @@
     fetchButton.disabled = !readApiKey();
     fetchButton.addEventListener("click", () => void fetchPage(true));
     body.appendChild(buildKeyRow(fetchButton));
-    const fetchRow = make("div", "ocp-row");
-    const listStatus = make("span", "ocp-status");
-    listStatus.id = "ocp-list-status";
-    fetchRow.append(fetchButton, listStatus);
-    body.appendChild(fetchRow);
     body.appendChild(buildPercentRow());
     const list = make("div");
     list.id = "ocp-list";
@@ -1384,7 +1520,7 @@
     });
   }
   function onReady() {
-    log("running", "0.1.15", location.href);
+    log("running", "0.1.28", location.href);
     installPanel();
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("hashchange", schedule);

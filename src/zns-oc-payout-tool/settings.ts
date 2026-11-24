@@ -13,6 +13,7 @@ const PERCENTS_KEY = "PERCENTS";
 const PAID_KEY = "PAID";
 const PANEL_OPEN_KEY = "PANEL_OPEN";
 const PREREQ_KEY = "PREREQUISITES";
+const KEY_OWNER_KEY = "KEY_OWNER";
 
 /** How long the list of crimes that unlock others is used before it is fetched again. */
 const PREREQ_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -73,6 +74,27 @@ export function writePercents(percents: PercentInputs): void {
 export interface Payment {
   amount: number;
   at: number;
+  /** Whose key the tool was using when the payment was made; missing on payments recorded before 0.1.21. */
+  by?: Payer;
+}
+
+/** A player who made a payment. */
+export interface Payer {
+  id: number;
+  name: string;
+}
+
+/** Returns the stored key's owner, or null when it has not been looked up. */
+export function readKeyOwner(): Payer | null {
+  const stored = readJson(KEY_OWNER_KEY) as Partial<Payer> | null;
+  return stored && typeof stored.id === "number" && stored.id > 0 && typeof stored.name === "string"
+    ? { id: stored.id, name: stored.name }
+    : null;
+}
+
+/** Stores the key's owner. */
+export function writeKeyOwner(owner: Payer): void {
+  write(KEY_OWNER_KEY, JSON.stringify(owner));
 }
 
 /**
@@ -96,7 +118,8 @@ export function readPaid(): Record<string, CrimePayments> {
 export function recordPayment(crimeId: number, percents: Percents, memberId: number, amount: number): void {
   const paid = readPaid();
   const crime = paid[String(crimeId)] ?? { percents, members: {} };
-  crime.members[String(memberId)] = { amount, at: Math.floor(Date.now() / 1000) };
+  const by = readKeyOwner();
+  crime.members[String(memberId)] = { amount, at: Math.floor(Date.now() / 1000), ...(by ? { by } : {}) };
   paid[String(crimeId)] = crime;
   write(PAID_KEY, JSON.stringify(paid));
 }

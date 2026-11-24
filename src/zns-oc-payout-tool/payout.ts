@@ -20,7 +20,16 @@ export interface MemberInput {
   role: string;
   /** Personal role score, or null while one of its parts is not known. */
   prs: number | null;
+  /** What the role score was worked out from, for showing the sum. */
+  roleParts: RoleParts;
   joinedAt: number;
+}
+
+/** The three numbers a role score comes from; null where one is not known. */
+export interface RoleParts {
+  checkpointPassRate: number;
+  minimum: number | null;
+  weight: number | null;
 }
 
 /** One crime, as the maths needs it. */
@@ -41,6 +50,7 @@ export interface PlayerPayout {
   role: string;
   /** Personal role score, null while not known. */
   prs: number | null;
+  roleParts: RoleParts;
   /** Personal role cut, null while any role score in the crime is not known. */
   prc: number | null;
   /** Personal time score, in seconds. */
@@ -49,6 +59,11 @@ export interface PlayerPayout {
   ptc: number;
   /** How long planning had been stalled when this member joined, in seconds. */
   stallJoin: number;
+  joinedAt: number;
+  /** When the crime ran. */
+  executedAt: number;
+  /** When the role before this member's finished planning, which is when the stall they ended began. */
+  previousRoleEnd: number | null;
   /** Personal stall cut. */
   psc: number;
   base: number;
@@ -114,15 +129,15 @@ export function roleScore(checkpointPassRate: number | null, minimum: number | n
  * later; the gap between the two is a stall that member's join ended.
  * Checked against 79 of the faction's crimes with no mismatches.
  */
-export function stallJoins(planningAt: number, joinedAt: number[]): number[] {
+export function stallJoins(planningAt: number, joinedAt: number[]): { gap: number; previousEnd: number | null }[] {
   const order = joinedAt.map((at, index) => ({ at, index })).sort((a, b) => a.at - b.at);
-  const result = new Array<number>(joinedAt.length).fill(0);
+  const result = joinedAt.map(() => ({ gap: 0, previousEnd: null as number | null }));
   let previousEnd = planningAt;
 
   order.forEach(({ at, index }, position) => {
     // The first member opens planning, so nothing can have stalled before them.
     const gap = position === 0 ? 0 : Math.max(0, at - previousEnd);
-    result[index] = gap;
+    result[index] = { gap, previousEnd: position === 0 ? null : previousEnd };
     const start = position === 0 ? at : previousEnd + gap;
     previousEnd = start + PLANNING_SECONDS_PER_ROLE;
   });
@@ -156,10 +171,11 @@ export function computePayout(crime: CrimeInput, percents: Percents): CrimePayou
   const prs = crime.members.map((member) => member.prs);
   const roleKnown = prs.every((score) => score !== null);
   const pts = crime.members.map((member) => Math.max(0, crime.executedAt - member.joinedAt));
-  const stall = stallJoins(
+  const stallDetails = stallJoins(
     crime.planningAt,
     crime.members.map((member) => member.joinedAt),
   );
+  const stall = stallDetails.map((detail) => detail.gap);
   const totalStall = stall.reduce((sum, value) => sum + value, 0);
 
   // A crime nobody stalled has no one to give the stall bonus to, so it goes
@@ -190,10 +206,14 @@ export function computePayout(crime: CrimeInput, percents: Percents): CrimePayou
       name: member.name,
       role: member.role,
       prs: prs[index] ?? null,
+      roleParts: member.roleParts,
       prc: role,
       pts: pts[index] ?? 0,
       ptc: time,
       stallJoin: stall[index] ?? 0,
+      joinedAt: member.joinedAt,
+      executedAt: crime.executedAt,
+      previousRoleEnd: stallDetails[index]?.previousEnd ?? null,
       psc: stallCut,
       base,
       payout: role === null ? null : base + role + time + stallCut,
@@ -218,14 +238,23 @@ export function computePayout(crime: CrimeInput, percents: Percents): CrimePayou
 }
 
 /**
- * Splits a chain's money between its crimes by member count.
+ * Splits a chain's money between its crimes.
  *
  * A crime that unlocks another pays nothing itself; the last crime's reward
- * covers every member of the chain. Each share rounds as roundShares does;
- * a dollar left unshared stays with the faction.
+ * covers the whole chain. Each crime counts its members plus 1 for every
+ * level it is above the chain's lowest-level crime, and gets that count's
+ * share of the reward: levels 5 and 6 with 3 and 6 members count 3 and 7, so
+ * they get 3/10 and 7/10. Each share rounds as roundShares does, and any
+ * dollar left unshared goes to the lowest-level crime.
  */
-export function splitChain(total: number, memberCounts: number[]): number[] {
-  const everyone = memberCounts.reduce((sum, count) => sum + count, 0);
-  if (everyone <= 0) return memberCounts.map(() => 0);
-  return roundShares(total, memberCounts.map((count) => (total * count) / everyone));
+export function splitChain(total: number, links: { members: number; level: number }[]): number[] {
+  const lowest = Math.min(...links.map((link) => link.level));
+  const counts = links.map((link) => link.members + (link.level - lowest));
+  const everyone = counts.reduce((sum, count) => sum + count, 0);
+  if (everyone <= 0) return counts.map(() => 0);
+  const shares = roundShares(total, counts.map((count) => (total * count) / everyone));
+  const spare = total - shares.reduce((sum, share) => sum + share, 0);
+  const lowestIndex = links.findIndex((link) => link.level === lowest);
+  shares[lowestIndex] = (shares[lowestIndex] ?? 0) + spare;
+  return shares;
 }

@@ -13,7 +13,7 @@ import {
 } from "./api";
 import { log } from "./debug";
 import { CrimePayout, MemberInput, Percents, computePayout, roleScore, splitChain } from "./payout";
-import { readPaid, readPrerequisites, writePrerequisites } from "./settings";
+import { Payment, readPaid, readPrerequisites, writePrerequisites } from "./settings";
 import { roleInfo } from "./weights";
 
 /** Where a crime stands. */
@@ -39,8 +39,12 @@ export interface CrimeRow {
   payout: CrimePayout | null;
   /** Members marked paid, by id. */
   paid: Set<number>;
+  /** This tool's payment records for the crime, by member id. */
+  payments: Record<string, Payment>;
   /** Torn's own payout system has already paid this crime. */
   paidByTorn: boolean;
+  /** This crime unlocked a later one in its chain rather than paying out itself. */
+  feeder: boolean;
 }
 
 /** Everything loaded so far. */
@@ -177,6 +181,11 @@ function members(crime: ApiCrime): MemberInput[] {
         name: memberName(slot.user!.id),
         role,
         prs: roleScore(checkpointPassRate(slot), info?.minimum ?? null, info?.weight ?? null),
+        roleParts: {
+          checkpointPassRate: checkpointPassRate(slot),
+          minimum: info?.minimum ?? null,
+          weight: info?.weight ?? null,
+        },
         joinedAt: slot.user!.joined_at,
       };
     });
@@ -196,7 +205,7 @@ function chainOf(crime: ApiCrime): ApiCrime[] {
 export function buildRows(percents: Percents | null): CrimeRow[] {
   const paidRecords = readPaid();
 
-  return listed.map((id): CrimeRow => {
+  return displayOrder().map((id): CrimeRow => {
     const crime = loaded.get(id)!;
     const chain = chainOf(crime);
     const last = chain[chain.length - 1]!;
@@ -213,10 +222,16 @@ export function buildRows(percents: Percents | null): CrimeRow[] {
     let payout: CrimePayout | null = null;
     if (state === "chain-failed") total = 0;
     if (state === "payable") {
-      const shares = splitChain(rewardValue(last), chain.map((link) => members(link).length));
+      const shares = splitChain(
+        rewardValue(last),
+        chain.map((link) => ({ members: members(link).length, level: link.difficulty })),
+      );
       total = shares[chain.indexOf(crime)] ?? 0;
     }
-    if (state === "payable" && total !== null && used) {
+    // A crime still waiting on the one it unlocked has no money yet, but its
+    // members' scores can already be shown, so it is worked out on $0.
+    if (state === "waiting") total = 0;
+    if ((state === "payable" || state === "waiting") && total !== null && used) {
       payout = computePayout(
         {
           total,
@@ -229,6 +244,41 @@ export function buildRows(percents: Percents | null): CrimeRow[] {
       log("payout", crime.id, crime.name, payout);
     }
 
-    return { crime, state, chain, percents: used, total, payout, paid, paidByTorn };
+    // A crime still waiting on the one it unlocked feeds a chain too.
+    const feeder = (chain.length > 1 && last.id !== crime.id) || state === "waiting";
+    const payments = record?.members ?? {};
+    return { crime, state, chain, percents: used, total, payout, paid, payments, paidByTorn, feeder };
   });
+}
+
+/**
+ * The listed crimes in the order the table shows them: newest first, except
+ * that a chain is stacked together, its final crime first with the crimes
+ * that unlocked it straight under it. Those earlier crimes are shown under
+ * their final crime even before their own page of the list has loaded, since
+ * the chain links are fetched with it.
+ */
+function displayOrder(): number[] {
+  const order: number[] = [];
+  const seen = new Set<number>();
+  const listedIds = new Set(listed);
+
+  for (const id of listed) {
+    if (seen.has(id)) continue;
+    const chain = chainOf(loaded.get(id)!);
+    const last = chain[chain.length - 1]!;
+    // Shown under its final crime instead.
+    if (last.id !== id && listedIds.has(last.id)) continue;
+
+    order.push(id);
+    seen.add(id);
+    if (last.id !== id) continue;
+    for (const link of chain.slice(0, -1).reverse()) {
+      // A link that could not be fetched has no status and nothing to show.
+      if (link.status !== "Successful" || seen.has(link.id)) continue;
+      order.push(link.id);
+      seen.add(link.id);
+    }
+  }
+  return order;
 }

@@ -2,7 +2,7 @@
 // each crime's member breakdown.
 
 import { BAD_KEY_SHAPE, isKeyShaped } from "../shared/apiKey";
-import { ApiError, checkKey } from "./api";
+import { ApiError, checkKey, fetchKeyOwner } from "./api";
 import { Prefill, fillBankForm, watchSendButton } from "./bank";
 import { CrimeRow, buildRows, loadMore, memberName, moreToLoad, resetCrimes } from "./crimes";
 import { log } from "./debug";
@@ -11,7 +11,9 @@ import {
   readApiKey,
   readPanelOpen,
   readPercents,
+  readKeyOwner,
   recordPayment,
+  writeKeyOwner,
   writeApiKey,
   writePanelOpen,
   writePercents,
@@ -41,7 +43,10 @@ interface Selection extends Prefill {
 
 let percents = readPercents();
 let rows: CrimeRow[] = [];
+/** The member to pay, put into the give money form; only ever an unpaid member with a known payout. */
 let selection: Selection | null = null;
+/** The player row last clicked, highlighted whether or not it can be paid. */
+let highlighted: { crimeId: number; memberId: number } | null = null;
 const openCrimes = new Set<number>();
 let busy = false;
 
@@ -178,35 +183,78 @@ function paidCount(row: CrimeRow): string {
   return `${row.paid.size}/${total}`;
 }
 
-/** Marks a crime that is part of a chain with its place in it. */
-function chainTag(row: CrimeRow): HTMLElement | null {
-  if (row.chain.length < 2) return null;
-  const position = row.chain.indexOf(row.crime) + 1;
-  const tag = make("span", "ocp-chain", `Chain ${position}/${row.chain.length}`);
-  tag.title = row.chain.map((link) => link.name || `#${link.id}`).join(" → ");
-  return tag;
+/** Formats an amount of a crime's money, or an em dash while the crime is still waiting for it. */
+function cash(row: CrimeRow, amount: number | null): string {
+  return row.state === "waiting" ? "—" : money(amount);
 }
 
 /** Builds the line of totals above a crime's members. */
 function buildSummary(row: CrimeRow): HTMLElement {
   const summary = make("div", "ocp-summary");
-  if (row.state !== "payable") {
-    summary.textContent = row.state === "waiting" ? "Waiting on the crime this one unlocked" : "The crime this one unlocked failed";
+  if (row.state === "chain-failed") {
+    summary.textContent = "The crime this one unlocked failed";
     return summary;
   }
   // Figures show "?" only while a role score is not known.
   const payout = row.payout;
   const parts = [
-    `Base: ${money(payout?.base ?? null)}`,
-    `Total Role Score: ${payout?.totalRoleScore?.toFixed(1) ?? "?"}`,
-    `Role Reserve: ${money(payout?.roleReserve ?? null)}`,
-    `Time Reserve: ${money(payout?.timeReserve ?? null)}`,
-    `Total Time: ${payout ? duration(payout.totalTimeScore) : "?"}`,
-    `Stall Bonus: ${money(payout?.stallReserve ?? null)}`,
-    `Stall Time: ${payout ? duration(payout.totalStall) : "?"}`,
+    `Base: ${cash(row, payout?.base ?? null)}`,
+    `Role Reserve: ${cash(row, payout?.roleReserve ?? null)}`,
+    `Time Reserve: ${cash(row, payout?.timeReserve ?? null)}`,
+    `Stall Bonus: ${cash(row, payout?.stallReserve ?? null)}`,
   ];
   for (const part of parts) summary.appendChild(make("span", "", part));
   return summary;
+}
+
+/** Formats a number for a worked sum, or "?" when it is not known. */
+function part(value: number | null): string {
+  return value === null ? "?" : String(Math.round(value * 10) / 10);
+}
+
+/** Shows a member's role score as its sum, e.g. "CPR 75 - OM 70 + W 23.7". */
+function roleScoreSum(player: PlayerPayout): string {
+  const { checkpointPassRate, minimum, weight } = player.roleParts;
+  return `CPR ${part(checkpointPassRate)} - OM ${part(minimum)} + W ${part(weight)}`;
+}
+
+/**
+ * Shows a member's stall score as its sum, e.g. "TPS 10h 3m".
+ *
+ * Only the time planning had stalled when they joined (TPS) is known: the API
+ * does not say who delayed initiation, so the TDI terms are left out until
+ * there is a source for them.
+ */
+function stallScoreSum(player: PlayerPayout): string {
+  return `TPS ${duration(player.stallJoin)}`;
+}
+
+/** Makes a cell with hover text. */
+function cellWithTip(text: string, tip: string): HTMLTableCellElement {
+  const cell = make("td", "ocp-tip", text);
+  cell.title = tip;
+  return cell;
+}
+
+/** How each score is worked out, shown on its column heading. */
+const HEADING_TIPS: Record<string, string> = {
+  "Role Score": "Checkpoint pass rate - optimal minimum + role weight, minimum 0",
+  "Time Score": "Time from joining to initiation",
+  "Stall Score":
+    "Time planning stalled when joining - time delaying initiation + (for each other player who delayed " +
+    "initiation their time delayed - time delaying initiation, minimum 0)",
+};
+
+/** Says when and by whom a member was paid, or null when they have not been. */
+function paidDetails(row: CrimeRow, player: PlayerPayout): string | null {
+  const payout = row.crime.rewards?.payout;
+  if (row.paidByTorn && payout) {
+    return `${tornDate(payout.paid_at)}\n${memberName(payout.paid_by)} [${payout.paid_by}]`;
+  }
+  const payment = row.payments[String(player.id)];
+  if (!payment) return null;
+  const who = payment.by ? `\n${payment.by.name} [${payment.by.id}]` : "";
+  return `${tornDate(payment.at)}${who}`;
 }
 
 /** Builds one member's line. */
@@ -214,29 +262,34 @@ function buildPlayerRow(row: CrimeRow, player: PlayerPayout): HTMLTableRowElemen
   const paid = row.paid.has(player.id) || row.paidByTorn;
   const line = make("tr", "ocp-player");
   if (paid) line.classList.add("ocp-paid");
-  if (selection?.crimeId === row.crime.id && selection.memberId === player.id) line.classList.add("ocp-selected");
+  if (highlighted?.crimeId === row.crime.id && highlighted.memberId === player.id) line.classList.add("ocp-selected");
 
   const name = make("td");
   name.append(make("span", "", `${player.name} `), make("span", "ocp-player-id", `[${player.id}]`));
   line.appendChild(name);
 
-  const cells = [
-    player.prs?.toFixed(1) ?? "?",
-    money(player.prc),
-    duration(player.pts),
-    money(player.ptc),
-    duration(player.stallJoin),
-    money(player.psc),
-  ];
-  for (const text of cells) line.appendChild(make("td", "", text));
-  line.appendChild(make("td", "ocp-payout", money(player.payout)));
-  line.appendChild(make("td", "", paid ? "Paid" : "Unpaid"));
-
-  // A member whose payout is not known yet cannot be put into the form.
-  if (!paid && player.payout !== null) {
-    line.classList.add("ocp-clickable");
-    line.addEventListener("click", () => choosePlayer(row, player));
+  line.append(
+    cellWithTip(player.prs?.toFixed(1) ?? "?", roleScoreSum(player)),
+    make("td", "", cash(row, player.prc)),
+    make("td", "", duration(player.pts)),
+    make("td", "", cash(row, player.ptc)),
+    cellWithTip(duration(player.stallJoin), stallScoreSum(player)),
+    make("td", "", cash(row, player.psc)),
+  );
+  line.appendChild(make("td", "ocp-payout", cash(row, player.payout)));
+  const paidCell = make("td", "", paid ? "Paid" : "Unpaid");
+  const paidTip = paidDetails(row, player);
+  if (paidTip) {
+    paidCell.title = paidTip;
+    paidCell.classList.add("ocp-tip");
   }
+  line.appendChild(paidCell);
+
+  // Any row can be highlighted; only an unpaid member with a known payout is
+  // put into the give money form.
+  const payable = !paid && player.payout !== null && row.state !== "waiting";
+  line.classList.add("ocp-clickable");
+  line.addEventListener("click", () => choosePlayer(row, player, payable));
   return line;
 }
 
@@ -254,7 +307,15 @@ function buildDetail(row: CrimeRow): HTMLTableRowElement {
       "Player", "Role Score", "Role Cut", "Time Score",
       "Time Cut", "Stall Score", "Stall Cut", "Payout", "Paid",
     ];
-    for (const text of headings) head.appendChild(make("th", "", text));
+    for (const text of headings) {
+      const cell = make("th", "", text);
+      const tip = HEADING_TIPS[text];
+      if (tip) {
+        cell.title = tip;
+        cell.classList.add("ocp-tip");
+      }
+      head.appendChild(cell);
+    }
     table.appendChild(head);
     // Longest time signed up first.
     const players = [...row.payout.players].sort((a, b) => b.pts - a.pts);
@@ -270,20 +331,21 @@ function buildDetail(row: CrimeRow): HTMLTableRowElement {
 function buildCrime(row: CrimeRow): HTMLTableRowElement[] {
   const open = openCrimes.has(row.crime.id);
   const line = make("tr", "ocp-crime");
+  if (open) line.classList.add("ocp-open");
+  if (row.feeder) line.classList.add("ocp-feeder");
   if (crimeDone(row)) line.classList.add("ocp-done");
-  else if (row.state === "waiting") line.classList.add("ocp-waiting");
 
   line.appendChild(make("td", "ocp-caret-cell", open ? "▾" : "▸"));
-  const name = make("td", "", row.crime.name);
-  const tag = chainTag(row);
-  if (tag) name.appendChild(tag);
-  line.appendChild(name);
+  // A crime that unlocked the one above it points up at it; one still waiting
+  // for that crime has nothing above it to point at.
+  const arrow = row.feeder && row.state !== "waiting" ? "⮤ " : "";
+  line.appendChild(make("td", "", arrow + row.crime.name));
   line.appendChild(make("td", "", String(row.crime.difficulty)));
   line.appendChild(make("td", "", tornDate(row.crime.executed_at)));
 
   const payout = row.payout;
   const split = (amount: number | null | undefined): string =>
-    row.state === "payable" ? money(amount ?? null) : "-";
+    row.state === "payable" ? money(amount ?? null) : "—";
   line.appendChild(make("td", "", row.state === "waiting" ? "Waiting" : money(row.total)));
   line.appendChild(make("td", "", split(payout?.factionCut)));
   line.appendChild(make("td", "", split(payout?.remaining)));
@@ -304,6 +366,9 @@ function render(): void {
   if (!list) return;
 
   if (!percentsProblem(percents)) rows = buildRows(completePercents(percents));
+  // The table is rebuilt on every click, which would throw its scroll back
+  // to the top and carry the row just clicked out of view.
+  const scrolledTo = list.querySelector(".ocp-scroll")?.scrollTop ?? 0;
   list.replaceChildren();
   if (!rows.length) return;
 
@@ -316,6 +381,7 @@ function render(): void {
   for (const row of rows) table.append(...buildCrime(row));
   scroll.appendChild(table);
   list.appendChild(scroll);
+  scroll.scrollTop = scrolledTo;
 
   const more = document.getElementById("ocp-more") as HTMLButtonElement | null;
   if (more) more.disabled = busy || !moreToLoad();
@@ -323,10 +389,18 @@ function render(): void {
 
 // ---------------------------------------------------------------- paying
 
-/** Puts a member into the give money form. */
-function choosePlayer(row: CrimeRow, player: PlayerPayout): void {
+/** Highlights a member's row and, when they can be paid, puts them into the give money form. */
+function choosePlayer(row: CrimeRow, player: PlayerPayout, payable: boolean): void {
   const status = document.getElementById("ocp-list-status");
-  if (!row.percents || player.payout === null) return;
+  highlighted = { crimeId: row.crime.id, memberId: player.id };
+  // Do not leave an earlier member armed: the form's button would record
+  // them as paid while a different row is highlighted.
+  selection = null;
+  if (status) setStatus(status, "none", "");
+  if (!payable || !row.percents || player.payout === null) {
+    render();
+    return;
+  }
   const chosen: Selection = {
     crimeId: row.crime.id,
     percents: row.percents,
@@ -335,12 +409,14 @@ function choosePlayer(row: CrimeRow, player: PlayerPayout): void {
     amount: player.payout,
   };
 
-  if (!fillBankForm(chosen)) {
-    if (status) setStatus(status, "error", "Give money form not found");
-    return;
-  }
-  if (status) setStatus(status, "none", "");
+  log("chosen", row.crime.id, player.id, player.payout);
+  // The row stays chosen whether or not the give money form is on this tab,
+  // so it can be filled once the form is open.
   selection = chosen;
+  if (status) {
+    if (fillBankForm(chosen)) setStatus(status, "none", "");
+    else setStatus(status, "error", "Give money form not found");
+  }
   render();
 }
 
@@ -368,7 +444,10 @@ async function fetchPage(fresh: boolean): Promise<void> {
     if (fresh) {
       resetCrimes();
       selection = null;
+      highlighted = null;
     }
+    // Keys saved before payers were recorded have no owner stored yet.
+    if (!readKeyOwner()) writeKeyOwner(await fetchKeyOwner(key));
     await loadMore(key);
     setStatus(status, "none", "");
   } catch (error) {
@@ -399,6 +478,7 @@ function buildKeyRow(fetchButton: HTMLButtonElement): HTMLElement {
     try {
       await checkKey(key);
       writeApiKey(key);
+      writeKeyOwner(await fetchKeyOwner(key));
       fetchButton.disabled = false;
       setStatus(status, "ok", "Saved");
     } catch (error) {
@@ -408,7 +488,9 @@ function buildKeyRow(fetchButton: HTMLButtonElement): HTMLElement {
     }
   });
 
-  row.append(make("span", "", "API key"), field, check, status);
+  const listStatus = make("span", "ocp-status");
+  listStatus.id = "ocp-list-status";
+  row.append(make("span", "", "API key"), field, check, status, fetchButton, listStatus);
   return row;
 }
 
@@ -481,11 +563,6 @@ function buildPanel(): HTMLElement {
   fetchButton.addEventListener("click", () => void fetchPage(true));
   body.appendChild(buildKeyRow(fetchButton));
 
-  const fetchRow = make("div", "ocp-row");
-  const listStatus = make("span", "ocp-status");
-  listStatus.id = "ocp-list-status";
-  fetchRow.append(fetchButton, listStatus);
-  body.appendChild(fetchRow);
   body.appendChild(buildPercentRow());
 
   const list = make("div");
