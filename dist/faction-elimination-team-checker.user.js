@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faction Elimination Team Checker
 // @namespace    https://github.com/autumn-grey
-// @version      1.3.2
+// @version      1.3.3
 // @description  Adds a collapsible panel to the faction page showing which elimination team each faction member is on, with eliminated teams greyed out.
 // @author       AutumnGrey
 // @license      MIT
@@ -586,6 +586,25 @@
     (document.head ?? document.documentElement).appendChild(style);
   }
 
+  // src/shared/maskedInput.ts
+  function makeSecretInput(input) {
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("data-lpignore", "true");
+    input.setAttribute("data-1p-ignore", "true");
+    input.setAttribute("data-bwignore", "true");
+    input.setAttribute("data-form-type", "other");
+    setSecretShown(input, false);
+  }
+  function setSecretShown(input, shown) {
+    input.style.setProperty("-webkit-text-security", shown ? "none" : "disc");
+    input.dataset.secretShown = shown ? "1" : "0";
+  }
+  function isSecretShown(input) {
+    return input.dataset.secretShown === "1";
+  }
+
   // src/faction-elimination-team-checker/panel.ts
   var ANCHOR_SELECTORS = [".tt-filter", ".members-list", ".f-war-list"];
   var teamIndex = /* @__PURE__ */ new Map();
@@ -894,7 +913,7 @@
     button.type = "button";
     button.className = "et-eye";
     const apply = (shown) => {
-      input.type = shown ? "text" : "password";
+      setSecretShown(input, shown);
       button.title = shown ? "Hide key" : "Show key";
       button.setAttribute("aria-label", button.title);
       button.setAttribute("aria-pressed", String(shown));
@@ -902,7 +921,7 @@
       button.appendChild(buildEye(shown));
     };
     apply(false);
-    button.addEventListener("click", () => apply(input.type === "password"));
+    button.addEventListener("click", () => apply(!isSecretShown(input)));
     return button;
   }
   function buildControls() {
@@ -919,9 +938,7 @@
     const input = document.createElement("input");
     input.id = "et-api-key";
     input.className = "et-text-input";
-    input.type = "password";
-    input.spellcheck = false;
-    input.autocomplete = "off";
+    makeSecretInput(input);
     input.placeholder = "Public access key";
     input.value = readApiKey();
     keyField.appendChild(input);

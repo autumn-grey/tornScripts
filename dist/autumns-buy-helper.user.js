@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Buy Helper
 // @namespace    https://github.com/autumn-grey
-// @version      0.1.0
+// @version      0.1.1
 // @description  Marks up the item market and other players' bazaars with your own reference prices, so a listing worth buying is obvious at a glance. The source spreadsheet is set from a panel on the preferences page.
 // @author       AutumnGrey
 // @license      MIT
@@ -18,6 +18,13 @@
 
 "use strict";
 (() => {
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
+  }
+
   // src/autumns-buy-helper/debug.ts
   var DEBUG_KEY = "ABH_DEBUG";
   function debugging() {
@@ -433,7 +440,7 @@
 
   // src/autumns-buy-helper/markup.ts
   var ITEM_IMAGE = "img.torn-item[alt]";
-  var PRICE_ELEMENT = '[class*="priceAndTotal"] > span, [class*="price___"]';
+  var PRICE_ELEMENT = `[class*="priceAndTotal"] > span, ${hashedClass("price")}`;
   var MONEY = /\$\s?([\d,]+)/g;
   var MAX_WALK_DEPTH = 8;
   function parseMoney(text) {

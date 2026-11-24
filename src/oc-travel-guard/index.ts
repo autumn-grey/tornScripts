@@ -4,6 +4,7 @@
 // your Organised Crime starts, and reports the maths in a panel below the
 // page title.
 
+import { hashedClass } from "../shared/hashedClass";
 // Inlined as a data: URI at build time.
 import raccoonAngry from "./raccoonAngry.png";
 
@@ -28,7 +29,7 @@ const SELECTORS = {
   // The travel button, e.g. aria-label="Travel to Argentina".
   travelButton: 'button[aria-label^="Travel to" i]',
   // The flight time beside a destination, e.g. <span class="duration___aexCM">1h 29m</span>.
-  flightDuration: '[class^="duration___"], [class*=" duration___"]',
+  flightDuration: hashedClass("duration", true),
   // Leaf nodes scanned for a button's caption.
   buttonish: "button, a, span, div",
   // Chrome that is never the travel control, whatever its caption says.

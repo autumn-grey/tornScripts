@@ -22,6 +22,7 @@ import {
 import { onlyOurs } from "./ownChanges";
 import { PANEL_ID, injectStyles } from "./styles";
 import { FoundUser, MIN_QUERY, searchUsers } from "./userSearch";
+import { isSecretShown, makeSecretInput, setSecretShown } from "../shared/maskedInput";
 
 /** Settles typing before Torn is asked for names. */
 const SEARCH_DELAY_MS = 250;
@@ -190,9 +191,7 @@ function buildApiKeyRow(): HTMLElement {
 
   const input = document.createElement("input");
   input.className = "aue-input aue-key-input";
-  input.type = "password";
-  input.autocomplete = "off";
-  input.spellcheck = false;
+  makeSecretInput(input);
   input.placeholder = "custom key";
   input.value = readSetting(API_KEY_SETTING, "");
   box.appendChild(input);
@@ -202,9 +201,9 @@ function buildApiKeyRow(): HTMLElement {
   reveal.className = "aue-key-reveal";
   reveal.textContent = "Show";
   reveal.addEventListener("click", () => {
-    const hidden = input.type === "password";
-    input.type = hidden ? "text" : "password";
-    reveal.textContent = hidden ? "Hide" : "Show";
+    const show = !isSecretShown(input);
+    setSecretShown(input, show);
+    reveal.textContent = show ? "Hide" : "Show";
   });
   box.appendChild(reveal);
 

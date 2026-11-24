@@ -3,6 +3,7 @@
 // has been bought so far (from the Points Building log), and what the rest
 // costs at the points market's median price.
 
+import { hashedClass } from "../shared/hashedClass";
 import { POINT_AVERAGE, PointValue, fetchMyLevel, fetchPointValue } from "./api";
 import { isKeyProblem, keyPrompt } from "./keyPrompt";
 import { Purchase, PurchaseKind, readPurchase, syncPointsLog } from "./pointsLog";
@@ -11,9 +12,9 @@ import { injectStyles } from "./styles";
 
 const SELECTORS = {
   // <div class="pointsBuildingPage___FgoKX">, holding the header and then the items.
-  page: '#points-building-root [class*="pointsBuildingPage___"]',
+  page: `#points-building-root ${hashedClass("pointsBuildingPage")}`,
   // The items to buy, which the tracker goes above.
-  content: '[class*="pageContent___"]',
+  content: hashedClass("pageContent"),
 };
 
 

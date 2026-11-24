@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Keno
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.3
+// @version      1.0.4
 // @description  Records every Keno round you play, with your picks and the numbers drawn, to your own Google Sheet so every device shares one history. Shades the board by how often each number comes up or wins, and outlines the ten most drawn.
 // @author       AutumnGrey
 // @license      MIT
@@ -462,6 +462,25 @@
     document.head.appendChild(style);
   }
 
+  // src/shared/maskedInput.ts
+  function makeSecretInput(input) {
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("data-lpignore", "true");
+    input.setAttribute("data-1p-ignore", "true");
+    input.setAttribute("data-bwignore", "true");
+    input.setAttribute("data-form-type", "other");
+    setSecretShown(input, false);
+  }
+  function setSecretShown(input, shown) {
+    input.style.setProperty("-webkit-text-security", shown ? "none" : "disc");
+    input.dataset.secretShown = shown ? "1" : "0";
+  }
+  function isSecretShown(input) {
+    return input.dataset.secretShown === "1";
+  }
+
   // src/autumns-keno/panel.ts
   var heatMode = readSetting(HEAT_MODE, "drawn");
   var sheetControl = null;
@@ -495,18 +514,16 @@
     control.appendChild(el("span", "", "Sheet"));
     const box = el("span", "akn-url-box");
     const input = el("input", "akn-url");
-    input.type = "password";
-    input.autocomplete = "off";
-    input.spellcheck = false;
+    makeSecretInput(input);
     input.placeholder = "web app URL";
     input.value = readSetting(SHEET_URL, "");
     box.appendChild(input);
     const reveal = el("button", "akn-reveal", "show");
     reveal.type = "button";
     reveal.addEventListener("click", () => {
-      const hidden = input.type === "password";
-      input.type = hidden ? "text" : "password";
-      reveal.textContent = hidden ? "hide" : "show";
+      const show = !isSecretShown(input);
+      setSecretShown(input, show);
+      reveal.textContent = show ? "hide" : "show";
     });
     box.appendChild(reveal);
     control.appendChild(box);

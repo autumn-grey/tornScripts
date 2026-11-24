@@ -6,6 +6,7 @@ import { allRounds, onRoundsChange, syncStatus, syncWithSheet } from "./rounds";
 import { HEAT_MODE, SHEET_URL, readSetting, writeSetting } from "./settings";
 import { fetchHistory } from "./sheet";
 import { PANEL_ID, injectStyles } from "./styles";
+import { isSecretShown, makeSecretInput, setSecretShown } from "../shared/maskedInput";
 
 let heatMode = readSetting<HeatMode>(HEAT_MODE, "drawn");
 /** The sheet URL field, hidden once a working URL is saved. */
@@ -50,9 +51,7 @@ function buildSheetControl(): HTMLElement {
 
   const box = el("span", "akn-url-box");
   const input = el("input", "akn-url");
-  input.type = "password";
-  input.autocomplete = "off";
-  input.spellcheck = false;
+  makeSecretInput(input);
   input.placeholder = "web app URL";
   input.value = readSetting<string>(SHEET_URL, "");
   box.appendChild(input);
@@ -60,9 +59,9 @@ function buildSheetControl(): HTMLElement {
   const reveal = el("button", "akn-reveal", "show");
   reveal.type = "button";
   reveal.addEventListener("click", () => {
-    const hidden = input.type === "password";
-    input.type = hidden ? "text" : "password";
-    reveal.textContent = hidden ? "hide" : "show";
+    const show = !isSecretShown(input);
+    setSecretShown(input, show);
+    reveal.textContent = show ? "hide" : "show";
   });
   box.appendChild(reveal);
   control.appendChild(box);

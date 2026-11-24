@@ -9,6 +9,7 @@
 // by checking the fields on a short timer. That timer only reads the page
 // already on screen; this script sends no requests at all.
 
+import { hashedClass } from "../shared/hashedClass";
 import { log } from "./debug";
 import { addVersion, latestWithTitle, prune, putVersion, type Reason, type Version, versionsOf } from "./store";
 
@@ -17,13 +18,13 @@ export const SELECTORS = {
   panel: "#notes_panel",
   // The header is itself a button: icon, "Notes", minimise, maximise.
   header: "#notes_panel > button",
-  minimize: '[class*="minimizeIcon___"]',
-  title: '#notes_panel input[class*="title___"]',
-  body: '#notes_panel textarea[class*="text___"]',
+  minimize: hashedClass("minimizeIcon"),
+  title: `#notes_panel input${hashedClass("title")}`,
+  body: `#notes_panel textarea${hashedClass("text")}`,
   // The cross beside the note picker, which deletes the open note.
-  remove: '#notes_panel [class*="menu___"] > button',
+  remove: `#notes_panel ${hashedClass("menu")} > button`,
   // The note picker's entries.
-  pick: '#notes_panel [class*="list___"] [class*="item___"]',
+  pick: `#notes_panel ${hashedClass("list")} ${hashedClass("item")}`,
 };
 
 /** How long after the last keystroke a version is taken. */

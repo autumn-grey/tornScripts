@@ -13,6 +13,7 @@
 // one way to change a textarea that its own undo can take back, so a drawing
 // deleted with Backspace comes back with Ctrl+Z, as it would in Word.
 
+import { hashedClass } from "../shared/hashedClass";
 import { colourPicker, keepRecent, recentColours, rgbOf, watchRecent } from "./colours";
 import { log } from "./debug";
 import {
@@ -58,10 +59,10 @@ const SELECTORS = {
   panel: "#notes_panel",
   // The header is itself a button: icon, "Notes", minimise, maximise.
   header: "#notes_panel > button",
-  minimize: '[class*="minimizeIcon___"]',
+  minimize: hashedClass("minimizeIcon"),
   body: "#notes_panel textarea",
   // The note picker's drop-down, which opens over the body.
-  noteList: '#notes_panel [class*="list___"]',
+  noteList: `#notes_panel ${hashedClass("list")}`,
 };
 
 const ICON_ID = "doodle-icon";

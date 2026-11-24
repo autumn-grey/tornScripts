@@ -7,6 +7,7 @@
 // from the user's position a page at a time, then bisecting inside the page
 // range where the level changes.
 
+import { hashedClass } from "../shared/hashedClass";
 import { MyLevel, fetchMyLevel, tornGet } from "./api";
 import { log } from "./debug";
 import { isKeyProblem, keyPrompt } from "./keyPrompt";
@@ -16,19 +17,19 @@ import { injectStyles } from "./styles";
 const SELECTORS = {
   root: "#hof-root",
   // The leaderboard table and its header: <div class="tableWrapper___Vgmq8">.
-  table: '[class*="tableWrapper___"]',
+  table: hashedClass("tableWrapper"),
   // "People ranked by Level", in the table header.
-  heading: '[class*="heading___"]',
+  heading: hashedClass("heading"),
   // The category tiles above the table, whose look the widget borrows. A tile
   // is <div class="buttonWrapper___ up___"><button class="button___"> holding
   // an infoBox___ with a title___ ("faction respect") and a message___, which
   // is bold ("No change in 1 day") on an open tile and plain ("Revive people
   // to increase") on a locked___ one. Selected tiles are drawn differently.
-  tile: '[class*="tabsList___"] [class*="buttonWrapper___"]:not([class*="selected___"]):not([class*="locked___"])',
-  tileButton: '[class*="button___"]',
-  tileTitle: '[class*="infoBox___"] [class*="title___"]',
-  tileMessage: '[class*="infoBox___"] [class*="message___"]',
-  lockedMessage: '[class*="tabsList___"] [class*="locked___"] [class*="message___"]',
+  tile: `${hashedClass("tabsList")} ${hashedClass("buttonWrapper")}:not(${hashedClass("selected")}):not(${hashedClass("locked")})`,
+  tileButton: hashedClass("button"),
+  tileTitle: `${hashedClass("infoBox")} ${hashedClass("title")}`,
+  tileMessage: `${hashedClass("infoBox")} ${hashedClass("message")}`,
+  lockedMessage: `${hashedClass("tabsList")} ${hashedClass("locked")} ${hashedClass("message")}`,
 };
 
 /** The box properties copied from a tile onto the widget. */

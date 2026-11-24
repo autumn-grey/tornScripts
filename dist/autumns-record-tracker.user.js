@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Record Tracker
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.6
+// @version      1.0.7
 // @description  Displays your progress towards achieving all merits requiring points purchases, estimates your level progress and allows you to see all car classes' record lists.
 // @author       AutumnGrey
 // @license      MIT
@@ -29,6 +29,13 @@
   function log(...parts) {
     if (!debugging()) return;
     console.log("[ART]", ...parts);
+  }
+
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
   }
 
   // src/autumns-record-tracker/settings.ts
@@ -773,19 +780,19 @@
   var SELECTORS = {
     root: "#hof-root",
     // The leaderboard table and its header: <div class="tableWrapper___Vgmq8">.
-    table: '[class*="tableWrapper___"]',
+    table: hashedClass("tableWrapper"),
     // "People ranked by Level", in the table header.
-    heading: '[class*="heading___"]',
+    heading: hashedClass("heading"),
     // The category tiles above the table, whose look the widget borrows. A tile
     // is <div class="buttonWrapper___ up___"><button class="button___"> holding
     // an infoBox___ with a title___ ("faction respect") and a message___, which
     // is bold ("No change in 1 day") on an open tile and plain ("Revive people
     // to increase") on a locked___ one. Selected tiles are drawn differently.
-    tile: '[class*="tabsList___"] [class*="buttonWrapper___"]:not([class*="selected___"]):not([class*="locked___"])',
-    tileButton: '[class*="button___"]',
-    tileTitle: '[class*="infoBox___"] [class*="title___"]',
-    tileMessage: '[class*="infoBox___"] [class*="message___"]',
-    lockedMessage: '[class*="tabsList___"] [class*="locked___"] [class*="message___"]'
+    tile: `${hashedClass("tabsList")} ${hashedClass("buttonWrapper")}:not(${hashedClass("selected")}):not(${hashedClass("locked")})`,
+    tileButton: hashedClass("button"),
+    tileTitle: `${hashedClass("infoBox")} ${hashedClass("title")}`,
+    tileMessage: `${hashedClass("infoBox")} ${hashedClass("message")}`,
+    lockedMessage: `${hashedClass("tabsList")} ${hashedClass("locked")} ${hashedClass("message")}`
   };
   var BOX_STYLES = [
     "background-color",
@@ -996,6 +1003,25 @@
     return KEY_SHAPE.test(key);
   }
 
+  // src/shared/maskedInput.ts
+  function makeSecretInput(input) {
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("data-lpignore", "true");
+    input.setAttribute("data-1p-ignore", "true");
+    input.setAttribute("data-bwignore", "true");
+    input.setAttribute("data-form-type", "other");
+    setSecretShown(input, false);
+  }
+  function setSecretShown(input, shown) {
+    input.style.setProperty("-webkit-text-security", shown ? "none" : "disc");
+    input.dataset.secretShown = shown ? "1" : "0";
+  }
+  function isSecretShown(input) {
+    return input.dataset.secretShown === "1";
+  }
+
   // src/autumns-record-tracker/panel.ts
   var SELECTORS2 = {
     // The UI Enhancer's panel body, which the rows join the bottom of.
@@ -1036,9 +1062,7 @@
     field.appendChild(box);
     const input = document.createElement("input");
     input.className = "art-key-input";
-    input.type = "password";
-    input.autocomplete = "off";
-    input.spellcheck = false;
+    makeSecretInput(input);
     input.placeholder = "custom key";
     input.value = readSetting(API_KEY_SETTING, "");
     box.appendChild(input);
@@ -1047,9 +1071,9 @@
     reveal.className = "art-key-reveal";
     reveal.textContent = "Show";
     reveal.addEventListener("click", () => {
-      const hidden = input.type === "password";
-      input.type = hidden ? "text" : "password";
-      reveal.textContent = hidden ? "Hide" : "Show";
+      const show = !isSecretShown(input);
+      setSecretShown(input, show);
+      reveal.textContent = show ? "Hide" : "Show";
     });
     box.appendChild(reveal);
     const check = document.createElement("button");
@@ -1288,9 +1312,9 @@
   // src/autumns-record-tracker/points.ts
   var SELECTORS3 = {
     // <div class="pointsBuildingPage___FgoKX">, holding the header and then the items.
-    page: '#points-building-root [class*="pointsBuildingPage___"]',
+    page: `#points-building-root ${hashedClass("pointsBuildingPage")}`,
     // The items to buy, which the tracker goes above.
-    content: '[class*="pageContent___"]'
+    content: hashedClass("pageContent")
   };
   var TRACKER_ID = "art-merit-tracker";
   var TRACKER_LABEL = "Point Merit Tracker";

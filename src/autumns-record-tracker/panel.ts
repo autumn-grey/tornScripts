@@ -18,6 +18,7 @@ import {
   writeSetting,
 } from "./settings";
 import { STANDALONE_PANEL_ID, injectStyles } from "./styles";
+import { isSecretShown, makeSecretInput, setSecretShown } from "../shared/maskedInput";
 
 const SELECTORS = {
   // The UI Enhancer's panel body, which the rows join the bottom of.
@@ -71,9 +72,7 @@ function buildApiKeyRow(): HTMLElement {
 
   const input = document.createElement("input");
   input.className = "art-key-input";
-  input.type = "password";
-  input.autocomplete = "off";
-  input.spellcheck = false;
+  makeSecretInput(input);
   input.placeholder = "custom key";
   input.value = readSetting<string>(API_KEY_SETTING, "");
   box.appendChild(input);
@@ -83,9 +82,9 @@ function buildApiKeyRow(): HTMLElement {
   reveal.className = "art-key-reveal";
   reveal.textContent = "Show";
   reveal.addEventListener("click", () => {
-    const hidden = input.type === "password";
-    input.type = hidden ? "text" : "password";
-    reveal.textContent = hidden ? "Hide" : "Show";
+    const show = !isSecretShown(input);
+    setSecretShown(input, show);
+    reveal.textContent = show ? "Hide" : "Show";
   });
   box.appendChild(reveal);
 

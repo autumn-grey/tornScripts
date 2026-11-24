@@ -15,6 +15,7 @@
 // Written after reading Deviyl's Torn Chat Hider, which is where the idea of
 // a second, local hide kept in sessionStorage comes from.
 
+import { hashedClass } from "../shared/hashedClass";
 import { noteUndone } from "./clash";
 import { log } from "./debug";
 import { HIDE_BUTTON_CLASS } from "./hideChats";
@@ -838,11 +839,11 @@ function paintBarIcons(hidden: Set<string>): void {
   const css =
     buttons.length === 0
       ? ""
-      : `${each(':not([class*="message___"])')} {
+      : `${each(`:not(${hashedClass("message")})`)} {
   background: linear-gradient(#666666, #333333) !important;
   box-shadow: inset 0 0 4px rgba(255, 255, 255, 0.25), 0 -2px 4px rgba(0, 0, 0, 0.5) !important;
 }
-${each(':not([class*="message___"]):hover')} { background: linear-gradient(#888888, #444444) !important; }
+${each(`:not(${hashedClass("message")}):hover`)} { background: linear-gradient(#888888, #444444) !important; }
 ${each(' svg defs stop[id="start"]')} { stop-color: #cccccc !important; }
 ${each(' svg defs stop[id="end"]')} { stop-color: #999999 !important; }
 ${each(':hover svg defs stop[id="start"]')} { stop-color: #ffffff !important; }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornTwat
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.3
+// @version      1.0.4
 // @description  T.W.A.T., the Torn War Analysis Tool, for The ZOO - Night Shift's lost ranked wars. Music: "Blame It on the Boogie" Sega Genesis remix (https://www.youtube.com/watch?v=-d3loT714ZM) and "Kiss From a Rose" by seals (https://www.youtube.com/watch?v=G76nKGWRLPU). Font: IBM 3270 by Ricardo Banffy and contributors, BSD 3-Clause (https://github.com/rbanffy/3270font).
 // @author       AutumnGrey
 // @license      MIT
@@ -22,6 +22,13 @@
 
 "use strict";
 (() => {
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
+  }
+
   // src/torn-twat/bigtext.ts
   var GLYPHS = {
     T: ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "],
@@ -102,7 +109,7 @@
     chart: ".chart-placeholder",
     warList: ".f-war-list",
     sideNames: ".faction-names .name",
-    sideNameText: '[class*="text___"]',
+    sideNameText: hashedClass("text"),
     memberList: (side) => `.tab-menu-cont.${side} ul.members-list > li`,
     profileLink: 'a[href*="profiles.php?XID="]',
     attacks: ".points",
@@ -742,7 +749,7 @@ pre { margin: 0; font: inherit; line-height: 1; white-space: pre; }
       name.textContent = "Torn War Analysis Tool™";
       const ver = document.createElement("div");
       ver.className = "dim";
-      ver.textContent = `v${"1.0.3"} 2026`;
+      ver.textContent = `v${"1.0.4"} 2026`;
       const go = document.createElement("button");
       go.className = "go";
       go.textContent = "Initiate Analysis";

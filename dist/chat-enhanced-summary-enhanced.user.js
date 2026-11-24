@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chat Enhanced - Summary ENHANCED
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.4
+// @version      1.0.5
 // @description  Summarises chat but better
 // @author       AutumnGrey
 // @license      MIT
@@ -15,12 +15,19 @@
 
 "use strict";
 (() => {
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
+  }
+
   // src/chat-enhanced-summary-enhanced/chat.ts
   var SELECTORS = {
     root: "#chatRoot",
-    sender: '[class*="sender___"], [class*="message__sender"]',
-    text: '[class*="message___"], [class*="message__text"]',
-    header: '[class*="header___"], [class*="chat-box-header"]'
+    sender: `${hashedClass("sender")}, [class*="message__sender"]`,
+    text: `${hashedClass("message")}, [class*="message__text"]`,
+    header: `${hashedClass("header")}, [class*="chat-box-header"]`
   };
   var MAX_MESSAGES = 300;
   var STEP_DELAY = 130;

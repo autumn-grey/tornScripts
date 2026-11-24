@@ -4,6 +4,7 @@
 // Layout of this file: selectors and constants, page reading, resource loading, the Run (clock, audio
 // and waiting), the Term (printing helpers), the show's script, and the panel that holds it all.
 
+import { hashedClass } from "../shared/hashedClass";
 import { bigText } from "./bigtext";
 import { SEAL } from "./seal";
 
@@ -14,7 +15,7 @@ const SEL = {
   chart: ".chart-placeholder",
   warList: ".f-war-list",
   sideNames: ".faction-names .name",
-  sideNameText: '[class*="text___"]',
+  sideNameText: hashedClass("text"),
   memberList: (side: "left" | "right") => `.tab-menu-cont.${side} ul.members-list > li`,
   profileLink: 'a[href*="profiles.php?XID="]',
   attacks: ".points",

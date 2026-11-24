@@ -15,6 +15,7 @@
 // The title of the panel becomes a menu between the two lists, and glows
 // green while the list not shown has something new in it.
 
+import { hashedClass } from "../shared/hashedClass";
 import { log } from "./debug";
 import { HIDE_CHATS, isEnabled, readSetting, writeSetting } from "./settings";
 
@@ -22,21 +23,21 @@ import { HIDE_CHATS, isEnabled, readSetting, writeSetting } from "./settings";
 const SELECTORS = {
   panel: "#people_panel",
   /** The title in the panel's header, "Your private chats" while the chats tab is open. */
-  title: 'button span[class*="headingH1___"]',
+  title: `button span${hashedClass("headingH1")}`,
   /** The block holding the search box and the list. */
-  content: '[class*="content___"]',
+  content: hashedClass("content"),
   /** The scrolling list Torn draws the rows into. */
   list: "#private-channel-list",
   /** One conversation; its id ends in the other player's id. */
   card: 'button[id^="private_chat_card_"]',
   /** The row holding the name and the time of the last message. */
-  header: '[class*="header___"]',
+  header: hashedClass("header"),
   /** The name link. */
-  name: 'a[class*="title___"]',
+  name: `a${hashedClass("title")}`,
   /** The time of the last message, "4 days ago". */
-  time: '[class*="metadata___"]',
+  time: hashedClass("metadata"),
   /** The last message, "Name : text". */
-  description: '[class*="description___"]',
+  description: hashedClass("description"),
 } as const;
 
 /** The private chats list request: ".../dm?offset=20". */

@@ -1,6 +1,6 @@
 {
   "name": "Chat Enhanced - Summary ENHANCED",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Summarises chat but better",
   "match": "https://www.torn.com/*",
   "grant": "none",

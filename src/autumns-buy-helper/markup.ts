@@ -21,6 +21,7 @@
 // the row of an item in a bazaar, without needing to know which of those we
 // are looking at.
 
+import { hashedClass } from "../shared/hashedClass";
 import { log } from "./debug";
 import { normalizeItemName } from "./sheet";
 import { readCachedPrices, readMaxBuyValue } from "./settings";
@@ -34,7 +35,7 @@ const ITEM_IMAGE = "img.torn-item[alt]";
  * out of the text because it is unambiguously the asking price - though the
  * name is half hashed, so only the readable half is matched on.
  */
-const PRICE_ELEMENT = '[class*="priceAndTotal"] > span, [class*="price___"]';
+const PRICE_ELEMENT = `[class*="priceAndTotal"] > span, ${hashedClass("price")}`;
 
 /** Torn money as the page renders it: $1,234,567. */
 const MONEY = /\$\s?([\d,]+)/g;

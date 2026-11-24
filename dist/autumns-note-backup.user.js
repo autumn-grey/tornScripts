@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Backup
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.1
+// @version      1.0.2
 // @description  Keeps a copy of every Torn note you open or edit in your browser, so a deleted or overwritten note can be brought back
 // @author       AutumnGrey
 // @license      MIT
@@ -27,6 +27,13 @@
   function log(...parts) {
     if (!debugging()) return;
     console.log("[ANB]", ...parts);
+  }
+
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
   }
 
   // src/autumns-note-backup/store.ts
@@ -114,13 +121,13 @@ ${value.body}`;
     panel: "#notes_panel",
     // The header is itself a button: icon, "Notes", minimise, maximise.
     header: "#notes_panel > button",
-    minimize: '[class*="minimizeIcon___"]',
-    title: '#notes_panel input[class*="title___"]',
-    body: '#notes_panel textarea[class*="text___"]',
+    minimize: hashedClass("minimizeIcon"),
+    title: `#notes_panel input${hashedClass("title")}`,
+    body: `#notes_panel textarea${hashedClass("text")}`,
     // The cross beside the note picker, which deletes the open note.
-    remove: '#notes_panel [class*="menu___"] > button',
+    remove: `#notes_panel ${hashedClass("menu")} > button`,
     // The note picker's entries.
-    pick: '#notes_panel [class*="list___"] [class*="item___"]'
+    pick: `#notes_panel ${hashedClass("list")} ${hashedClass("item")}`
   };
   var TYPING_PAUSE_MS = 1500;
   var CHECK_MS = 700;

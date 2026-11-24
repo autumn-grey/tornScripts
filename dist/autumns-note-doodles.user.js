@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's Note Doodles
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.51
+// @version      1.0.52
 // @description  Lets you draw pics in your Torn notes tab. Save them to your device or copy them directly into chat using Pint-Shot-Riot's Chat enhancer script
 // @author       AutumnGrey
 // @license      MIT
@@ -27,6 +27,13 @@
   function log(...parts) {
     if (!debugging()) return;
     console.log("[AND]", ...parts);
+  }
+
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
   }
 
   // src/autumns-note-doodles/colours.ts
@@ -1272,10 +1279,10 @@ Content-Type: image/png\r
     panel: "#notes_panel",
     // The header is itself a button: icon, "Notes", minimise, maximise.
     header: "#notes_panel > button",
-    minimize: '[class*="minimizeIcon___"]',
+    minimize: hashedClass("minimizeIcon"),
     body: "#notes_panel textarea",
     // The note picker's drop-down, which opens over the body.
-    noteList: '#notes_panel [class*="list___"]'
+    noteList: `#notes_panel ${hashedClass("list")}`
   };
   var ICON_ID = "doodle-icon";
   var LAYER_ID = "doodle-layer";

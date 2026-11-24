@@ -33,6 +33,7 @@ import {
   injectStyles,
 } from "./styles";
 import { TeamInfo, darkTheme, iconUrl, indexTeams, seasonKey, slugify } from "./teams";
+import { isSecretShown, makeSecretInput, setSecretShown } from "../shared/maskedInput";
 
 // Unhashed landmarks, most specific first. The panel goes directly before
 // whichever is found, so it lands above TornTools' member filter.
@@ -452,7 +453,7 @@ function buildEyeToggle(input: HTMLInputElement): HTMLElement {
   button.className = "et-eye";
 
   const apply = (shown: boolean): void => {
-    input.type = shown ? "text" : "password";
+    setSecretShown(input, shown);
     button.title = shown ? "Hide key" : "Show key";
     button.setAttribute("aria-label", button.title);
     button.setAttribute("aria-pressed", String(shown));
@@ -461,7 +462,7 @@ function buildEyeToggle(input: HTMLInputElement): HTMLElement {
   };
 
   apply(false);
-  button.addEventListener("click", () => apply(input.type === "password"));
+  button.addEventListener("click", () => apply(!isSecretShown(input)));
 
   return button;
 }
@@ -485,9 +486,7 @@ function buildControls(): HTMLElement {
   const input = document.createElement("input");
   input.id = "et-api-key";
   input.className = "et-text-input";
-  input.type = "password";
-  input.spellcheck = false;
-  input.autocomplete = "off";
+  makeSecretInput(input);
   input.placeholder = "Public access key";
   input.value = readApiKey();
   keyField.appendChild(input);

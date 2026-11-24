@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Autumn's UI Enhancer
 // @namespace    https://github.com/autumn-grey
-// @version      1.0.0
+// @version      1.0.1
 // @description  Heaps of QOL features, all are optional, check Torn settings to see the full list
 // @author       AutumnGrey
 // @license      MIT
@@ -16,6 +16,13 @@
 
 "use strict";
 (() => {
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
+  }
+
   // src/autumns-ui-enhancer/debug.ts
   var DEBUG_KEY = "AUE_DEBUG";
   function debugging() {
@@ -314,11 +321,11 @@
     cityItem: "#nav-city",
     // The same item found from its link, should the id ever go.
     cityLink: '#sidebarroot a[href="/city.php"]',
-    cityItemFromLink: '[class*="area-desktop___"], [class*="area-mobile___"]',
+    cityItemFromLink: `${hashedClass("area-desktop")}, ${hashedClass("area-mobile")}`,
     // A side menu item's icon, which carries the blue class.
-    navIcon: '[class*="defaultIcon___"]',
+    navIcon: hashedClass("defaultIcon"),
     // The status icon list: <ul class="statusIcons___ks48M big___O1UVc">.
-    statusList: 'ul[class*="statusIcons___"]',
+    statusList: `ul${hashedClass("statusIcons")}`,
     // The faction icon (grey fist), which ours goes after.
     factionIcon: 'a[href*="factions.php"]:not([href*="crimes"])',
     // The Bank Investment icon, which ours goes before.
@@ -958,7 +965,7 @@
       });
       return false;
     }
-    root.setAttribute(RUNNING_ATTR, "1.0.0");
+    root.setAttribute(RUNNING_ATTR, "1.0.1");
     return true;
   }
   async function w3bOneTabOn() {
@@ -2117,21 +2124,21 @@
   var SELECTORS4 = {
     panel: "#people_panel",
     /** The title in the panel's header, "Your private chats" while the chats tab is open. */
-    title: 'button span[class*="headingH1___"]',
+    title: `button span${hashedClass("headingH1")}`,
     /** The block holding the search box and the list. */
-    content: '[class*="content___"]',
+    content: hashedClass("content"),
     /** The scrolling list Torn draws the rows into. */
     list: "#private-channel-list",
     /** One conversation; its id ends in the other player's id. */
     card: 'button[id^="private_chat_card_"]',
     /** The row holding the name and the time of the last message. */
-    header: '[class*="header___"]',
+    header: hashedClass("header"),
     /** The name link. */
-    name: 'a[class*="title___"]',
+    name: `a${hashedClass("title")}`,
     /** The time of the last message, "4 days ago". */
-    time: '[class*="metadata___"]',
+    time: hashedClass("metadata"),
     /** The last message, "Name : text". */
-    description: '[class*="description___"]'
+    description: hashedClass("description")
   };
   var DM_PATH = /\/dm$/;
   var ROW_HEIGHT = 68;
@@ -4636,11 +4643,11 @@
       if ([...hidden].some((id) => belongsTo(id, barId))) buttons.push(`#${CSS.escape(button.id)}`);
     }
     const each = (suffix) => buttons.map((button) => button + suffix).join(", ");
-    const css = buttons.length === 0 ? "" : `${each(':not([class*="message___"])')} {
+    const css = buttons.length === 0 ? "" : `${each(`:not(${hashedClass("message")})`)} {
   background: linear-gradient(#666666, #333333) !important;
   box-shadow: inset 0 0 4px rgba(255, 255, 255, 0.25), 0 -2px 4px rgba(0, 0, 0, 0.5) !important;
 }
-${each(':not([class*="message___"]):hover')} { background: linear-gradient(#888888, #444444) !important; }
+${each(`:not(${hashedClass("message")}):hover`)} { background: linear-gradient(#888888, #444444) !important; }
 ${each(' svg defs stop[id="start"]')} { stop-color: #cccccc !important; }
 ${each(' svg defs stop[id="end"]')} { stop-color: #999999 !important; }
 ${each(':hover svg defs stop[id="start"]')} { stop-color: #ffffff !important; }
@@ -6757,7 +6764,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
   }
 `;
   function injectStyles() {
-    document.documentElement.setAttribute("data-aue", "1.0.0");
+    document.documentElement.setAttribute("data-aue", "1.0.1");
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -6798,6 +6805,25 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     } catch {
       return [];
     }
+  }
+
+  // src/shared/maskedInput.ts
+  function makeSecretInput(input) {
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("data-lpignore", "true");
+    input.setAttribute("data-1p-ignore", "true");
+    input.setAttribute("data-bwignore", "true");
+    input.setAttribute("data-form-type", "other");
+    setSecretShown(input, false);
+  }
+  function setSecretShown(input, shown) {
+    input.style.setProperty("-webkit-text-security", shown ? "none" : "disc");
+    input.dataset.secretShown = shown ? "1" : "0";
+  }
+  function isSecretShown(input) {
+    return input.dataset.secretShown === "1";
   }
 
   // src/autumns-ui-enhancer/panel.ts
@@ -6929,9 +6955,7 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     field3.appendChild(box2);
     const input = document.createElement("input");
     input.className = "aue-input aue-key-input";
-    input.type = "password";
-    input.autocomplete = "off";
-    input.spellcheck = false;
+    makeSecretInput(input);
     input.placeholder = "custom key";
     input.value = readSetting(API_KEY_SETTING, "");
     box2.appendChild(input);
@@ -6940,9 +6964,9 @@ ${each(':hover svg defs stop[id="end"]')} { stop-color: #cccccc !important; }`;
     reveal.className = "aue-key-reveal";
     reveal.textContent = "Show";
     reveal.addEventListener("click", () => {
-      const hidden = input.type === "password";
-      input.type = hidden ? "text" : "password";
-      reveal.textContent = hidden ? "Hide" : "Show";
+      const show2 = !isSecretShown(input);
+      setSecretShown(input, show2);
+      reveal.textContent = show2 ? "Hide" : "Show";
     });
     box2.appendChild(reveal);
     const check = document.createElement("button");

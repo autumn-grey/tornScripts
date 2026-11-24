@@ -7,6 +7,7 @@
 // The count comes from the "Item shop buy" log since midnight TCT. The
 // cityitemsbought personal stat was tried first and lags behind purchases.
 
+import { hashedClass } from "../shared/hashedClass";
 import {
   CityShop,
   clearKeyRejection,
@@ -39,11 +40,11 @@ const SELECTORS = {
   cityItem: "#nav-city",
   // The same item found from its link, should the id ever go.
   cityLink: '#sidebarroot a[href="/city.php"]',
-  cityItemFromLink: '[class*="area-desktop___"], [class*="area-mobile___"]',
+  cityItemFromLink: `${hashedClass("area-desktop")}, ${hashedClass("area-mobile")}`,
   // A side menu item's icon, which carries the blue class.
-  navIcon: '[class*="defaultIcon___"]',
+  navIcon: hashedClass("defaultIcon"),
   // The status icon list: <ul class="statusIcons___ks48M big___O1UVc">.
-  statusList: 'ul[class*="statusIcons___"]',
+  statusList: `ul${hashedClass("statusIcons")}`,
   // The faction icon (grey fist), which ours goes after.
   factionIcon: 'a[href*="factions.php"]:not([href*="crimes"])',
   // The Bank Investment icon, which ours goes before.

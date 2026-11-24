@@ -5,12 +5,14 @@
 // ones as the box scrolls up, so reading 300 means scrolling while reading and
 // stitching each screenful onto what has been read so far.
 
+import { hashedClass } from "../shared/hashedClass";
+
 /** Every selector this script matches on. Class names are hashed, so only the front is matched. */
 const SELECTORS = {
   root: "#chatRoot",
-  sender: '[class*="sender___"], [class*="message__sender"]',
-  text: '[class*="message___"], [class*="message__text"]',
-  header: '[class*="header___"], [class*="chat-box-header"]',
+  sender: `${hashedClass("sender")}, [class*="message__sender"]`,
+  text: `${hashedClass("message")}, [class*="message__text"]`,
+  header: `${hashedClass("header")}, [class*="chat-box-header"]`,
 };
 
 /** How many messages one click reads back. */
