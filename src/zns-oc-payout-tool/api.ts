@@ -34,6 +34,8 @@ export interface ApiCrime {
   id: number;
   previous_crime_id: number | null;
   name: string;
+  /** The crime's level, 1 to 10. */
+  difficulty: number;
   status: string;
   planning_at: number | null;
   ready_at: number | null;

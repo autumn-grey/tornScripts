@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZNS OC Payout tool
 // @namespace    https://github.com/autumn-grey
-// @version      0.1.8
+// @version      0.1.15
 // @description  Torn Faction admin tool for tweaking Organised Crime payouts
 // @author       AutumnGrey
 // @license      MIT
@@ -32,8 +32,8 @@
   // src/shared/apiKey.ts
   var KEY_SHAPE = /^[A-Za-z0-9]{16}$/;
   var BAD_KEY_SHAPE = "API keys are 16 letters and numbers";
-  function isKeyShaped(key) {
-    return KEY_SHAPE.test(key);
+  function isKeyShaped(key2) {
+    return KEY_SHAPE.test(key2);
   }
 
   // src/zns-oc-payout-tool/api.ts
@@ -46,8 +46,8 @@
       this.code = code;
     }
   };
-  async function request(path, key, params = {}) {
-    const query = new URLSearchParams({ ...params, comment: COMMENT, key });
+  async function request(path, key2, params = {}) {
+    const query = new URLSearchParams({ ...params, comment: COMMENT, key: key2 });
     let body;
     try {
       const response = await fetch(`${V2}${path}?${query.toString()}`, { credentials: "omit" });
@@ -59,11 +59,11 @@
     if (error) throw new ApiError(error.code ?? 0, error.error ?? "Unknown API error");
     return body;
   }
-  async function checkKey(key) {
-    await request("/faction/crimes", key, { cat: "completed", limit: "1" });
+  async function checkKey(key2) {
+    await request("/faction/crimes", key2, { cat: "completed", limit: "1" });
   }
-  async function fetchCrimes(key, offset) {
-    const body = await request("/faction/crimes", key, {
+  async function fetchCrimes(key2, offset) {
+    const body = await request("/faction/crimes", key2, {
       cat: "completed",
       sort: "DESC",
       limit: String(PAGE_SIZE),
@@ -74,12 +74,12 @@
     log("crimes", offset, crimes);
     return { crimes, more: crimes.length === PAGE_SIZE && !!links?.next };
   }
-  async function fetchCrime(key, id) {
-    const body = await request(`/faction/${id}/crime`, key);
+  async function fetchCrime(key2, id) {
+    const body = await request(`/faction/${id}/crime`, key2);
     return body.crime ?? null;
   }
-  async function fetchMemberNames(key) {
-    const body = await request("/faction/members", key);
+  async function fetchMemberNames(key2) {
+    const body = await request("/faction/members", key2);
     const names2 = /* @__PURE__ */ new Map();
     const members2 = Array.isArray(body.members) ? body.members : [];
     for (const entry of members2) {
@@ -87,13 +87,13 @@
     }
     return names2;
   }
-  async function fetchUserName(key, id) {
-    const body = await request(`/user/${id}/basic`, key);
+  async function fetchUserName(key2, id) {
+    const body = await request(`/user/${id}/basic`, key2);
     const profile = body.profile;
     return profile?.name ?? String(id);
   }
-  async function fetchPrerequisites(key) {
-    const body = await request("/torn/organizedcrimes", key);
+  async function fetchPrerequisites(key2) {
+    const body = await request("/torn/organizedcrimes", key2);
     const crimes = Array.isArray(body.organizedcrimes) ? body.organizedcrimes : [];
     const names2 = /* @__PURE__ */ new Set();
     for (const crime of crimes) {
@@ -101,10 +101,10 @@
     }
     return names2;
   }
-  async function fetchItemValues(key, ids) {
+  async function fetchItemValues(key2, ids) {
     const values = /* @__PURE__ */ new Map();
     if (!ids.length) return values;
-    const body = await request(`/torn/${ids.join(",")}/items`, key);
+    const body = await request(`/torn/${ids.join(",")}/items`, key2);
     const items = Array.isArray(body.items) ? body.items : [];
     for (const item of items) {
       if (typeof item.id === "number") values.set(item.id, item.value?.market_price ?? 0);
@@ -212,9 +212,9 @@
       stall: percents2.stall ?? 0
     };
   }
-  function roleScore(successChance2, passRate2, weight) {
-    if (successChance2 === null || passRate2 === null || weight === null) return null;
-    return Math.max(0, successChance2 - passRate2) + weight;
+  function roleScore(checkpointPassRate2, minimum, weight) {
+    if (checkpointPassRate2 === null || minimum === null || weight === null) return null;
+    return Math.max(0, checkpointPassRate2 - minimum + weight);
   }
   function stallJoins(planningAt, joinedAt) {
     const order = joinedAt.map((at, index) => ({ at, index })).sort((a, b) => a.at - b.at);
@@ -308,22 +308,22 @@
   var PANEL_OPEN_KEY = "PANEL_OPEN";
   var PREREQ_KEY = "PREREQUISITES";
   var PREREQ_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
-  function read(key, fallback) {
+  function read(key2, fallback) {
     try {
-      return localStorage.getItem(PREFIX + key) ?? fallback;
+      return localStorage.getItem(PREFIX + key2) ?? fallback;
     } catch {
       return fallback;
     }
   }
-  function write(key, value) {
+  function write(key2, value) {
     try {
-      localStorage.setItem(PREFIX + key, value);
+      localStorage.setItem(PREFIX + key2, value);
     } catch {
     }
   }
-  function readJson(key) {
+  function readJson(key2) {
     try {
-      return JSON.parse(read(key, "null"));
+      return JSON.parse(read(key2, "null"));
     } catch {
       return null;
     }
@@ -331,8 +331,8 @@
   function readApiKey() {
     return read(API_KEY, "").trim();
   }
-  function writeApiKey(key) {
-    write(API_KEY, key.trim());
+  function writeApiKey(key2) {
+    write(API_KEY, key2.trim());
   }
   function readPercents() {
     const stored = readJson(PERCENTS_KEY);
@@ -375,9 +375,240 @@
   }
 
   // src/zns-oc-payout-tool/weights.ts
-  var ROLE_WEIGHTS = {};
-  function roleWeight(crimeName, roleLabel) {
-    return ROLE_WEIGHTS[crimeName]?.[roleLabel] ?? null;
+  var TABLE = {
+    "Break the Bank": {
+      "Robber": [63, 12.7],
+      "Muscle #1": [63, 13.5],
+      "Muscle #2": [60, 10.1],
+      "Muscle #3": [72, 31.7],
+      "Thief #1": [60, 2.9],
+      "Thief #2": [72, 29.1]
+    },
+    "Clinical Precision": {
+      "Assassin": [60, 16.1],
+      "Cat Burglar": [70, 18.9],
+      "Cleaner": [70, 21.1],
+      "Imitator": [75, 43.3]
+    },
+    "Ship Happens": {
+      "Assassin": [70, 10.3],
+      "Engineer": [70, 13.3],
+      "Hustler": [70, 19.7],
+      "Interrogator": [70, 31.3],
+      "Spy": [70, 25.4]
+    },
+    "Cleared for Takeoff": {
+      "Assassin": [70, 18.2],
+      "Imitator": [70, 24.9],
+      "Interrogator": [70, 25.2],
+      "Lookout": [70, 8.4],
+      "Pickpocket": [70, 12],
+      "Techie": [70, 11.3]
+    },
+    "Window of Opportunity": {
+      "Engineer": [70, 14.6],
+      "Looter #1": [70, 19.5],
+      "Looter #2": [70, 25.8],
+      "Muscle #1": [70, 23.1],
+      "Muscle #2": [70, 17]
+    },
+    "Bidding War": {
+      "Robber #1": [60, 7.1],
+      "Robber #2": [75, 22.9],
+      "Robber #3": [70, 31.7],
+      "Bomber #1": [70, 7.8],
+      "Bomber #2": [63, 18],
+      "Driver": [70, 12.5]
+    },
+    "Dish It Out": {
+      "Assassin": [70, 37.3],
+      "Engineer": [70, 13.9],
+      "Muscle": [70, 25.2],
+      "Saboteur #1": [70, 14.6],
+      "Saboteur #2": [70, 8.9]
+    },
+    "Leave No Trace": {
+      "Imitator": [73, 36.9],
+      "Negotiator": [60, 34.1],
+      "Techie": [60, 29]
+    },
+    "Sneaky Git Grab": {
+      "Hacker": [66, 14.5],
+      "Imitator": [60, 17.5],
+      "Pickpocket": [75, 50.8],
+      "Techie": [70, 17.1]
+    },
+    "Counter Offer": {
+      "Hacker": [60, 12.1],
+      "Engineer": [62, 28.4],
+      "Looter": [42, 7],
+      "Robber": [62, 35.9],
+      "Picklock": [60, 16.5]
+    },
+    "Guardian Angels": {
+      "Engineer": [70, 30.5],
+      "Enforcer": [60, 27.4],
+      "Hustler": [73, 42.1]
+    },
+    "Honey Trap": {
+      "Enforcer": [60, 27],
+      "Muscle #1": [70, 30.9],
+      "Muscle #2": [75, 42.2]
+    },
+    "No Reserve": {
+      "Car Thief": [67, 30.5],
+      "Engineer": [67, 31.1],
+      "Techie": [75, 38.4]
+    },
+    "Plucking the Lotus Petal": {
+      "Hustler": [70, 14.4],
+      "Muscle": [70, 47.9],
+      "Robber #1": [70, 14],
+      "Robber #2": [70, 23.7]
+    },
+    "Snow Blind": {
+      "Hustler": [74, 48.4],
+      "Imitator": [70, 34.6],
+      "Muscle #1": [70, 8.5],
+      "Muscle #2": [50, 8.5]
+    },
+    "Stage Fright": {
+      "Sniper": [75, 46.3],
+      "Lookout": [60, 6.2],
+      "Enforcer": [70, 15.7],
+      "Muscle #1": [70, 20],
+      "Muscle #2": [50, 2.7],
+      "Muscle #3": [70, 9.2]
+    },
+    "Gaslight the Way": {
+      "Looter #1": [60, 9.4],
+      "Looter #2": [40, 0],
+      "Looter #3": [65, 12.4],
+      "Imitator #1": [70, 9.4],
+      "Imitator #2": [72, 27.5],
+      "Imitator #3": [72, 41.3]
+    },
+    "Market Forces": {
+      "Lookout": [68, 16.4],
+      "Arsonist": [40, 4.5],
+      "Muscle": [70, 22.5],
+      "Enforcer": [70, 29.4],
+      "Negotiator": [70, 27.2]
+    },
+    "Smoke and Wing Mirrors": {
+      "Hustler #1": [60, 9],
+      "Hustler #2": [65, 13],
+      "Car Thief": [74, 50.9],
+      "Imitator": [70, 27.1]
+    },
+    "Best of the Lot": {
+      "Muscle": [75, 43.7],
+      "Car Thief": [70, 19.5],
+      "Imitator": [60, 16.1],
+      "Picklock": [70, 20.7]
+    },
+    "Cash Me if You Can": {
+      "Lookout": [70, 17.8],
+      "Thief #1": [70, 54.2],
+      "Thief #2": [65, 28]
+    },
+    "Thou Shalt Not Steal": {
+      "Thief": [70, 12.4],
+      "Picklock": [70, 49.7],
+      "Pickpocket": [70, 37.9]
+    },
+    "First Aid and Abet": {
+      "Decoy": [70, 30.7],
+      "Pickpocket": [70, 43.2],
+      "Picklock": [70, 26]
+    },
+    "Mob Mentality": {
+      "Looter #1": [70, 34],
+      "Looter #2": [70, 26.5],
+      "Looter #3": [70, 18.4],
+      "Looter #4": [70, 21.2]
+    },
+    "Pet Project": {
+      "Kidnapper": [70, 30.9],
+      "Picklock": [70, 36.4],
+      "Muscle": [70, 32.6]
+    },
+    // Not in the faction's table: see the note at the top of the file.
+    "Blast from the Past": {
+      "Picklock #1": [70, 10.8],
+      "Hacker": [65, 12.1],
+      "Engineer": [75, 24],
+      "Bomber": [70, 15.6],
+      "Muscle": [75, 34.6],
+      "Picklock #2": [40, 2.9]
+    },
+    "Stacking the Deck": {
+      "Cat Burglar": [75, 23.4],
+      "Driver": [68, 3],
+      "Hacker": [63, 25.4],
+      "Imitator": [70, 48.2]
+    },
+    "Ace in the Hole": {
+      "Imitator": [65, 21.1],
+      "Muscle #1": [65, 18.3],
+      "Muscle #2": [72, 24.7],
+      "Hacker": [75, 28.3],
+      "Driver": [60, 7.6]
+    },
+    "Lock Stock": {
+      "Assassin": [null, 40.3],
+      "Smuggler": [null, 17.4],
+      "Hacker": [null, 18.4],
+      "Muscle #1": [null, 11.9],
+      "Muscle #2": [null, 11.9]
+    },
+    "Manifest Cruelty": {
+      "Hacker": [null, 16.3],
+      "Interrogator": [null, 23.5],
+      "Reviver": [null, 46.3],
+      "Cat Burglar": [null, 13.9]
+    },
+    "Gone Fission": {
+      "Hijacker": [null, 24.9],
+      "Engineer": [null, 15.6],
+      "Pickpocket": [null, 16.5],
+      "Imitator": [null, 24.9],
+      "Bomber": [null, 18]
+    },
+    "Hostile Takeover": {
+      "Hacker": [null, 11.2],
+      "Engineer": [null, 15.2],
+      "Cat Burglar": [null, 16],
+      "Kidnapper": [null, 13],
+      "Negotiator": [null, 24],
+      "Muscle": [null, 20.7]
+    },
+    "Crane Reaction": {
+      "Sniper": [null, 40.7],
+      "Lookout": [null, 16.6],
+      "Engineer": [null, 8.3],
+      "Bomber": [null, 15.9],
+      "Muscle #1": [null, 10.7],
+      "Muscle #2": [null, 7.8]
+    },
+    "Disorderly Conduct": {
+      "Vandal": [null, 24.8],
+      "Arsonist": [null, 27.7],
+      "Muscle": [null, 17.5],
+      "Looter": [null, 30]
+    }
+  };
+  function key(name) {
+    return name.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+  var LOOKUP = new Map(
+    Object.entries(TABLE).map(([crime, roles]) => [
+      key(crime),
+      new Map(Object.entries(roles).map(([role, [minimum, weight]]) => [key(role), { minimum, weight }]))
+    ])
+  );
+  function roleInfo(crimeName, roleLabel) {
+    return LOOKUP.get(key(crimeName))?.get(key(roleLabel)) ?? null;
   }
 
   // src/zns-oc-payout-tool/crimes.ts
@@ -406,33 +637,33 @@
     }
     return void 0;
   }
-  async function loadChainLinks(key) {
+  async function loadChainLinks(key2) {
     const wanted = () => [...loaded.values()].map((crime) => crime.previous_crime_id).filter((id) => typeof id === "number" && !loaded.has(id));
     for (let ids = wanted(); ids.length; ids = wanted()) {
       for (const id of ids) {
-        const crime = await fetchCrime(key, id);
+        const crime = await fetchCrime(key2, id);
         if (crime) loaded.set(crime.id, crime);
-        else loaded.set(id, { id, previous_crime_id: null, name: "", status: "", planning_at: null, ready_at: null, executed_at: null, slots: [], rewards: null });
+        else loaded.set(id, { id, previous_crime_id: null, name: "", difficulty: 0, status: "", planning_at: null, ready_at: null, executed_at: null, slots: [], rewards: null });
       }
     }
   }
-  async function loadNames(key) {
+  async function loadNames(key2) {
     if (!names.size) {
-      for (const [id, name] of await fetchMemberNames(key)) names.set(id, name);
+      for (const [id, name] of await fetchMemberNames(key2)) names.set(id, name);
     }
     for (const crime of loaded.values()) {
       for (const slot of crime.slots) {
         const id = slot.user?.id;
         if (id === void 0 || names.has(id)) continue;
         try {
-          names.set(id, await fetchUserName(key, id));
+          names.set(id, await fetchUserName(key2, id));
         } catch {
           names.set(id, String(id));
         }
       }
     }
   }
-  async function loadItemValues(key) {
+  async function loadItemValues(key2) {
     const ids = /* @__PURE__ */ new Set();
     for (const crime of loaded.values()) {
       for (const item of crime.rewards?.items ?? []) {
@@ -440,23 +671,23 @@
       }
     }
     if (!ids.size) return;
-    for (const [id, value] of await fetchItemValues(key, [...ids])) itemValues.set(id, value);
+    for (const [id, value] of await fetchItemValues(key2, [...ids])) itemValues.set(id, value);
   }
-  async function loadMore(key) {
+  async function loadMore(key2) {
     if (!prerequisites.size) {
-      prerequisites = readPrerequisites() ?? await fetchPrerequisites(key);
+      prerequisites = readPrerequisites() ?? await fetchPrerequisites(key2);
       writePrerequisites(prerequisites);
     }
-    const page = await fetchCrimes(key, nextOffset);
+    const page = await fetchCrimes(key2, nextOffset);
     nextOffset += page.crimes.length;
     hasMore = page.more;
     for (const crime of page.crimes) {
       loaded.set(crime.id, crime);
       if (crime.status === "Successful") listed.push(crime.id);
     }
-    await loadChainLinks(key);
-    await loadNames(key);
-    await loadItemValues(key);
+    await loadChainLinks(key2);
+    await loadNames(key2);
+    await loadItemValues(key2);
   }
   function rewardValue(crime) {
     const items = (crime.rewards?.items ?? []).reduce(
@@ -465,20 +696,18 @@
     );
     return (crime.rewards?.money ?? 0) + items;
   }
-  function successChance(_slot) {
-    return null;
-  }
-  function passRate(_crime) {
-    return null;
+  function checkpointPassRate(slot) {
+    return slot.checkpoint_pass_rate;
   }
   function members(crime) {
     return crime.slots.filter((slot) => slot.user).map((slot) => {
       const role = slot.position_info?.label ?? slot.position;
+      const info = roleInfo(crime.name, role);
       return {
         id: slot.user.id,
         name: memberName(slot.user.id),
         role,
-        prs: roleScore(successChance(slot), passRate(crime), roleWeight(crime.name, role)),
+        prs: roleScore(checkpointPassRate(slot), info?.minimum ?? null, info?.weight ?? null),
         joinedAt: slot.user.joined_at
       };
     });
@@ -670,15 +899,16 @@
     background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
     font-size: 11px;
     font-weight: bold;
-    text-align: left;
+    text-align: center;
     vertical-align: bottom;
   }
   #${PANEL_ID} .ocp-table td {
     padding: 5px 6px;
     border-top: 1px solid rgba(0, 0, 0, 0.35);
     white-space: nowrap;
+    text-align: center;
   }
-  #${PANEL_ID} .ocp-num { text-align: right !important; }
+  #${PANEL_ID} .ocp-payout { font-weight: bold; }
   #${PANEL_ID} tr.ocp-crime { cursor: pointer; background: #444; }
   #${PANEL_ID} tr.ocp-crime:hover { background: #4f4f4f; }
   #${PANEL_ID} tr.ocp-crime td { color: #ff7b7b !important; }
@@ -742,7 +972,11 @@
   }
   function duration(seconds) {
     const minutes = Math.floor(seconds / 60);
-    return `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h ${minutes % 60}m`;
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor(minutes % 1440 / 60);
+    if (days > 0) return `${days}d ${hours}h ${minutes % 60}m`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    return `${minutes % 60}m`;
   }
   function tornDate(at) {
     if (!at) return "-";
@@ -870,11 +1104,11 @@
       money(player.prc),
       duration(player.pts),
       money(player.ptc),
-      money(player.payout),
       duration(player.stallJoin),
       money(player.psc)
     ];
-    for (const text of cells) line.appendChild(make("td", "ocp-num", text));
+    for (const text of cells) line.appendChild(make("td", "", text));
+    line.appendChild(make("td", "ocp-payout", money(player.payout)));
     line.appendChild(make("td", "", paid ? "Paid" : "Unpaid"));
     if (!paid && player.payout !== null) {
       line.classList.add("ocp-clickable");
@@ -885,25 +1119,26 @@
   function buildDetail(row) {
     const detail = make("tr", "ocp-detail");
     const cell = make("td");
-    cell.colSpan = 7;
+    cell.colSpan = 8;
     cell.appendChild(buildSummary(row));
     if (row.payout) {
       const table = make("table", "ocp-table ocp-players");
       const head = make("tr");
       const headings = [
         "Player",
-        "Personal Role Score",
-        "Personal Role Cut",
-        "Personal Time Score",
-        "Personal Time Cut",
-        "Payout",
-        "Stall Join",
+        "Role Score",
+        "Role Cut",
+        "Time Score",
+        "Time Cut",
+        "Stall Score",
         "Stall Cut",
+        "Payout",
         "Paid"
       ];
-      headings.forEach((text, index) => head.appendChild(make("th", index > 0 && index < 8 ? "ocp-num" : "", text)));
+      for (const text of headings) head.appendChild(make("th", "", text));
       table.appendChild(head);
-      for (const player of row.payout.players) table.appendChild(buildPlayerRow(row, player));
+      const players = [...row.payout.players].sort((a, b) => b.pts - a.pts);
+      for (const player of players) table.appendChild(buildPlayerRow(row, player));
       cell.appendChild(table);
     }
     detail.appendChild(cell);
@@ -919,13 +1154,14 @@
     const tag = chainTag(row);
     if (tag) name.appendChild(tag);
     line.appendChild(name);
+    line.appendChild(make("td", "", String(row.crime.difficulty)));
     line.appendChild(make("td", "", tornDate(row.crime.executed_at)));
     const payout = row.payout;
     const split = (amount) => row.state === "payable" ? money(amount ?? null) : "-";
-    line.appendChild(make("td", "ocp-num", row.state === "waiting" ? "Waiting" : money(row.total)));
-    line.appendChild(make("td", "ocp-num", split(payout?.factionCut)));
-    line.appendChild(make("td", "ocp-num", split(payout?.remaining)));
-    line.appendChild(make("td", "ocp-num", paidCount(row)));
+    line.appendChild(make("td", "", row.state === "waiting" ? "Waiting" : money(row.total)));
+    line.appendChild(make("td", "", split(payout?.factionCut)));
+    line.appendChild(make("td", "", split(payout?.remaining)));
+    line.appendChild(make("td", "", paidCount(row)));
     line.addEventListener("click", () => {
       if (open) openCrimes.delete(row.crime.id);
       else openCrimes.add(row.crime.id);
@@ -942,8 +1178,8 @@
     const scroll = make("div", "ocp-scroll");
     const table = make("table", "ocp-table");
     const head = make("tr");
-    const headings = ["", "OC Name", "Date Completed", "Total Pay", "Faction Cut", "Remaining", "Paid"];
-    headings.forEach((text, index) => head.appendChild(make("th", index > 2 ? "ocp-num" : "", text)));
+    const headings = ["", "OC Name", "Level", "Date Completed", "Total Pay", "Faction Cut", "Remaining", "Paid"];
+    for (const text of headings) head.appendChild(make("th", "", text));
     table.appendChild(head);
     for (const row of rows) table.append(...buildCrime(row));
     scroll.appendChild(table);
@@ -978,9 +1214,9 @@
     render();
   }
   async function fetchPage(fresh) {
-    const key = readApiKey();
+    const key2 = readApiKey();
     const status = document.getElementById("ocp-list-status");
-    if (!key || busy || !status) return;
+    if (!key2 || busy || !status) return;
     busy = true;
     setStatus(status, "none", "Loading...");
     try {
@@ -988,7 +1224,7 @@
         resetCrimes();
         selection = null;
       }
-      await loadMore(key);
+      await loadMore(key2);
       setStatus(status, "none", "");
     } catch (error) {
       setStatus(status, "error", describe(error));
@@ -1003,16 +1239,16 @@
     const check = button("Check");
     const status = make("span", "ocp-status");
     check.addEventListener("click", async () => {
-      const key = input.value.trim();
-      if (!isKeyShaped(key)) {
+      const key2 = input.value.trim();
+      if (!isKeyShaped(key2)) {
         setStatus(status, "error", BAD_KEY_SHAPE);
         return;
       }
       check.disabled = true;
       setStatus(status, "none", "Checking...");
       try {
-        await checkKey(key);
-        writeApiKey(key);
+        await checkKey(key2);
+        writeApiKey(key2);
         fetchButton.disabled = false;
         setStatus(status, "ok", "Saved");
       } catch (error) {
@@ -1148,7 +1384,7 @@
     });
   }
   function onReady() {
-    log("running", "0.1.8", location.href);
+    log("running", "0.1.15", location.href);
     installPanel();
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("hashchange", schedule);

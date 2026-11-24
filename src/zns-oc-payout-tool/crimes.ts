@@ -14,7 +14,7 @@ import {
 import { log } from "./debug";
 import { CrimePayout, MemberInput, Percents, computePayout, roleScore, splitChain } from "./payout";
 import { readPaid, readPrerequisites, writePrerequisites } from "./settings";
-import { roleWeight } from "./weights";
+import { roleInfo } from "./weights";
 
 /** Where a crime stands. */
 export type CrimeState =
@@ -91,7 +91,7 @@ async function loadChainLinks(key: string): Promise<void> {
     for (const id of ids) {
       const crime = await fetchCrime(key, id);
       if (crime) loaded.set(crime.id, crime);
-      else loaded.set(id, { id, previous_crime_id: null, name: "", status: "", planning_at: null, ready_at: null, executed_at: null, slots: [], rewards: null });
+      else loaded.set(id, { id, previous_crime_id: null, name: "", difficulty: 0, status: "", planning_at: null, ready_at: null, executed_at: null, slots: [], rewards: null });
     }
   }
 }
@@ -156,19 +156,13 @@ function rewardValue(crime: ApiCrime): number {
   return (crime.rewards?.money ?? 0) + items;
 }
 
-// The page shows two numbers per role, e.g. "65/70": the member's success
-// chance and the crime's checkpoint pass rate. The API gives one number per
-// slot, checkpoint_pass_rate, and it is not yet confirmed which of the two it
-// is. Until it is, both stay unknown and role scores show as "?".
-
-/** A member's success chance in their role, or null while its source is not confirmed. */
-function successChance(_slot: ApiSlot): number | null {
-  return null;
-}
-
-/** A crime's checkpoint pass rate, or null while its source is not confirmed. */
-function passRate(_crime: ApiCrime): number | null {
-  return null;
+/**
+ * A member's checkpoint pass rate in their role: the first number of each
+ * "65/70" on the crimes page, which matched the API role for role
+ * (checked 2026-11-25).
+ */
+function checkpointPassRate(slot: ApiSlot): number {
+  return slot.checkpoint_pass_rate;
 }
 
 /** Returns a crime's filled roles as the maths needs them. */
@@ -177,11 +171,12 @@ function members(crime: ApiCrime): MemberInput[] {
     .filter((slot) => slot.user)
     .map((slot) => {
       const role = slot.position_info?.label ?? slot.position;
+      const info = roleInfo(crime.name, role);
       return {
         id: slot.user!.id,
         name: memberName(slot.user!.id),
         role,
-        prs: roleScore(successChance(slot), passRate(crime), roleWeight(crime.name, role)),
+        prs: roleScore(checkpointPassRate(slot), info?.minimum ?? null, info?.weight ?? null),
         joinedAt: slot.user!.joined_at,
       };
     });

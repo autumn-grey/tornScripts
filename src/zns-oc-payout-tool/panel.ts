@@ -52,10 +52,14 @@ function money(amount: number | null): string {
   return amount === null ? "?" : `$${Math.round(amount).toLocaleString("en-US")}`;
 }
 
-/** Formats seconds as days, hours and minutes. */
+/** Formats seconds as days, hours and minutes, leaving out leading days and hours that are 0. */
 function duration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
-  return `${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h ${minutes % 60}m`;
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  if (days > 0) return `${days}d ${hours}h ${minutes % 60}m`;
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  return `${minutes % 60}m`;
 }
 
 /** Formats a timestamp in Torn City Time, which is UTC. */
@@ -221,11 +225,11 @@ function buildPlayerRow(row: CrimeRow, player: PlayerPayout): HTMLTableRowElemen
     money(player.prc),
     duration(player.pts),
     money(player.ptc),
-    money(player.payout),
     duration(player.stallJoin),
     money(player.psc),
   ];
-  for (const text of cells) line.appendChild(make("td", "ocp-num", text));
+  for (const text of cells) line.appendChild(make("td", "", text));
+  line.appendChild(make("td", "ocp-payout", money(player.payout)));
   line.appendChild(make("td", "", paid ? "Paid" : "Unpaid"));
 
   // A member whose payout is not known yet cannot be put into the form.
@@ -240,19 +244,21 @@ function buildPlayerRow(row: CrimeRow, player: PlayerPayout): HTMLTableRowElemen
 function buildDetail(row: CrimeRow): HTMLTableRowElement {
   const detail = make("tr", "ocp-detail");
   const cell = make("td");
-  cell.colSpan = 7;
+  cell.colSpan = 8;
   cell.appendChild(buildSummary(row));
 
   if (row.payout) {
     const table = make("table", "ocp-table ocp-players");
     const head = make("tr");
     const headings = [
-      "Player", "Personal Role Score", "Personal Role Cut", "Personal Time Score",
-      "Personal Time Cut", "Payout", "Stall Join", "Stall Cut", "Paid",
+      "Player", "Role Score", "Role Cut", "Time Score",
+      "Time Cut", "Stall Score", "Stall Cut", "Payout", "Paid",
     ];
-    headings.forEach((text, index) => head.appendChild(make("th", index > 0 && index < 8 ? "ocp-num" : "", text)));
+    for (const text of headings) head.appendChild(make("th", "", text));
     table.appendChild(head);
-    for (const player of row.payout.players) table.appendChild(buildPlayerRow(row, player));
+    // Longest time signed up first.
+    const players = [...row.payout.players].sort((a, b) => b.pts - a.pts);
+    for (const player of players) table.appendChild(buildPlayerRow(row, player));
     cell.appendChild(table);
   }
 
@@ -272,15 +278,16 @@ function buildCrime(row: CrimeRow): HTMLTableRowElement[] {
   const tag = chainTag(row);
   if (tag) name.appendChild(tag);
   line.appendChild(name);
+  line.appendChild(make("td", "", String(row.crime.difficulty)));
   line.appendChild(make("td", "", tornDate(row.crime.executed_at)));
 
   const payout = row.payout;
   const split = (amount: number | null | undefined): string =>
     row.state === "payable" ? money(amount ?? null) : "-";
-  line.appendChild(make("td", "ocp-num", row.state === "waiting" ? "Waiting" : money(row.total)));
-  line.appendChild(make("td", "ocp-num", split(payout?.factionCut)));
-  line.appendChild(make("td", "ocp-num", split(payout?.remaining)));
-  line.appendChild(make("td", "ocp-num", paidCount(row)));
+  line.appendChild(make("td", "", row.state === "waiting" ? "Waiting" : money(row.total)));
+  line.appendChild(make("td", "", split(payout?.factionCut)));
+  line.appendChild(make("td", "", split(payout?.remaining)));
+  line.appendChild(make("td", "", paidCount(row)));
 
   line.addEventListener("click", () => {
     if (open) openCrimes.delete(row.crime.id);
@@ -303,8 +310,8 @@ function render(): void {
   const scroll = make("div", "ocp-scroll");
   const table = make("table", "ocp-table");
   const head = make("tr");
-  const headings = ["", "OC Name", "Date Completed", "Total Pay", "Faction Cut", "Remaining", "Paid"];
-  headings.forEach((text, index) => head.appendChild(make("th", index > 2 ? "ocp-num" : "", text)));
+  const headings = ["", "OC Name", "Level", "Date Completed", "Total Pay", "Faction Cut", "Remaining", "Paid"];
+  for (const text of headings) head.appendChild(make("th", "", text));
   table.appendChild(head);
   for (const row of rows) table.append(...buildCrime(row));
   scroll.appendChild(table);

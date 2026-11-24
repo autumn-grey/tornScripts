@@ -97,13 +97,13 @@ export function completePercents(percents: PercentInputs): Percents | null {
 }
 
 /**
- * A personal role score: how far the member's success chance is above the
- * crime's checkpoint pass rate (never below 0), plus the role's weight.
- * Null when any of the three is not known.
+ * A personal role score: the member's checkpoint pass rate less the role's
+ * optimal minimum, plus the role's weight, never below 0. A pass rate under
+ * the minimum eats into the weight. Null when any of the three is not known.
  */
-export function roleScore(successChance: number | null, passRate: number | null, weight: number | null): number | null {
-  if (successChance === null || passRate === null || weight === null) return null;
-  return Math.max(0, successChance - passRate) + weight;
+export function roleScore(checkpointPassRate: number | null, minimum: number | null, weight: number | null): number | null {
+  if (checkpointPassRate === null || minimum === null || weight === null) return null;
+  return Math.max(0, checkpointPassRate - minimum + weight);
 }
 
 /**

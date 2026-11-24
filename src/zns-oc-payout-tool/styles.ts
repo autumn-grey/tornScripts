@@ -146,15 +146,16 @@ const CSS = `
     background: linear-gradient(180deg, #4e565e 0%, #303840 100%);
     font-size: 11px;
     font-weight: bold;
-    text-align: left;
+    text-align: center;
     vertical-align: bottom;
   }
   #${PANEL_ID} .ocp-table td {
     padding: 5px 6px;
     border-top: 1px solid rgba(0, 0, 0, 0.35);
     white-space: nowrap;
+    text-align: center;
   }
-  #${PANEL_ID} .ocp-num { text-align: right !important; }
+  #${PANEL_ID} .ocp-payout { font-weight: bold; }
   #${PANEL_ID} tr.ocp-crime { cursor: pointer; background: #444; }
   #${PANEL_ID} tr.ocp-crime:hover { background: #4f4f4f; }
   #${PANEL_ID} tr.ocp-crime td { color: #ff7b7b !important; }
