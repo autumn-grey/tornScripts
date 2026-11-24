@@ -29,8 +29,8 @@ function schedule(): void {
 function onReady(): void {
   log("running", __SCRIPT_VERSION__, location.href);
   installPanel();
-  // Torn swaps faction tabs in without reloading, so the armoury can turn up
-  // long after the page has loaded.
+  // Torn swaps faction tabs in without reloading, so a tab the panel shows on
+  // can turn up long after the page has loaded.
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
   window.addEventListener("hashchange", schedule);
 }

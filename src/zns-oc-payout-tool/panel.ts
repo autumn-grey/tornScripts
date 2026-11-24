@@ -24,16 +24,16 @@ import { COLLAPSED_CLASS, PANEL_ID, injectStyles } from "./styles";
 const FULL_LOG_URL = "";
 
 /**
- * The armoury tab's content panel. It only exists while the armoury tab is
- * open, and Torn hides it with the tab, so a panel placed inside goes with it.
+ * The content panel of each faction tab the panel shows on, by the tab's name
+ * in the page hash ("#/tab=armoury"). Torn hides a tab's panel when another
+ * tab opens, so a panel placed inside goes with it. Each starts with a rule
+ * under the tab menu and the panel goes just before it; TornW3B Companion's
+ * Faction Quick Items bar anchors on the armoury's rule too.
  */
-const ARMOURY_ROOT = "#faction-armoury";
-/**
- * The rule under the armoury panel's title. The panel goes just before it,
- * which puts it directly under the faction tab menu. TornW3B Companion's
- * Faction Quick Items bar anchors here too and shows in that spot.
- */
-const ARMOURY_RULE = "#faction-armoury > hr";
+const TAB_ROOTS: Record<string, string> = {
+  armoury: "#faction-armoury",
+  controls: "#faction-controls",
+};
 
 /** A member chosen for payment, with the crime it is for. */
 interface Selection extends Prefill {
@@ -584,12 +584,21 @@ function buildPanel(): HTMLElement {
   return panel;
 }
 
-/** Where the panel goes: before the armoury's rule, or at the start of the armoury when it has none. */
+/** The faction tab named in the page hash, or null when there is none. */
+function openTab(): string | null {
+  return new URLSearchParams(location.hash.replace(/^#\/?/, "")).get("tab");
+}
+
+/**
+ * Where the panel goes on the open tab: before its rule, or at the start of
+ * its content when it has none. Null on a tab the panel does not show on.
+ */
 function findPlace(): { parent: Element; before: ChildNode | null } | null {
-  const rule = document.querySelector(ARMOURY_RULE);
-  if (rule?.parentElement) return { parent: rule.parentElement, before: rule };
-  const armoury = document.querySelector(ARMOURY_ROOT);
-  return armoury ? { parent: armoury, before: armoury.firstChild } : null;
+  const selector = TAB_ROOTS[openTab() ?? ""];
+  const root = selector ? document.querySelector(selector) : null;
+  if (!root) return null;
+  const rule = root.querySelector(":scope > hr");
+  return { parent: root, before: rule ?? root.firstChild };
 }
 
 /** The last placement result logged, so a busy page does not repeat it every frame. */
@@ -604,19 +613,33 @@ function report(reason: string, ...detail: unknown[]): void {
 
 let watching = false;
 
-/** Puts the panel at the top of the armoury tab's content, once it is on the page. */
+/**
+ * Puts the panel at the top of the open tab's content, once it is on the page.
+ * Switching tabs moves the same panel across, so its tables and chosen row
+ * stay as they were.
+ */
 export function installPanel(): void {
-  if (document.getElementById(PANEL_ID)) return;
   const place = findPlace();
   if (!place) {
-    report(`no ${ARMOURY_ROOT} on the page`);
+    report(`no panel place for tab ${openTab() ?? "(none)"}`);
     return;
   }
 
-  injectStyles();
-  place.parent.insertBefore(buildPanel(), place.before);
-  report("panel placed");
-  render();
+  const existing = document.getElementById(PANEL_ID);
+  if (existing) {
+    // With no rule, the place is the tab's first child, which is the panel itself once it is there.
+    const placed = existing === place.before ||
+      (existing.parentElement === place.parent && existing.nextSibling === place.before);
+    if (!placed) {
+      place.parent.insertBefore(existing, place.before);
+      report(`panel moved to ${openTab()}`);
+    }
+  } else {
+    injectStyles();
+    place.parent.insertBefore(buildPanel(), place.before);
+    report(`panel placed on ${openTab()}`);
+    render();
+  }
 
   if (!watching) {
     watching = true;

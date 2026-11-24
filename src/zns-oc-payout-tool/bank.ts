@@ -1,19 +1,25 @@
-// The faction bank's "Give money or change balance" form: filling it in for a
-// chosen member, and noticing when its button is pressed.
+// The faction bank's give money form on the controls tab: filling it in for a
+// chosen member, and noticing when its send button is pressed.
 //
-// The form's markup has not been captured yet, so it is found by its visible
-// text and placeholder rather than by class. Expect these to be what breaks.
+// Torn builds this form in React. Its boxes carry data-testid attributes,
+// which are made for Torn's own tests and do not change between deploys the
+// way hashed classes do. The selectors come from Torn Banker Chat Tool 3.4
+// (GreasyFork 581619, 2026-10-05); the form has not been seen here directly.
 
+import { hashedClass } from "../shared/hashedClass";
 import { log } from "./debug";
 
-/** The form's heading. */
-const FORM_HEADING = /^\s*give money or change balance\s*$/i;
-/** The player box's placeholder. */
-const PLAYER_FIELD = "input[placeholder*='search player' i]";
-/** The text of the radio that pays into the member's faction balance. */
-const BALANCE_OPTION = /add to balance/i;
-/** The text of the form's send button. */
-const SEND_BUTTON = /give money|add to balance|change balance/i;
+const SELECTORS = {
+  /** The player box: a search box that takes "Name [ID]". */
+  player: 'input[data-testid="autocomplete-input"]',
+  /** The amount box. */
+  amount: 'input[data-testid="legacy-money-input"]',
+  /** The radio that pays into the member's faction balance. */
+  addToBalance: 'div[role="radiogroup"] input[type="radio"][value="addToBalance"]',
+  /** The form's send button. */
+  send: `${hashedClass("btnContainer")} button[type="submit"]`,
+};
+
 /** When a filled box is checked again, in case Torn's render cleared it. */
 const REFILL_DELAYS_MS = [150, 400, 900];
 
@@ -24,21 +30,20 @@ export interface Prefill {
   amount: number;
 }
 
-/** Returns the form, or null when it is not on the page. */
-export function findBankForm(): HTMLElement | null {
-  const heading = Array.from(document.querySelectorAll<HTMLElement>("div, span, h3, h4, h5, p, label"))
-    .find((element) => element.children.length === 0 && FORM_HEADING.test(element.textContent ?? ""));
-  if (!heading) return null;
-
-  // Climb to the smallest box that holds the player field as well as the heading.
-  for (let box: HTMLElement | null = heading.parentElement; box; box = box.parentElement) {
-    if (box.querySelector(PLAYER_FIELD)) return box;
-  }
-  return null;
+/** The form's two boxes, or null when the form is not on the page. */
+function findFields(): { player: HTMLInputElement; amount: HTMLInputElement } | null {
+  const player = document.querySelector<HTMLInputElement>(SELECTORS.player);
+  const amount = document.querySelector<HTMLInputElement>(SELECTORS.amount);
+  return player && amount ? { player, amount } : null;
 }
 
-/** Puts a value into a box the way typing into it would, so Torn's own code sees it. */
+/**
+ * Puts a value into a box the way typing into it would. React keeps its own
+ * copy of a box's value, so the native setter is used and the events fired,
+ * or React puts the old value straight back.
+ */
 function fillField(input: HTMLInputElement, value: string): void {
+  input.focus();
   const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input) as object, "value")?.set;
   if (setter) setter.call(input, value);
   else input.value = value;
@@ -46,67 +51,44 @@ function fillField(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-/** Returns the form's amount box. */
-function amountField(form: HTMLElement): HTMLInputElement | null {
-  const player = form.querySelector(PLAYER_FIELD);
-  return (
-    Array.from(form.querySelectorAll<HTMLInputElement>("input"))
-      .find((input) => input !== player && !["radio", "checkbox", "hidden"].includes(input.type)) ?? null
-  );
-}
-
-/** Returns the form's send button. */
-function sendButton(form: HTMLElement): HTMLElement | null {
-  return (
-    Array.from(form.querySelectorAll<HTMLElement>("button, input[type='submit'], input[type='button']"))
-      .find((button) => SEND_BUTTON.test(button.textContent || (button as HTMLInputElement).value || "")) ?? null
-  );
-}
-
 /** Ticks the form's "Add to balance" option. */
-function chooseBalance(form: HTMLElement): void {
-  for (const label of Array.from(form.querySelectorAll("label"))) {
-    if (!BALANCE_OPTION.test(label.textContent ?? "")) continue;
-    const radio = label.querySelector<HTMLInputElement>("input[type='radio']") ??
-      (label.htmlFor ? document.getElementById(label.htmlFor) as HTMLInputElement | null : null);
-    if (radio && !radio.checked) radio.click();
-    else if (!radio) label.click();
-    return;
-  }
-  log("bank: no Add to balance option found");
+function chooseBalance(): void {
+  const radio = document.querySelector<HTMLInputElement>(SELECTORS.addToBalance);
+  if (!radio) log("bank: no Add to balance option found");
+  else if (!radio.checked) radio.click();
 }
 
 /** Fills the form in for one member; returns false when the form is not on the page. */
 export function fillBankForm(prefill: Prefill): boolean {
-  const form = findBankForm();
-  const player = form?.querySelector<HTMLInputElement>(PLAYER_FIELD);
-  const amount = form ? amountField(form) : null;
-  if (!form || !player || !amount) {
-    log("bank: form not found", { form, player, amount });
+  const fields = findFields();
+  if (!fields) {
+    log("bank: form not found");
     return false;
   }
 
-  chooseBalance(form);
+  chooseBalance();
   const fill = (): void => {
-    fillField(player, prefill.label);
-    fillField(amount, String(prefill.amount));
+    fillField(fields.player, prefill.label);
+    fillField(fields.amount, String(prefill.amount));
   };
   fill();
 
   // Do not drop the retries: Torn's own render can land after the fill and wipe it.
   for (const delay of REFILL_DELAYS_MS) {
     setTimeout(() => {
-      if (player.isConnected && player.value === "") fill();
+      if (fields.player.isConnected && fields.player.value === "") fill();
     }, delay);
   }
   return true;
 }
 
 /** Says whether the form still holds what was filled in, so a hand-edited form is not counted. */
-function stillMatches(form: HTMLElement, prefill: Prefill): boolean {
-  const player = form.querySelector<HTMLInputElement>(PLAYER_FIELD)?.value ?? "";
-  const amount = (amountField(form)?.value ?? "").replace(/\D+/g, "");
-  return player.includes(`[${prefill.memberId}]`) && amount === String(prefill.amount);
+function stillMatches(prefill: Prefill): boolean {
+  const fields = findFields();
+  if (!fields) return false;
+  // The amount box shows the number with commas.
+  const amount = fields.amount.value.replace(/\D+/g, "");
+  return fields.player.value.includes(`[${prefill.memberId}]`) && amount === String(prefill.amount);
 }
 
 /**
@@ -119,13 +101,12 @@ export function watchSendButton(current: () => Prefill | null, onSent: (prefill:
   document.addEventListener(
     "click",
     (event) => {
-      const form = findBankForm();
-      const button = form ? sendButton(form) : null;
-      if (!form || !button || !(event.target instanceof Node) || !button.contains(event.target)) return;
+      const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>(SELECTORS.send) : null;
+      if (!button || button.disabled) return;
 
       const prefill = current();
       if (!prefill) return;
-      if (!stillMatches(form, prefill)) {
+      if (!stillMatches(prefill)) {
         log("bank: form was changed by hand, not counting this send", prefill);
         return;
       }

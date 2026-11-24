@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZNS OC Payout tool
 // @namespace    https://github.com/autumn-grey
-// @version      0.1.28
+// @version      0.1.29
 // @description  Torn Faction admin tool for tweaking Organised Crime payouts
 // @author       AutumnGrey
 // @license      MIT
@@ -117,80 +117,77 @@
     return values;
   }
 
+  // src/shared/hashedClass.ts
+  function hashedClass(name, atStart = false) {
+    const forms = [`${name}___`, `_${name}_`];
+    const parts = atStart ? forms.flatMap((form) => [`[class^="${form}"]`, `[class*=" ${form}"]`]) : forms.map((form) => `[class*="${form}"]`);
+    return `:is(${parts.join(", ")})`;
+  }
+
   // src/zns-oc-payout-tool/bank.ts
-  var FORM_HEADING = /^\s*give money or change balance\s*$/i;
-  var PLAYER_FIELD = "input[placeholder*='search player' i]";
-  var BALANCE_OPTION = /add to balance/i;
-  var SEND_BUTTON = /give money|add to balance|change balance/i;
+  var SELECTORS = {
+    /** The player box: a search box that takes "Name [ID]". */
+    player: 'input[data-testid="autocomplete-input"]',
+    /** The amount box. */
+    amount: 'input[data-testid="legacy-money-input"]',
+    /** The radio that pays into the member's faction balance. */
+    addToBalance: 'div[role="radiogroup"] input[type="radio"][value="addToBalance"]',
+    /** The form's send button. */
+    send: `${hashedClass("btnContainer")} button[type="submit"]`
+  };
   var REFILL_DELAYS_MS = [150, 400, 900];
-  function findBankForm() {
-    const heading = Array.from(document.querySelectorAll("div, span, h3, h4, h5, p, label")).find((element) => element.children.length === 0 && FORM_HEADING.test(element.textContent ?? ""));
-    if (!heading) return null;
-    for (let box = heading.parentElement; box; box = box.parentElement) {
-      if (box.querySelector(PLAYER_FIELD)) return box;
-    }
-    return null;
+  function findFields() {
+    const player = document.querySelector(SELECTORS.player);
+    const amount = document.querySelector(SELECTORS.amount);
+    return player && amount ? { player, amount } : null;
   }
   function fillField(input, value) {
+    input.focus();
     const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")?.set;
     if (setter) setter.call(input, value);
     else input.value = value;
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
-  function amountField(form) {
-    const player = form.querySelector(PLAYER_FIELD);
-    return Array.from(form.querySelectorAll("input")).find((input) => input !== player && !["radio", "checkbox", "hidden"].includes(input.type)) ?? null;
-  }
-  function sendButton(form) {
-    return Array.from(form.querySelectorAll("button, input[type='submit'], input[type='button']")).find((button2) => SEND_BUTTON.test(button2.textContent || button2.value || "")) ?? null;
-  }
-  function chooseBalance(form) {
-    for (const label of Array.from(form.querySelectorAll("label"))) {
-      if (!BALANCE_OPTION.test(label.textContent ?? "")) continue;
-      const radio = label.querySelector("input[type='radio']") ?? (label.htmlFor ? document.getElementById(label.htmlFor) : null);
-      if (radio && !radio.checked) radio.click();
-      else if (!radio) label.click();
-      return;
-    }
-    log("bank: no Add to balance option found");
+  function chooseBalance() {
+    const radio = document.querySelector(SELECTORS.addToBalance);
+    if (!radio) log("bank: no Add to balance option found");
+    else if (!radio.checked) radio.click();
   }
   function fillBankForm(prefill) {
-    const form = findBankForm();
-    const player = form?.querySelector(PLAYER_FIELD);
-    const amount = form ? amountField(form) : null;
-    if (!form || !player || !amount) {
-      log("bank: form not found", { form, player, amount });
+    const fields = findFields();
+    if (!fields) {
+      log("bank: form not found");
       return false;
     }
-    chooseBalance(form);
+    chooseBalance();
     const fill = () => {
-      fillField(player, prefill.label);
-      fillField(amount, String(prefill.amount));
+      fillField(fields.player, prefill.label);
+      fillField(fields.amount, String(prefill.amount));
     };
     fill();
     for (const delay of REFILL_DELAYS_MS) {
       setTimeout(() => {
-        if (player.isConnected && player.value === "") fill();
+        if (fields.player.isConnected && fields.player.value === "") fill();
       }, delay);
     }
     return true;
   }
-  function stillMatches(form, prefill) {
-    const player = form.querySelector(PLAYER_FIELD)?.value ?? "";
-    const amount = (amountField(form)?.value ?? "").replace(/\D+/g, "");
-    return player.includes(`[${prefill.memberId}]`) && amount === String(prefill.amount);
+  function stillMatches(prefill) {
+    const fields = findFields();
+    if (!fields) return false;
+    const amount = fields.amount.value.replace(/\D+/g, "");
+    return fields.player.value.includes(`[${prefill.memberId}]`) && amount === String(prefill.amount);
   }
   function watchSendButton(current, onSent2) {
     document.addEventListener(
       "click",
       (event) => {
-        const form = findBankForm();
-        const button2 = form ? sendButton(form) : null;
-        if (!form || !button2 || !(event.target instanceof Node) || !button2.contains(event.target)) return;
+        const button2 = event.target instanceof Element ? event.target.closest(SELECTORS.send) : null;
+        if (!button2 || button2.disabled) return;
         const prefill = current();
         if (!prefill) return;
-        if (!stillMatches(form, prefill)) {
+        if (!stillMatches(prefill)) {
           log("bank: form was changed by hand, not counting this send", prefill);
           return;
         }
@@ -1051,8 +1048,10 @@
 
   // src/zns-oc-payout-tool/panel.ts
   var FULL_LOG_URL = "";
-  var ARMOURY_ROOT = "#faction-armoury";
-  var ARMOURY_RULE = "#faction-armoury > hr";
+  var TAB_ROOTS = {
+    armoury: "#faction-armoury",
+    controls: "#faction-controls"
+  };
   var percents = readPercents();
   var rows = [];
   var selection = null;
@@ -1479,11 +1478,15 @@ ${payment.by.name} [${payment.by.id}]` : "";
     panel.append(title, body);
     return panel;
   }
+  function openTab() {
+    return new URLSearchParams(location.hash.replace(/^#\/?/, "")).get("tab");
+  }
   function findPlace() {
-    const rule = document.querySelector(ARMOURY_RULE);
-    if (rule?.parentElement) return { parent: rule.parentElement, before: rule };
-    const armoury = document.querySelector(ARMOURY_ROOT);
-    return armoury ? { parent: armoury, before: armoury.firstChild } : null;
+    const selector = TAB_ROOTS[openTab() ?? ""];
+    const root = selector ? document.querySelector(selector) : null;
+    if (!root) return null;
+    const rule = root.querySelector(":scope > hr");
+    return { parent: root, before: rule ?? root.firstChild };
   }
   var lastReport = "";
   function report(reason, ...detail) {
@@ -1493,16 +1496,24 @@ ${payment.by.name} [${payment.by.id}]` : "";
   }
   var watching = false;
   function installPanel() {
-    if (document.getElementById(PANEL_ID)) return;
     const place = findPlace();
     if (!place) {
-      report(`no ${ARMOURY_ROOT} on the page`);
+      report(`no panel place for tab ${openTab() ?? "(none)"}`);
       return;
     }
-    injectStyles();
-    place.parent.insertBefore(buildPanel(), place.before);
-    report("panel placed");
-    render();
+    const existing = document.getElementById(PANEL_ID);
+    if (existing) {
+      const placed = existing === place.before || existing.parentElement === place.parent && existing.nextSibling === place.before;
+      if (!placed) {
+        place.parent.insertBefore(existing, place.before);
+        report(`panel moved to ${openTab()}`);
+      }
+    } else {
+      injectStyles();
+      place.parent.insertBefore(buildPanel(), place.before);
+      report(`panel placed on ${openTab()}`);
+      render();
+    }
     if (!watching) {
       watching = true;
       watchSendButton(() => selection, onSent);
@@ -1520,7 +1531,7 @@ ${payment.by.name} [${payment.by.id}]` : "";
     });
   }
   function onReady() {
-    log("running", "0.1.28", location.href);
+    log("running", "0.1.29", location.href);
     installPanel();
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("hashchange", schedule);
